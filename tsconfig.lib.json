@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/public-api.ts", "src/types/**/*.d.ts"],
+  "exclude": ["node_modules/**", "dist/**", "public/**", "test/**", "scripts/**", "pages/**"],
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist/npm",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "inlineSourceMap": false,
+    "sourceMap": true,
+    "noEmit": false
+  }
+}

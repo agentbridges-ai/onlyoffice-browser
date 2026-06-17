@@ -4,6 +4,14 @@ Browser Office Editor is a browser-only Office preview/edit component. The host 
 
 ## Static Assets
 
+Install the component package:
+
+```bash
+pnpm add @agentbridges-ai/onlyoffice-browser
+```
+
+The npm package intentionally contains only the JS/TS component API. Deploy the runtime assets separately from this repository, a release artifact, or your own CDN.
+
 Deploy the built app and these runtime assets from the same origin:
 
 - `web-apps/`, `sdkjs/`: OnlyOffice 9.3.0 browser runtime.
@@ -16,7 +24,7 @@ No OnlyOffice DocumentServer, backend session service, or document upload endpoi
 ## Basic Usage
 
 ```ts
-import { createOfficeEditor } from './src/lib/office-editor';
+import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 
 const container = document.querySelector('#editor') as HTMLElement;
 

@@ -16,12 +16,24 @@ The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided D
 ## Quick Start
 
 ```bash
+pnpm add @agentbridges-ai/onlyoffice-browser
+```
+
+```ts
+import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
+```
+
+The npm package contains the JS/TS component API only. Deploy the OnlyOffice runtime assets from this repository's `public/` directory, a release artifact, or your own CDN on the same origin as the host app.
+
+For local development of this repository:
+
+```bash
 pnpm install
 pnpm run dev
 ```
 
 ```ts
-import { createOfficeEditor } from './src/lib/office-editor';
+import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 
 const editor = await createOfficeEditor(document.querySelector('#editor') as HTMLElement, {
   file,

@@ -1,12 +1,35 @@
 {
-  "name": "onlyoffice-browser",
-  "version": "1.0.0",
+  "name": "@agentbridges-ai/onlyoffice-browser",
+  "version": "0.1.0",
   "packageManager": "pnpm@11.4.0",
   "description": "A local web-based document editor based on OnlyOffice, allowing you to edit documents directly in your browser without server-side processing, ensuring your privacy and security.",
   "type": "module",
+  "main": "./dist/npm/public-api.js",
+  "module": "./dist/npm/public-api.js",
+  "types": "./dist/npm/public-api.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/npm/public-api.d.ts",
+      "import": "./dist/npm/public-api.js"
+    }
+  },
+  "files": [
+    "dist/npm",
+    "docs/integration.md",
+    "docs/integration.zh.md",
+    "readme.md",
+    "readme.zh.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "vite --host --force",
     "build": "sh ./bin/build.sh",
+    "build:lib": "node -e \"require('node:fs').rmSync('dist/npm', { recursive: true, force: true })\" && tsc -p tsconfig.lib.json && vite build -c vite.lib.config.ts",
+    "prepack": "npm run build:lib",
+    "pack:dry": "npm pack --dry-run",
     "preview": "vite preview",
     "tsc": "tsc --noEmit",
     "test": "vitest run",
@@ -40,15 +63,15 @@
     "document-converter",
     "office-suite"
   ],
-  "author": "ranuts",
+  "author": "agentbridges-ai",
   "license": "AGPL-3.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ranuts/document.git"
+    "url": "git+https://github.com/agentbridges-ai/onlyoffice-browser.git"
   },
-  "homepage": "https://bybrowser.com/",
+  "homepage": "https://github.com/agentbridges-ai/onlyoffice-browser#readme",
   "bugs": {
-    "url": "https://github.com/ranuts/document/issues"
+    "url": "https://github.com/agentbridges-ai/onlyoffice-browser/issues"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

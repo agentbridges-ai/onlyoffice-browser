@@ -16,12 +16,24 @@
 ## 快速开始
 
 ```bash
+pnpm add @agentbridges-ai/onlyoffice-browser
+```
+
+```ts
+import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
+```
+
+npm 主包只包含 JS/TS 组件 API。OnlyOffice runtime 资产需要从本仓库 `public/`、Release 附件或你自己的 CDN 单独部署，并与宿主应用保持同源。
+
+本仓库本地开发：
+
+```bash
 pnpm install
 pnpm run dev
 ```
 
 ```ts
-import { createOfficeEditor } from './src/lib/office-editor';
+import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 
 const editor = await createOfficeEditor(document.querySelector('#editor') as HTMLElement, {
   file,
