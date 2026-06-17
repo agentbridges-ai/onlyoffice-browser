@@ -25,6 +25,9 @@ describe('document utils', () => {
   });
 
   it('detects GitHub Pages base path', () => {
+    window.history.pushState({}, '', '/onlyoffice-browser/');
+    expect(getBasePath()).toBe('/onlyoffice-browser/');
+
     window.history.pushState({}, '', '/document/');
     expect(getBasePath()).toBe('/document/');
 

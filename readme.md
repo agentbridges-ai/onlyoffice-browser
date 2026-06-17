@@ -1,36 +1,42 @@
 # Browser Office Editor
 
+[![CI](https://github.com/agentbridges-ai/onlyoffice-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/agentbridges-ai/onlyoffice-browser/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@agentbridges-ai/onlyoffice-browser.svg)](https://www.npmjs.com/package/@agentbridges-ai/onlyoffice-browser)
+[![license](https://img.shields.io/github/license/agentbridges-ai/onlyoffice-browser.svg)](LICENSE)
+
 A browser-only Office preview/edit component powered by OnlyOffice 9.3 and `onlyoffice-x2t-wasm`.
 
 The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided DOM container. Conversion, editing, saving, and export all happen in the current browser tab. It does not require OnlyOffice DocumentServer, backend sessions, document uploads, or user accounts.
 
-## What This Repo Provides
+## What This Provides
 
 - JS/TS API: `createOfficeEditor(container, options)`.
 - Multiple simultaneous documents by creating one component instance per container.
 - Local conversion through `public/wasm/x2t`.
 - OnlyOffice browser runtime under `public/web-apps` and `public/sdkjs`.
-- A small demo/test host at `/`.
-- Integration docs in [docs/integration.md](docs/integration.md).
+- A minimal demo/test host at `/`.
+- Integration docs in [docs/integration.md](docs/integration.md) and [docs/integration.zh.md](docs/integration.zh.md).
 
-## Quick Start
+## Install
 
 ```bash
-pnpm add @agentbridges-ai/onlyoffice-browser
+npm install @agentbridges-ai/onlyoffice-browser
 ```
 
 ```ts
 import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 ```
 
-The npm package contains the JS/TS component API only. Deploy the OnlyOffice runtime assets from this repository's `public/` directory, a release artifact, or your own CDN on the same origin as the host app.
+The npm package intentionally contains the JS/TS component API only. Deploy the OnlyOffice runtime assets from this repository's `public/` directory, a release artifact, or your own CDN on the same origin as the host app.
 
-For local development of this repository:
+The runtime assets must be reachable from the app origin:
 
-```bash
-pnpm install
-pnpm run dev
-```
+- `/web-apps/` and `/sdkjs/`
+- `/wasm/x2t/`
+- `/fonts/`, `/dictionaries/`, and `/libs/`
+- `/document_editor_service_worker.js`, `/plugins.json`, `/themes.json`, and `/reset.html`
+
+## Usage
 
 ```ts
 import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
@@ -38,12 +44,40 @@ import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 const editor = await createOfficeEditor(document.querySelector('#editor') as HTMLElement, {
   file,
   fileName: file.name,
+  mode: 'edit',
+  lang: 'en',
+  onSave(savedFile) {
+    console.log(savedFile.name, savedFile.size);
+  },
 });
 
 const saved = await editor.save('DOCX');
-editor.setReadonly(true);  // reversible readonly; use mode: 'preview' for the upstream viewer without the editing ribbon
+editor.setReadonly(true);
+editor.setReadonly(false);
 editor.destroy();
 ```
+
+Supported `mode` values:
+
+- `edit`: full editor.
+- `readonly`: opens the editor runtime with edit rights disabled; `setReadonly(false)` can restore editing.
+- `preview`: upstream OnlyOffice embedded viewer with no editing ribbon; recreate the instance to switch back to editing.
+
+For multiple documents, create one container and one component instance per document. The OnlyOffice API script and x2t runtime are singleton-loaded; each instance owns its iframe, Blob URLs, media map, save request, and mock server.
+
+## Development
+
+```bash
+pnpm install
+pnpm run dev
+pnpm run lint
+pnpm run test
+pnpm run build:lib
+pnpm run pack:dry
+pnpm run build
+```
+
+`pnpm run test:real-load` runs the real-file same-page stress test. See the integration guide for Chrome CDP flags and file arguments.
 
 ## Build
 
@@ -52,6 +86,21 @@ pnpm run build
 ```
 
 Deploy the generated `dist/` directory as static files. Keep the runtime assets from `public/` on the same origin as the app.
+
+## GitHub Actions
+
+- `CI`: lint, TypeScript, unit tests, npm package build/dry-pack, demo production build, and Playwright E2E.
+- `Deploy demo`: manual GitHub Pages deployment for the demo. It is manual because the OnlyOffice runtime assets are large.
+- `Publish npm`: tag or manual npm release workflow prepared for npm Trusted Publishing.
+
+To enable `Publish npm`, configure npm Trusted Publishing for:
+
+- Package: `@agentbridges-ai/onlyoffice-browser`
+- Repository: `agentbridges-ai/onlyoffice-browser`
+- Workflow: `publish.yml`
+- Environment: leave blank unless the workflow is later changed to use one
+
+The workflow uses GitHub OIDC through `id-token: write`, so it does not need a long-lived npm token once the trusted publisher is configured.
 
 ## Browser-Only Boundary
 
@@ -71,6 +120,7 @@ This project does not include proprietary fonts. See [docs/fonts.md](docs/fonts.
 - [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm)
 - [ONLYOFFICE web-apps](https://github.com/ONLYOFFICE/web-apps)
 - [ONLYOFFICE sdkjs](https://github.com/ONLYOFFICE/sdkjs)
+- [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)
 
 ## License
 

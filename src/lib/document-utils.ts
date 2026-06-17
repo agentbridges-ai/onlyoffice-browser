@@ -2,8 +2,8 @@ import type { DocumentType } from './document-types';
 
 /**
  * Get base path based on deployment environment
- * - GitHub Pages: uses /document/ path
- * - Docker/Other: uses root path /
+ * - GitHub Pages project sites use /<repo>/ paths
+ * - Same-origin app deployments usually use root path /
  */
 export const getBasePath = (): string => {
   if (typeof window === 'undefined') {
@@ -11,11 +11,12 @@ export const getBasePath = (): string => {
   }
 
   const pathname = window.location.pathname;
-  // Check if we're in GitHub Pages (path starts with /document/ or contains /document/)
-  if (pathname.startsWith('/document/') || pathname === '/document') {
-    return '/document/';
+  const projectSiteNames = ['onlyoffice-browser', 'document'];
+  const firstSegment = pathname.split('/').filter(Boolean)[0];
+  if (firstSegment && projectSiteNames.includes(firstSegment)) {
+    return `/${firstSegment}/`;
   }
-  // Docker or other deployments use root path
+
   return '/';
 };
 

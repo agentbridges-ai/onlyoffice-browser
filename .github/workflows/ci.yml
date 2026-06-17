@@ -2,70 +2,75 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint and Validate
+  verify:
+    name: Lint, test, and build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v6
-        name: Install pnpm
-        id: pnpm-install
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
+          version: 11.4.0
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "22"
           cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check formatting
-        run: pnpm run format:check
+      - name: Run lint and TypeScript checks
+        run: pnpm run lint
 
-      - name: Run oxlint and TypeScript checks
-        run: pnpm run lint:ts
+      - name: Run unit tests
+        run: pnpm run test
 
-      - name: Run unit tests with coverage
-        run: pnpm run test:coverage
+      - name: Build npm package output
+        run: pnpm run build:lib
 
-      - name: Validate Docker Compose file
-        run: docker compose -f docker-compose.yaml config --quiet
+      - name: Verify npm package contents
+        run: pnpm run pack:dry
 
-      - name: Lint Dockerfile with Hadolint
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: Dockerfile
-          failure-threshold: error
+      - name: Build demo app
+        run: pnpm run build
 
   e2e:
-    name: E2E
+    name: Playwright E2E
     runs-on: ubuntu-latest
-    needs: lint
+    needs: verify
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v6
-        name: Install pnpm
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
         with:
+          version: 11.4.0
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "22"
           cache: "pnpm"
 
       - name: Install dependencies
