@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>Resetting editor</title>
+  </head>
+  <body>
+    <script>
+      (() => {
+        const fallback = '/';
+        let target = fallback;
+
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const requested = params.get('to') || fallback;
+          const url = new URL(requested, window.location.origin);
+          if (url.origin === window.location.origin && url.pathname !== '/reset.html') {
+            target = `${url.pathname}${url.search}${url.hash}`;
+          }
+        } catch {
+          target = fallback;
+        }
+
+        window.location.replace(target);
+      })();
+    </script>
+  </body>
+</html>
