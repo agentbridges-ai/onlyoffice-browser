@@ -34,7 +34,8 @@ npm 主包只包含 JS/TS 组件 API。`office-host.html` 和 OnlyOffice runtime
 
 - `/web-apps/` 和 `/sdkjs/`
 - `/wasm/x2t/`
-- `/fonts/`、`/dictionaries/`、`/libs/`
+- `/dictionaries/`、`/libs/`
+- 生成后的字体资产：`/onlyoffice-browser-font-assets.json`、`/sdkjs/common/AllFonts.js`、`/sdkjs/common/Images/fonts_thumbnail*.png`、`/fonts/`、`/server/FileConverter/bin/font_selection.bin`
 - `/document_editor_service_worker.js`、`/plugins.json`、`/themes.json`、`/reset.html`
 
 ## 使用
@@ -114,7 +115,7 @@ pnpm run build
 
 ## 字体
 
-本项目不包含专有字体。字体资源说明见 [docs/fonts.zh.md](docs/fonts.zh.md)。
+本项目不内置 runtime 字体文件。打开文档前必须先生成并挂载字体资产：`npm run fonts:generate -- --input /path/to/fonts --output .onlyoffice-font-assets` 或 `npx onlyoffice-browser-generate-font-assets --input /path/to/fonts --output .onlyoffice-font-assets`，再用 `npm run fonts:verify -- --input .onlyoffice-font-assets` 或 `npx onlyoffice-browser-verify-font-assets --input .onlyoffice-font-assets` 验证，本地开发用 `npm run dev:fonts` 启动。生成器默认使用精简的 `zh-core` 字体集，面向简体中文和经典英文 Office 文档；只有确实需要广泛语言覆盖时再传 `--font-set full`。详见 [docs/fonts.zh.md](docs/fonts.zh.md)。
 
 ## 参考
 

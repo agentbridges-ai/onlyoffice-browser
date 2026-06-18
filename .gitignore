@@ -18,4 +18,5 @@ dist
 coverage/
 playwright-report/
 test-results/
-public/fonts/__fallback__/
+/public/fonts/
+.onlyoffice-font-assets/

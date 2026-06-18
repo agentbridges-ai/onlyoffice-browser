@@ -34,7 +34,8 @@ The runtime assets must be reachable from the editor host origin:
 
 - `/web-apps/` and `/sdkjs/`
 - `/wasm/x2t/`
-- `/fonts/`, `/dictionaries/`, and `/libs/`
+- `/dictionaries/` and `/libs/`
+- generated font assets: `/onlyoffice-browser-font-assets.json`, `/sdkjs/common/AllFonts.js`, `/sdkjs/common/Images/fonts_thumbnail*.png`, `/fonts/`, and `/server/FileConverter/bin/font_selection.bin`
 - `/document_editor_service_worker.js`, `/plugins.json`, `/themes.json`, and `/reset.html`
 
 ## Usage
@@ -114,7 +115,7 @@ The workflow uses GitHub OIDC through `id-token: write`, so it does not need a l
 
 ## Fonts
 
-This project does not include proprietary fonts. See [docs/fonts.md](docs/fonts.md) for font asset guidance.
+This project does not ship runtime font files. Generate and mount fonts before opening documents: `npm run fonts:generate -- --input /path/to/fonts --output .onlyoffice-font-assets` or `npx onlyoffice-browser-generate-font-assets --input /path/to/fonts --output .onlyoffice-font-assets`, verify with `npm run fonts:verify -- --input .onlyoffice-font-assets` or `npx onlyoffice-browser-verify-font-assets --input .onlyoffice-font-assets`, then start local dev with `npm run dev:fonts`. The generator defaults to a compact `zh-core` set for Simplified Chinese and classic English Office documents; pass `--font-set full` only when broad language coverage is required. See [docs/fonts.md](docs/fonts.md).
 
 ## References
 

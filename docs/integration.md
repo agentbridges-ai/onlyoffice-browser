@@ -16,7 +16,8 @@ Deploy `office-host.html` and these runtime assets from the same independent ori
 
 - `web-apps/`, `sdkjs/`: OnlyOffice 9.3.0 browser runtime.
 - `wasm/x2t/`: browser-side document conversion engine.
-- `fonts/`, `dictionaries/`, `libs/`: fonts, dictionaries, and CSV dependencies.
+- `dictionaries/`, `libs/`: dictionaries and CSV dependencies.
+- generated font assets: `onlyoffice-browser-font-assets.json`, `sdkjs/common/AllFonts.js`, `sdkjs/common/Images/fonts_thumbnail*.png`, `fonts/`, and `server/FileConverter/bin/font_selection.bin`.
 - `document_editor_service_worker.js`, `plugins.json`, `themes.json`, `reset.html`: root files expected by the OnlyOffice wrapper.
 
 Pass that host page as `hostUrl`. The component rejects same-origin `hostUrl` values because the memory-isolation cleanup relies on an independent iframe origin.
@@ -143,6 +144,29 @@ const preview = await createOfficeEditor(container, {
 Preview instances cannot become editable through `setReadonly(false)`. Destroy them and recreate with `mode: 'edit'` or the default options when editing is needed.
 
 `destroy()` is idempotent. It sends `DESTROY` to the isolated host. The host destroys the OnlyOffice wrapper, revokes local Blob URLs, clears worker/socket/timer/media resources, unregisters host-origin service workers/caches, and then navigates itself to the lightweight `reset.html`; the parent removes the outer iframe only after receiving `HOST_RESET_DONE`, then navigates it to `about:blank`, closes the `MessagePort`, and clears parent references. It does not reload the parent page by default. Pass `hardResetOnLastDestroy: true` only as a diagnostic fallback after the last instance closes.
+
+## Font Assets
+
+The package does not include runtime font files. Generate official OnlyOffice font assets before opening documents:
+
+```bash
+npm run fonts:generate -- --input /absolute/path/to/fonts --output .onlyoffice-font-assets
+```
+
+When using the published package from an application repository, use the package CLI instead:
+
+```bash
+npx onlyoffice-browser-generate-font-assets --input /absolute/path/to/fonts --output .onlyoffice-font-assets
+```
+
+Then serve them from the editor host. For local dev:
+
+```bash
+npm run fonts:verify -- --input .onlyoffice-font-assets
+npm run dev:fonts
+```
+
+This serves generated `AllFonts.js`, font thumbnails, font files, and `font_selection.bin` as static assets. Missing font assets are treated as configuration errors; there is no package fallback. See [fonts.md](fonts.md).
 
 ## Privacy Boundary
 

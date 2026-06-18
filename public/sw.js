@@ -62,7 +62,7 @@ self.addEventListener('fetch', (event) => {
   // 4. Skip font files — let the browser cache them natively to avoid SW
   // interception latency triggering Chrome's font-loading intervention in
   // OnlyOffice's fallback font loading path.
-  if (/\.(ttf|woff2?|otf|eot)(\?.*)?$/.test(url.pathname)) return;
+  if (url.pathname.startsWith('/fonts/') || /\.(ttf|tte|ttc|otf|otc|woff2?|eot)(\?.*)?$/.test(url.pathname)) return;
 
   // 4. Determine Strategy
   const isHtml =

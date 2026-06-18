@@ -1,5 +1,6 @@
 import type { BinConversionResult, ConversionResult, DocumentType, EmscriptenModule } from './document-types';
 import { BASE_PATH, DOCUMENT_TYPE_MAP } from './document-utils';
+import { fetchGeneratedFontAssetsManifest, fetchRuntimeBinaryAsset, getAssetFileName } from './font-assets';
 
 function createObjectURL(blob: Blob): string {
   return URL.createObjectURL(blob);
@@ -39,6 +40,7 @@ export class X2TConverter {
   private isReady = false;
   private initPromise: Promise<EmscriptenModule> | null = null;
   private hasScriptLoaded = false;
+  private hasGeneratedFontAssetsLoaded = false;
 
   // Supported file type mapping
   private readonly DOCUMENT_TYPE_MAP: Record<string, DocumentType> = DOCUMENT_TYPE_MAP;
@@ -100,16 +102,19 @@ export class X2TConverter {
         }, this.INIT_TIMEOUT);
 
         x2t.onRuntimeInitialized = () => {
-          try {
-            clearTimeout(timeoutId);
-            this.createWorkingDirectories(x2t);
-            this.x2tModule = x2t;
-            this.isReady = true;
-            console.log('X2T module initialized successfully');
-            resolve(x2t);
-          } catch (error) {
-            reject(error);
-          }
+          void (async () => {
+            try {
+              clearTimeout(timeoutId);
+              this.createWorkingDirectories(x2t);
+              this.x2tModule = x2t;
+              await this.loadGeneratedFontAssets();
+              this.isReady = true;
+              console.log('X2T module initialized successfully');
+              resolve(x2t);
+            } catch (error) {
+              reject(error);
+            }
+          })();
         };
       });
     } catch (error) {
@@ -130,6 +135,45 @@ export class X2TConverter {
         console.warn(`Directory ${dir} may already exist:`, error);
       }
     });
+  }
+
+  private writeBinaryFile(targetPath: string, data: Uint8Array): void {
+    try {
+      this.x2tModule?.FS.writeFile(targetPath, data);
+    } catch (error) {
+      console.warn(`Failed to write generated font asset to ${targetPath}:`, error);
+    }
+  }
+
+  private async loadGeneratedFontAssets(): Promise<void> {
+    if (this.hasGeneratedFontAssetsLoaded || !this.x2tModule) return;
+    this.hasGeneratedFontAssetsLoaded = true;
+
+    const manifest = await fetchGeneratedFontAssetsManifest();
+
+    for (const fontPath of manifest.fonts) {
+      try {
+        const data = await fetchRuntimeBinaryAsset(fontPath);
+        this.writeBinaryFile(`/working/fonts/${getAssetFileName(fontPath)}`, data);
+      } catch (error) {
+        throw new Error(
+          `Failed to load generated font asset ${fontPath}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    try {
+      const data = await fetchRuntimeBinaryAsset(manifest.fontSelection);
+      this.writeBinaryFile('/font_selection.bin', data);
+      this.writeBinaryFile('/working/font_selection.bin', data);
+      this.writeBinaryFile('/working/fonts/font_selection.bin', data);
+    } catch (error) {
+      throw new Error(
+        `Failed to load generated font selection asset ${manifest.fontSelection}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   private unlinkIfExists(path: string): void {

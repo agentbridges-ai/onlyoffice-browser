@@ -5,6 +5,7 @@ import { getDocumentType, getMimeTypeFromExtension, BASE_PATH } from './document
 import { getOnlyOfficeLang, t } from './i18n';
 import { createOnlyOfficeMockServer } from './onlyoffice-mock-server';
 import type { BinConversionResult, SaveEvent } from './document-types';
+import { assertGeneratedFontAssetsAvailable } from './font-assets';
 
 const ONLYOFFICE_BROWSER_BUILD_VERSION = '9.3.0';
 const ONLYOFFICE_BROWSER_BUILD_NUMBER = 140;
@@ -71,10 +72,23 @@ type SaveRequest = {
 
 type RuntimeWindow = typeof window & {
   DocsAPI?: DocsAPI;
+  __fonts_visible_names?: unknown;
   APP?: {
     getImageURL?: (name: string, callback: (url: string) => void) => void;
     [key: string]: unknown;
   };
+};
+
+type OnlyOfficeFrameWindow = Window & {
+  AscCommon?: {
+    baseEditorsApi?: {
+      prototype?: {
+        sync_InitEditorFonts?: (guiFonts: unknown[]) => unknown;
+        __onlyOfficeBrowserFontPickerFilter?: boolean;
+      };
+    };
+  };
+  __fonts_visible_names?: unknown;
 };
 
 let editorApiPromise: Promise<void> | null = null;
@@ -222,6 +236,72 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function getFontNameForFilter(font: unknown): string {
+  if (!font || typeof font !== 'object') return '';
+  const value = font as { name?: unknown; Name?: unknown; asc_getFontName?: unknown };
+  if (typeof value.name === 'string') return value.name;
+  if (typeof value.Name === 'string') return value.Name;
+  if (typeof value.asc_getFontName === 'function') {
+    try {
+      const name = value.asc_getFontName();
+      return typeof name === 'string' ? name : '';
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+function installFontPickerFilter(frameWindow: OnlyOfficeFrameWindow): boolean {
+  const visibleNames =
+    Array.isArray(frameWindow.__fonts_visible_names) &&
+    frameWindow.__fonts_visible_names.every((name) => typeof name === 'string')
+      ? new Set(frameWindow.__fonts_visible_names)
+      : null;
+  if (!visibleNames || visibleNames.size === 0) return true;
+
+  const prototype = frameWindow.AscCommon?.baseEditorsApi?.prototype;
+  const original = prototype?.sync_InitEditorFonts;
+  if (!prototype || typeof original !== 'function') return false;
+  if (prototype.__onlyOfficeBrowserFontPickerFilter) return true;
+
+  prototype.sync_InitEditorFonts = function syncInitEditorFontsWithFilter(this: unknown, guiFonts: unknown[]) {
+    const filteredFonts = Array.isArray(guiFonts)
+      ? guiFonts.filter((font) => {
+          const name = getFontNameForFilter(font);
+          return name ? visibleNames.has(name) : false;
+        })
+      : guiFonts;
+    return original.call(this, filteredFonts);
+  };
+  prototype.__onlyOfficeBrowserFontPickerFilter = true;
+  return true;
+}
+
+function installNestedFontPickerFilter(): void {
+  const startedAt = Date.now();
+  const timeoutMs = 10_000;
+  const intervalMs = 50;
+
+  const tryInstall = () => {
+    const frame = document.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+    const frameWindow = frame?.contentWindow as OnlyOfficeFrameWindow | null | undefined;
+    if (frameWindow) {
+      try {
+        if (installFontPickerFilter(frameWindow)) return;
+      } catch {
+        return;
+      }
+    }
+
+    if (Date.now() - startedAt < timeoutMs) {
+      window.setTimeout(tryInstall, intervalMs);
+    }
+  };
+
+  tryInstall();
+}
+
 export function loadOfficeEditorApi(): Promise<void> {
   const runtimeWindow = window as RuntimeWindow;
   if (runtimeWindow.DocsAPI?.DocEditor) {
@@ -366,6 +446,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   static async create(container: HTMLElement, options: CreateOfficeEditorOptions): Promise<BrowserOfficeEditor> {
+    await assertGeneratedFontAssetsAvailable();
     await loadOfficeEditorApi();
     await initX2T();
     const prepared = await prepareDocument(options);
@@ -392,6 +473,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     activeInstances.set(this.id, this);
 
     try {
+      installNestedFontPickerFilter();
       const editor = new runtimeWindow.DocsAPI.DocEditor(this.placeholder.id, {
         type: this.previewMode ? 'embedded' : 'desktop',
         width: '100%',
@@ -435,9 +517,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           },
         },
         events: {
-          onAppReady: () => {},
+          onAppReady: () => {
+            installNestedFontPickerFilter();
+          },
           onDocumentReady: () => {
             if (this.destroyed) return;
+            installNestedFontPickerFilter();
             this.status = 'ready';
             this.applyReadonlyState();
             this.options.onReady?.(this);
@@ -565,7 +650,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         throw new Error('Save event did not include document data');
       }
 
-      const optionFormat = c_oAscFileType2[event.data.option.outputformat] || getFileExtension(this.fileName).toUpperCase();
+      const optionFormat =
+        c_oAscFileType2[event.data.option.outputformat] || getFileExtension(this.fileName).toUpperCase();
       const targetFormat = this.fileName.toLowerCase().endsWith('.csv')
         ? 'CSV'
         : this.saveRequest?.targetExt || optionFormat;
@@ -593,7 +679,9 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
 
       const blob = await response.blob();
       const baseName = this.fileName.replace(/\.[^/.]+$/, '');
-      const ext = String(this.saveRequest?.targetExt || event.data?.fileType || getFileExtension(this.fileName)).toLowerCase();
+      const ext = String(
+        this.saveRequest?.targetExt || event.data?.fileType || getFileExtension(this.fileName),
+      ).toLowerCase();
       const fileName = `${baseName}.${ext}`;
       await this.emitSavedFile(new File([blob], fileName, { type: blob.type || getSavedFileMimeType(fileName) }));
     } catch (error) {
@@ -613,7 +701,9 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       }
 
       const extension = fileName.split('.').pop()?.toLowerCase() || 'png';
-      const objectUrl = createObjectUrl(new Blob([imageData as BlobPart], { type: getMimeTypeFromExtension(extension) }));
+      const objectUrl = createObjectUrl(
+        new Blob([imageData as BlobPart], { type: getMimeTypeFromExtension(extension) }),
+      );
       this.media[`media/${fileName}`] = objectUrl;
       registerMedia(this.id, this.media);
 

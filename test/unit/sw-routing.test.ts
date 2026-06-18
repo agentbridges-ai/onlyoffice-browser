@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const FONT_REGEX = /\.(ttf|woff2?|otf|eot)(\?.*)?$/;
+const FONT_REGEX = /\.(ttf|tte|ttc|otf|otc|woff2?|eot)(\?.*)?$/;
 const ONLYOFFICE_RUNTIME_ASSET_REGEX = /(^|\/)(web-apps|sdkjs|wasm\/x2t)\//;
 
 const ORIGIN = 'http://localhost:5173';
@@ -25,16 +25,13 @@ function swShouldHandle(method: string, urlStr: string): boolean {
   const url = new URL(urlStr);
   if (url.origin !== ORIGIN) return false;
   if (url.searchParams.has('file') || url.searchParams.has('src')) return false;
-  if (FONT_REGEX.test(url.pathname)) return false;
+  if (url.pathname.startsWith('/fonts/') || FONT_REGEX.test(url.pathname)) return false;
   return true;
 }
 
 function swStaticStrategy(urlStr: string): 'network-first' | 'stale-while-revalidate' {
   const url = new URL(urlStr);
-  const isHtml =
-    url.pathname.endsWith('.html') ||
-    url.pathname === '/' ||
-    url.pathname.endsWith('/');
+  const isHtml = url.pathname.endsWith('.html') || url.pathname === '/' || url.pathname.endsWith('/');
   return isHtml || ONLYOFFICE_RUNTIME_ASSET_REGEX.test(url.pathname) ? 'network-first' : 'stale-while-revalidate';
 }
 
@@ -95,7 +92,11 @@ describe('SW fetch routing', () => {
       ['/fonts/LiberationSans-Bold.woff2', '.woff2'],
       ['/fonts/arial.woff', '.woff'],
       ['/fonts/symbol.otf', '.otf'],
+      ['/fonts/msyh.ttc', '.ttc font collection'],
+      ['/fonts/cambria.otc', '.otc font collection'],
+      ['/fonts/embedded.tte', '.tte embedded TrueType'],
       ['/fonts/legacy.eot', '.eot'],
+      ['/fonts/000', 'official generated font without extension'],
       ['/fonts/font.ttf?v=123', '.ttf with query string'],
     ])('%s (%s)', (pathname) => {
       expect(swShouldHandle('GET', `${ORIGIN}${pathname}`)).toBe(false);
@@ -103,7 +104,7 @@ describe('SW fetch routing', () => {
   });
 
   describe('font regex matches extensions correctly', () => {
-    it.each(['.ttf', '.woff', '.woff2', '.otf', '.eot'])('matches %s', (ext) => {
+    it.each(['.ttf', '.tte', '.ttc', '.otf', '.otc', '.woff', '.woff2', '.eot'])('matches %s', (ext) => {
       expect(FONT_REGEX.test(`/fonts/file${ext}`)).toBe(true);
     });
 

@@ -1,6 +1,6 @@
 {
   "name": "@agentbridges-ai/onlyoffice-browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packageManager": "pnpm@11.4.0",
   "description": "A local web-based document editor based on OnlyOffice, allowing you to edit documents directly in your browser without server-side processing, ensuring your privacy and security.",
   "type": "module",
@@ -13,8 +13,16 @@
       "import": "./dist/npm/public-api.js"
     }
   },
+  "bin": {
+    "onlyoffice-browser-generate-font-assets": "./scripts/generate-onlyoffice-font-assets.mjs",
+    "onlyoffice-browser-verify-font-assets": "./scripts/verify-onlyoffice-font-assets.mjs"
+  },
   "files": [
     "dist/npm",
+    "scripts/generate-onlyoffice-font-assets.mjs",
+    "scripts/verify-onlyoffice-font-assets.mjs",
+    "docs/fonts.md",
+    "docs/fonts.zh.md",
     "docs/integration.md",
     "docs/integration.zh.md",
     "readme.md",
@@ -26,17 +34,21 @@
   },
   "scripts": {
     "dev": "vite --host --force",
+    "dev:fonts": "ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-font-assets vite --host --force",
     "build": "sh ./bin/build.sh",
     "build:lib": "node -e \"require('node:fs').rmSync('dist/npm', { recursive: true, force: true })\" && tsc -p tsconfig.lib.json && vite build -c vite.lib.config.ts",
     "prepack": "npm run build:lib",
     "pack:dry": "npm pack --dry-run",
     "preview": "vite preview",
+    "preview:fonts": "ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-font-assets vite preview",
     "tsc": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
+    "fonts:generate": "node scripts/generate-onlyoffice-font-assets.mjs",
+    "fonts:verify": "node scripts/verify-onlyoffice-font-assets.mjs",
     "memory:chrome-cdp": "node scripts/chrome-cdp-memory-stress.mjs",
     "test:real-load": "node scripts/chrome-cdp-memory-stress.mjs --host-url=http://host.localhost:5173/office-host.html --require-real-files --modes=edit,readonly,preview --batch-size=3 --iterations=60 --stay-ms=2000 --home-dwell-ms=0 --final-settle-ms=30000 --close-mode=app",
     "format": "prettier --write .",
