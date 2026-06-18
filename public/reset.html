@@ -14,6 +14,24 @@
 
         try {
           const params = new URLSearchParams(window.location.search);
+          if (params.get('stay') === '1') {
+            if (params.get('officeHostReset') === '1') {
+              const sessionId = params.get('sessionId');
+              const parentOrigin = params.get('parentOrigin');
+              if (sessionId && parentOrigin) {
+                const targetOrigin = new URL(parentOrigin).origin;
+                window.parent.postMessage(
+                  {
+                    protocol: 'onlyoffice-browser-host/v1',
+                    type: 'HOST_RESET_DONE',
+                    sessionId,
+                  },
+                  targetOrigin,
+                );
+              }
+            }
+            return;
+          }
           const requested = params.get('to') || fallback;
           const url = new URL(requested, window.location.origin);
           if (url.origin === window.location.origin && url.pathname !== '/reset.html') {

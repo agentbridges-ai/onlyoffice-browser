@@ -6,12 +6,13 @@
 
 A browser-only Office preview/edit component powered by OnlyOffice 9.3 and `onlyoffice-x2t-wasm`.
 
-The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided DOM container. Conversion, editing, saving, and export all happen in the current browser tab. It does not require OnlyOffice DocumentServer, backend sessions, document uploads, or user accounts.
+The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided DOM container. Conversion, editing, saving, and export happen in an independent-origin sandboxed editor host iframe. It does not require OnlyOffice DocumentServer, backend sessions, document uploads, or user accounts.
 
 ## What This Provides
 
 - JS/TS API: `createOfficeEditor(container, options)`.
 - Multiple simultaneous documents by creating one component instance per container.
+- Independent-origin `office-host.html` with per-editor wildcard host support for document-by-document iframe teardown and memory isolation.
 - Local conversion through `public/wasm/x2t`.
 - OnlyOffice browser runtime under `public/web-apps` and `public/sdkjs`.
 - A minimal demo/test host at `/`.
@@ -27,9 +28,9 @@ npm install @agentbridges-ai/onlyoffice-browser
 import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 ```
 
-The npm package intentionally contains the JS/TS component API only. Deploy the OnlyOffice runtime assets from this repository's `public/` directory, a release artifact, or your own CDN on the same origin as the host app.
+The npm package intentionally contains the JS/TS component API only. Deploy `office-host.html` and the OnlyOffice runtime assets from this repository's `public/` directory, a release artifact, or your own CDN on an independent origin.
 
-The runtime assets must be reachable from the app origin:
+The runtime assets must be reachable from the editor host origin:
 
 - `/web-apps/` and `/sdkjs/`
 - `/wasm/x2t/`
@@ -42,6 +43,7 @@ The runtime assets must be reachable from the app origin:
 import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 
 const editor = await createOfficeEditor(document.querySelector('#editor') as HTMLElement, {
+  hostUrl: ({ sessionId }) => `https://${sessionId}.office-host.example.com/office-host.html`,
   file,
   fileName: file.name,
   mode: 'edit',
@@ -63,7 +65,7 @@ Supported `mode` values:
 - `readonly`: opens the editor runtime with edit rights disabled; `setReadonly(false)` can restore editing.
 - `preview`: upstream OnlyOffice embedded viewer with no editing ribbon; recreate the instance to switch back to editing.
 
-For multiple documents, create one container and one component instance per document. The OnlyOffice API script and x2t runtime are singleton-loaded; each instance owns its iframe, Blob URLs, media map, save request, and mock server.
+For multiple documents, create one container and one component instance per document. Prefer wildcard DNS/TLS so each instance gets its own host origin, such as `https://<session>.office-host.example.com/office-host.html`; this lets the corresponding subframe task exit when an individual document closes. In local development, `.localhost` hosts are automatically derived into `host-<session>.localhost`.
 
 ## Development
 
@@ -85,7 +87,7 @@ pnpm run build
 pnpm run build
 ```
 
-Deploy the generated `dist/` directory as static files. Keep the runtime assets from `public/` on the same origin as the app.
+Deploy the generated `dist/` directory and runtime assets as static files on the editor host origin. The parent app must pass that host's `office-host.html` URL as `hostUrl`.
 
 ## GitHub Actions
 

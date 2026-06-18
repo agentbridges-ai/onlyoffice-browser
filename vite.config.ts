@@ -16,8 +16,9 @@ function serveWorkspaceSrc(): Plugin {
         if (!ctx.server) return html;
 
         return html.replace(
-          /(<script\s+type="module"\s+src=")(?:\.\.\/)+src\/index\.ts("><\/script>)/g,
-          `$1${toFileSystemUrl(path.join(sourceRoot, 'index.ts'))}$2`,
+          /(<script\s+type="module"\s+src=")(?:\.\.\/)+src\/([^"]+\.ts)("><\/script>)/g,
+          (_match, prefix: string, sourceFile: string, suffix: string) =>
+            `${prefix}${toFileSystemUrl(path.join(sourceRoot, sourceFile))}${suffix}`,
         );
       },
     },
@@ -54,6 +55,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'pages/index.html'),
+        officeHost: resolve(__dirname, 'pages/office-host.html'),
       },
     },
   },

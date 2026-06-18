@@ -25,4 +25,7 @@ test('OnlyOffice root discovery assets are reachable', async ({ request }) => {
 
   const themes = await request.get('/themes.json');
   expect(themes.ok()).toBe(true);
+
+  const host = await request.get('/office-host.html');
+  expect(host.ok()).toBe(true);
 });

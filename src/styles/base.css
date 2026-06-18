@@ -116,15 +116,6 @@ button:disabled {
   background: #eef3ff;
 }
 
-.hard-reset-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #647084;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
 .editor-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
@@ -169,7 +160,8 @@ button:disabled {
 
 .editor-slot,
 .office-editor-host,
-.office-editor-frame {
+.office-editor-frame,
+.office-editor-host-frame {
   flex: 1;
   min-height: 0;
 }
@@ -183,11 +175,24 @@ button:disabled {
   width: 100%;
 }
 
+.office-editor-host-frame {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+}
+
 .office-editor-frame > iframe[name='frameEditor'] {
   display: block;
   width: 100% !important;
   height: 100% !important;
   border: 0;
+}
+
+#office-host {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
 }
 
 @media (max-width: 680px) {

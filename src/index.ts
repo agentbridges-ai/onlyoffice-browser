@@ -8,7 +8,9 @@ type DemoRecord = {
   status: HTMLElement;
   readonlyButton: HTMLButtonElement;
   saveButton: HTMLButtonElement;
+  closing: boolean;
 };
+type DemoEditorOptions = Omit<Parameters<typeof createOfficeEditor>[1], 'hostUrl'> & { hostUrl?: string };
 
 const records: DemoRecord[] = [];
 let nextPanelId = 1;
@@ -47,10 +49,6 @@ app.innerHTML = `
       <button id="new-csv-button" type="button">New CSV</button>
       <button id="upload-button" type="button">Open Files</button>
       <button id="close-all-button" type="button">Close All</button>
-      <label class="hard-reset-toggle">
-        <input id="hard-reset-toggle" type="checkbox" />
-        hard reset after last close
-      </label>
     </div>
   </section>
   <input id="file-input" type="file" multiple accept=".docx,.xlsx,.pptx,.doc,.xls,.ppt,.csv" />
@@ -59,7 +57,24 @@ app.innerHTML = `
 
 const grid = document.querySelector<HTMLElement>('#editor-grid')!;
 const fileInput = document.querySelector<HTMLInputElement>('#file-input')!;
-const hardResetToggle = document.querySelector<HTMLInputElement>('#hard-reset-toggle')!;
+const hardResetOnLastDestroy = new URLSearchParams(window.location.search).get('hardResetOnLastDestroy') === 'true';
+
+function getDefaultOfficeHostUrl(): string {
+  const configured = new URLSearchParams(window.location.search).get('hostUrl');
+  if (configured) return new URL(configured, window.location.href).href;
+
+  const hostUrl = new URL('/office-host.html', window.location.href);
+  if (hostUrl.hostname === 'localhost' || (hostUrl.hostname.endsWith('.localhost') && hostUrl.hostname !== 'host.localhost')) {
+    hostUrl.hostname = 'host.localhost';
+  } else if (hostUrl.hostname === 'host.localhost') {
+    hostUrl.hostname = 'app.localhost';
+  } else if (hostUrl.hostname === '127.0.0.1') {
+    hostUrl.hostname = 'localhost';
+  } else if (!hostUrl.hostname.endsWith('.localhost')) {
+    hostUrl.hostname = `host.${hostUrl.hostname}`;
+  }
+  return hostUrl.href;
+}
 
 function isOfficeEditorMode(value: string): value is OfficeEditorMode {
   return value === 'edit' || value === 'readonly' || value === 'preview';
@@ -94,16 +109,24 @@ function refreshPanelActions(record: DemoRecord): void {
   record.saveButton.disabled = state.readonly;
 }
 
-function removeRecord(record: DemoRecord): void {
+async function removeRecord(record: DemoRecord): Promise<void> {
+  if (record.closing) return;
+  record.closing = true;
+  record.readonlyButton.disabled = true;
+  record.saveButton.disabled = true;
+  const closeButton = record.panel.querySelector<HTMLButtonElement>('[data-action="close"]');
+  if (closeButton) closeButton.disabled = true;
+  setStatus(record, 'closing');
+
   const index = records.indexOf(record);
   if (index >= 0) {
     records.splice(index, 1);
   }
-  record.instance.destroy();
+  await record.instance.destroy();
   record.panel.remove();
 }
 
-async function openEditor(options: Parameters<typeof createOfficeEditor>[1]): Promise<DemoRecord> {
+async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
   const id = nextPanelId++;
   const title = options.fileName || (options.file instanceof File ? options.file.name : undefined) || options.emptyType || 'document';
   const panel = document.createElement('article');
@@ -131,7 +154,8 @@ async function openEditor(options: Parameters<typeof createOfficeEditor>[1]): Pr
 
   const instance = await createOfficeEditor(slot, {
     ...options,
-    hardResetOnLastDestroy: hardResetToggle.checked,
+    hostUrl: getDefaultOfficeHostUrl(),
+    hardResetOnLastDestroy,
     onReady: (readyInstance) => {
       const state = readyInstance.getState();
       status.textContent = `${state.fileType.toUpperCase()} ${getModeLabel(state.mode)}`;
@@ -144,7 +168,7 @@ async function openEditor(options: Parameters<typeof createOfficeEditor>[1]): Pr
     },
   });
 
-  const record: DemoRecord = { id, instance, panel, status, readonlyButton, saveButton };
+  const record: DemoRecord = { id, instance, panel, status, readonlyButton, saveButton, closing: false };
   records.push(record);
   const initialState = instance.getState();
   setStatus(record, `${initialState.fileType.toUpperCase()} ${getModeLabel(initialState.mode)}`);
@@ -168,7 +192,7 @@ async function openEditor(options: Parameters<typeof createOfficeEditor>[1]): Pr
   });
 
   panel.querySelector<HTMLButtonElement>('[data-action="close"]')?.addEventListener('click', () => {
-    removeRecord(record);
+    void removeRecord(record);
   });
 
   return record;
@@ -212,14 +236,12 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 
-function closeAllEditors(): void {
-  while (records.length > 0) {
-    removeRecord(records[records.length - 1]);
-  }
+async function closeAllEditors(): Promise<void> {
+  await Promise.all([...records].map((record) => removeRecord(record)));
 }
 
 document.querySelector('#close-all-button')?.addEventListener('click', () => {
-  closeAllEditors();
+  void closeAllEditors();
 });
 
 (window as typeof window & { __officeDemo?: unknown }).__officeDemo = {

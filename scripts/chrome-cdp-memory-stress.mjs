@@ -27,6 +27,8 @@ const FORMAT_LABELS = {
   xlsx: 'Excel',
   pptx: 'PowerPoint',
 };
+const EDITOR_IFRAME_COUNT_EXPRESSION =
+  `document.querySelectorAll('iframe.office-editor-host-frame, iframe[name="frameEditor"]').length`;
 
 class CdpClient {
   constructor(wsUrl) {
@@ -99,6 +101,7 @@ function parseArgs(argv) {
   const options = {
     browserWs: DEFAULT_BROWSER_WS,
     url: DEFAULT_URL,
+    hostUrl: null,
     iterations: DEFAULT_ITERATIONS,
     stayMs: DEFAULT_STAY_MS,
     homeDwellMs: DEFAULT_HOME_DWELL_MS,
@@ -123,6 +126,7 @@ function parseArgs(argv) {
   for (const arg of argv) {
     if (arg.startsWith('--browser-ws=')) options.browserWs = arg.slice('--browser-ws='.length);
     else if (arg.startsWith('--url=')) options.url = arg.slice('--url='.length);
+    else if (arg.startsWith('--host-url=')) options.hostUrl = arg.slice('--host-url='.length);
     else if (arg.startsWith('--iterations=')) options.iterations = Number(arg.slice('--iterations='.length));
     else if (arg.startsWith('--stay-ms=')) options.stayMs = Number(arg.slice('--stay-ms='.length));
     else if (arg.startsWith('--home-dwell-ms=')) options.homeDwellMs = Number(arg.slice('--home-dwell-ms='.length));
@@ -213,6 +217,35 @@ function parseArgs(argv) {
   return options;
 }
 
+function withHostUrl(appUrl, hostUrl) {
+  const parsed = new URL(appUrl);
+  if (hostUrl) parsed.searchParams.set('hostUrl', hostUrl);
+  return parsed.href;
+}
+
+function inferDemoHostUrl(appUrl) {
+  const parsed = new URL(appUrl);
+  const hostUrl = new URL('/office-host.html', parsed.href);
+  if (hostUrl.hostname === 'localhost' || (hostUrl.hostname.endsWith('.localhost') && hostUrl.hostname !== 'host.localhost')) {
+    hostUrl.hostname = 'host.localhost';
+  } else if (hostUrl.hostname === 'host.localhost') {
+    hostUrl.hostname = 'app.localhost';
+  } else if (hostUrl.hostname === '127.0.0.1') {
+    hostUrl.hostname = 'localhost';
+  } else if (!hostUrl.hostname.endsWith('.localhost')) {
+    hostUrl.hostname = `host.${hostUrl.hostname}`;
+  }
+  return hostUrl.href;
+}
+
+function withDemoOptions(appUrl, options) {
+  const parsed = new URL(withHostUrl(appUrl, options.hostUrl));
+  if (options.hardResetOnClose) {
+    parsed.searchParams.set('hardResetOnLastDestroy', 'true');
+  }
+  return parsed.href;
+}
+
 function printHelp() {
   console.log(`Usage: npm run memory:chrome-cdp -- [options]
        node scripts/chrome-cdp-memory-stress.mjs --browser-ws=ws://localhost:9222/devtools/browser
@@ -220,6 +253,8 @@ function printHelp() {
 Options:
   --browser-ws=ws://localhost:9222/devtools/browser
   --url=http://127.0.0.1:5173/       App URL to stress in the current Chrome.
+  --host-url=http://localhost:5173/office-host.html
+                                      Independent-origin office host URL passed to the demo.
   --iterations=100                    Random create/close cycles in one tab.
   --formats=docx,xlsx,pptx            Comma-separated formats.
   --modes=edit                        Comma-separated open modes: edit,readonly,preview.
@@ -233,7 +268,7 @@ Options:
   --opened-sample-interval=10         Sample opened state every N cycles; 0 disables.
   --chrome-pid=14337                  Override browser root PID for RSS sampling.
   --close-mode=back                   Close through browser back, app close control, or direct destroy.
-  --hard-reset-on-close               Enable the demo hard-reset toggle before each open.
+  --hard-reset-on-close               Pass hardResetOnLastDestroy=true to the demo.
   --require-real-files                Fail unless at least one --file argument is provided.
   --file=/path/to/document.docx        Add a real local Office file workload. Repeatable.
   --require-existing-tab              Fail if no matching app tab already exists.
@@ -480,16 +515,28 @@ function collectBrowserRssMb(rootPid) {
 }
 
 async function evaluate(cdp, sessionId, expression, options = {}) {
-  const result = await cdp.send(
-    'Runtime.evaluate',
-    {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-      userGesture: Boolean(options.userGesture),
-    },
-    sessionId,
-  );
+  let result;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      result = await cdp.send(
+        'Runtime.evaluate',
+        {
+          expression,
+          awaitPromise: true,
+          returnByValue: true,
+          userGesture: Boolean(options.userGesture),
+        },
+        sessionId,
+      );
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/default execution context|execution context was destroyed/i.test(message) || attempt === 9) {
+        throw error;
+      }
+      await sleep(100);
+    }
+  }
 
   if (result.exceptionDetails) {
     const description = result.exceptionDetails.exception?.description || result.exceptionDetails.text;
@@ -566,13 +613,38 @@ function createNetworkTracker() {
   ];
 
   return {
-    attach(cdp, sessionId, appUrl) {
-      const appOrigin = new URL(appUrl).origin;
+    attach(cdp, sessionId, appUrl, hostUrl) {
+      const allowedOrigins = new Set([new URL(appUrl).origin]);
+      const allowedLocalhostSuffixes = [];
+      if (hostUrl) {
+        const parsedHostUrl = new URL(hostUrl);
+        allowedOrigins.add(parsedHostUrl.origin);
+        if (parsedHostUrl.hostname === 'localhost' || parsedHostUrl.hostname.endsWith('.localhost')) {
+          allowedLocalhostSuffixes.push({
+            protocol: parsedHostUrl.protocol,
+            port: parsedHostUrl.port,
+          });
+        }
+      }
       cdp.on('Network.requestWillBeSent', (params, eventSessionId) => {
         if (eventSessionId !== sessionId) return;
         const url = params.request?.url ?? '';
         const type = params.type ?? 'Other';
-        const sameOrigin = url.startsWith(`${appOrigin}/`) || url === appOrigin;
+        const sameOrigin =
+          Array.from(allowedOrigins).some((origin) => url.startsWith(`${origin}/`) || url === origin) ||
+          (() => {
+            try {
+              const parsedUrl = new URL(url);
+              return allowedLocalhostSuffixes.some(
+                (allowed) =>
+                  parsedUrl.protocol === allowed.protocol &&
+                  parsedUrl.port === allowed.port &&
+                  (parsedUrl.hostname === 'localhost' || parsedUrl.hostname.endsWith('.localhost')),
+              );
+            } catch {
+              return false;
+            }
+          })();
         const localScheme = /^(blob:|data:|about:|chrome-extension:|devtools:)/.test(url);
         const suspicious = suspiciousPatterns.some((pattern) => pattern.test(url));
         if (suspicious || (!sameOrigin && !localScheme)) {
@@ -608,19 +680,6 @@ function createNetworkTracker() {
       };
     },
   };
-}
-
-async function setHardResetOnClose(cdp, sessionId, enabled) {
-  if (!enabled) return;
-  await evaluate(
-    cdp,
-    sessionId,
-    `(() => {
-      const toggle = document.querySelector('#hard-reset-toggle');
-      if (toggle) toggle.checked = true;
-      return Boolean(toggle);
-    })()`,
-  );
 }
 
 async function setOpenMode(cdp, sessionId, mode) {
@@ -679,11 +738,12 @@ function emptyDemoExpression(previousBootId, requireBootChange) {
     const button = document.querySelector('#new-word-button');
     const rect = button?.getBoundingClientRect();
     const bootId = window.__officeDemo?.bootId ?? null;
-    const bootReady = ${requireBootChange ? `Boolean(bootId && bootId !== ${previousBootIdLiteral})` : 'true'};
-    return bootReady &&
-      (window.__officeDemo?.records?.length ?? 0) === 0 &&
-      document.querySelectorAll('iframe[name="frameEditor"]').length === 0 &&
-      Boolean(button && rect && rect.width > 0 && rect.height > 0);
+      const bootReady = ${requireBootChange ? `Boolean(bootId && bootId !== ${previousBootIdLiteral})` : 'true'};
+      return bootReady &&
+        (window.__officeDemo?.records?.length ?? 0) === 0 &&
+        document.querySelectorAll('iframe').length === 0 &&
+        ${EDITOR_IFRAME_COUNT_EXPRESSION} === 0 &&
+        Boolean(button && rect && rect.width > 0 && rect.height > 0);
   })()`;
 }
 
@@ -712,7 +772,7 @@ async function openOfficeDocuments(cdp, sessionId, items, timeoutMs) {
   const beforeFrameCount = await evaluate(
     cdp,
     sessionId,
-    `document.querySelectorAll('iframe[name="frameEditor"]').length`,
+    EDITOR_IFRAME_COUNT_EXPRESSION,
   );
   let expectedFrameCount = beforeFrameCount;
 
@@ -753,7 +813,7 @@ async function openOfficeDocuments(cdp, sessionId, items, timeoutMs) {
     await waitForExpression(
       cdp,
       sessionId,
-      `document.querySelectorAll('iframe[name="frameEditor"]').length >= ${expectedFrameCount}`,
+      `${EDITOR_IFRAME_COUNT_EXPRESSION} >= ${expectedFrameCount}`,
       timeoutMs,
       `${expectedFrameCount - beforeFrameCount} editor iframe(s)`,
     );
@@ -823,7 +883,7 @@ async function openLocalFileGroup(cdp, sessionId, filePaths, expectedFrameCount,
   await waitForExpression(
     cdp,
     sessionId,
-    `document.querySelectorAll('iframe[name="frameEditor"]').length >= ${expectedFrameCount}`,
+    `${EDITOR_IFRAME_COUNT_EXPRESSION} >= ${expectedFrameCount}`,
     timeoutMs,
     `${filePaths.map((filePath) => basename(filePath)).join(', ')} editor iframe(s)`,
   );
@@ -833,7 +893,7 @@ async function openLocalFiles(cdp, sessionId, items, timeoutMs) {
   const beforeFrameCount = await evaluate(
     cdp,
     sessionId,
-    `document.querySelectorAll('iframe[name="frameEditor"]').length`,
+    EDITOR_IFRAME_COUNT_EXPRESSION,
   );
   let expectedFrameCount = beforeFrameCount;
 
@@ -868,7 +928,7 @@ async function closeOfficeDocument(cdp, sessionId, timeoutMs, closeMode, waitFor
   const beforeFrameCount = await evaluate(
     cdp,
     sessionId,
-    `document.querySelectorAll('iframe[name="frameEditor"]').length`,
+    EDITOR_IFRAME_COUNT_EXPRESSION,
   );
   const previousBootId = waitForHardReset
     ? await evaluate(cdp, sessionId, `window.__officeDemo?.bootId ?? null`)
@@ -922,7 +982,7 @@ async function closeOfficeDocument(cdp, sessionId, timeoutMs, closeMode, waitFor
       `(() => {
         const button = document.querySelector('#new-word-button');
         const rect = button?.getBoundingClientRect();
-        return document.querySelectorAll('iframe[name="frameEditor"]').length < ${beforeFrameCount} &&
+        return ${EDITOR_IFRAME_COUNT_EXPRESSION} < ${beforeFrameCount} &&
           Boolean(button && rect && rect.width > 0 && rect.height > 0);
       })()`,
       timeoutMs,
@@ -935,7 +995,7 @@ async function closeOfficeDocuments(cdp, sessionId, timeoutMs, closeMode, waitFo
   const beforeFrameCount = await evaluate(
     cdp,
     sessionId,
-    `document.querySelectorAll('iframe[name="frameEditor"]').length`,
+    EDITOR_IFRAME_COUNT_EXPRESSION,
   );
   if (beforeFrameCount === 0) return;
   const previousBootId = waitForHardReset
@@ -999,11 +1059,14 @@ async function measurePage(cdp, sessionId, browserRootPid, iteration, phase, wor
       `(() => ({
         href: window.location.href,
         hash: window.location.hash,
+        bootId: window.__officeDemo?.bootId ?? null,
         hasEditor: (window.__officeDemo?.records?.length ?? 0) > 0,
         activeOfficeEditors: window.__officeDemo?.records?.length ?? 0,
         activeOfficeEditorModes: Array.from(window.__officeDemo?.records ?? []).map((record) => record.instance?.getState?.().mode),
+        hostResetDoneCount: window.__officeHostDebug?.hostResetDoneCount ?? null,
+        hostResetTimeoutCount: window.__officeHostDebug?.hostResetTimeoutCount ?? null,
         iframeCount: document.querySelectorAll('iframe').length,
-        frameEditorCount: document.querySelectorAll('iframe[name="frameEditor"]').length,
+        frameEditorCount: ${EDITOR_IFRAME_COUNT_EXPRESSION},
         elementCount: document.querySelectorAll('*').length,
         activeElement: document.activeElement?.tagName ?? null,
         appChildren: Array.from(document.querySelector('#app')?.children ?? []).map((child) => child.tagName),
@@ -1102,6 +1165,7 @@ function toCsv(samples) {
     'pageIframeCount',
     'pageFrameEditorCount',
     'pageElementCount',
+    'pageBootId',
     'url',
   ];
 
@@ -1138,6 +1202,8 @@ function toCsv(samples) {
         return sample.pageState?.elementCount;
       case 'url':
         return sample.pageState?.href;
+      case 'pageBootId':
+        return sample.pageState?.bootId;
       default:
         return sample[column];
     }
@@ -1154,7 +1220,7 @@ function maxFinite(values) {
   return finite.length ? Math.max(...finite) : null;
 }
 
-function analyze(samples, networkSummary) {
+function analyze(samples, networkSummary, options) {
   const baseline = samples.find((sample) => sample.phase === 'baseline');
   const closed = samples.filter((sample) => sample.phase === 'closed');
   const opened = samples.filter((sample) => sample.phase === 'opened');
@@ -1195,6 +1261,13 @@ function analyze(samples, networkSummary) {
     finalClosed.pageState.frameEditorCount === 0 &&
     finalClosed.pageState.iframeCount === 0 &&
     finalClosed.pageState.elementCount <= 100;
+  const baselineBootId = baseline.pageState?.bootId ?? null;
+  const unexpectedPageRefreshes =
+    baselineBootId && !options.hardResetOnClose
+      ? samples
+          .filter((sample) => sample.phase !== 'baseline' && sample.pageState?.bootId && sample.pageState.bootId !== baselineBootId)
+          .map((sample) => ({ iteration: sample.iteration, phase: sample.phase, bootId: sample.pageState.bootId }))
+      : [];
 
   let verdict = 'closed-state heap/DOM counters plateau after forced GC';
   const suspiciousHeapGrowth = closedHeapDeltaMb > 30 && heapGrowthPerCycleMb > 3;
@@ -1216,6 +1289,9 @@ function analyze(samples, networkSummary) {
   }
   if (networkSummary.suspiciousCount > 0) {
     verdict = `${verdict}; suspicious DocumentServer-like requests were observed`;
+  }
+  if (unexpectedPageRefreshes.length > 0) {
+    verdict = `${verdict}; parent page refresh detected during close/open cycle`;
   }
 
   return {
@@ -1240,20 +1316,24 @@ function analyze(samples, networkSummary) {
     finalListenerDelta,
     finalRssBreakdown: finalClosed.browserRssBreakdown,
     finalTopProcesses: finalClosed.browserTopProcesses,
+    baselineBootId,
+    unexpectedPageRefreshes,
     networkSummary,
   };
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  const effectiveHostUrl = options.hostUrl ?? inferDemoHostUrl(options.url);
+  const appUrl = withDemoOptions(options.url, options);
   const cdp = new CdpClient(options.browserWs);
   await cdp.connect();
 
   const version = await cdp.send('Browser.getVersion').catch(() => null);
-  const target = await findOrCreateTarget(cdp, options.url, options.createTargetIfMissing);
+  const target = await findOrCreateTarget(cdp, appUrl, options.createTargetIfMissing);
   const sessionId = await attachToTarget(cdp, target.targetId);
   const networkTracker = createNetworkTracker();
-  networkTracker.attach(cdp, sessionId, options.url);
+  networkTracker.attach(cdp, sessionId, appUrl, effectiveHostUrl);
 
   const debugPort = inferDebugPort(options.browserWs);
   const browserRootPid = options.chromePid ?? findChromeRootPid(debugPort);
@@ -1264,7 +1344,7 @@ async function main() {
   const samples = [];
 
   try {
-    await cdp.send('Page.navigate', { url: options.url }, sessionId);
+    await cdp.send('Page.navigate', { url: appUrl }, sessionId);
     await waitForExpression(
       cdp,
       sessionId,
@@ -1285,12 +1365,12 @@ async function main() {
     const baseline = await measurePage(cdp, sessionId, browserRootPid, 0, 'baseline', null, options.gcPasses);
     samples.push(baseline);
     logSample(baseline, baseline);
+    const baselineBootId = baseline.pageState?.bootId ?? null;
 
     for (let iteration = 1; iteration <= options.iterations; iteration += 1) {
       const workload = pickWorkloadBatch(random, workloads, options.batchSize, options.modes);
       console.log(`\nCycle ${iteration}/${options.iterations}: ${getWorkloadLabel(workload)}`);
 
-      await setHardResetOnClose(cdp, sessionId, options.hardResetOnClose);
       const { readyWaitMs } = await openWorkload(cdp, sessionId, workload, options.timeoutMs);
       console.log(`  ready after ${readyWaitMs}ms`);
       await sleep(options.stayMs);
@@ -1307,6 +1387,12 @@ async function main() {
         await closeOfficeDocument(cdp, sessionId, options.timeoutMs, options.closeMode, options.hardResetOnClose);
       }
       await sleep(options.homeDwellMs);
+      if (!options.hardResetOnClose && baselineBootId) {
+        const currentBootId = await evaluate(cdp, sessionId, `window.__officeDemo?.bootId ?? null`).catch(() => null);
+        if (currentBootId !== baselineBootId) {
+          throw new Error(`Parent page refreshed unexpectedly after cycle ${iteration}: ${baselineBootId} -> ${currentBootId}`);
+        }
+      }
 
       const closed = await measurePage(cdp, sessionId, browserRootPid, iteration, 'closed', workload, options.gcPasses);
       samples.push(closed);
@@ -1341,7 +1427,7 @@ async function main() {
     }
 
     const networkSummary = networkTracker.summary();
-    const analysis = analyze(samples, networkSummary);
+    const analysis = analyze(samples, networkSummary, options);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const outputDir = resolve(ROOT, 'test-results', 'memory');
     mkdirSync(outputDir, { recursive: true });
@@ -1362,6 +1448,7 @@ async function main() {
     console.log(`  final document delta: ${analysis.finalDocumentDelta ?? 'n/a'}`);
     console.log(`  final DOM node delta: ${analysis.finalNodeDelta ?? 'n/a'}`);
     console.log(`  final listener delta: ${analysis.finalListenerDelta ?? 'n/a'}`);
+    console.log(`  parent page refreshes detected: ${analysis.unexpectedPageRefreshes?.length ?? 0}`);
     console.log(`  suspicious network requests: ${networkSummary.suspiciousCount}/${networkSummary.requestCount}`);
     if (analysis.finalRssBreakdown) {
       console.log('  final RSS breakdown:');
