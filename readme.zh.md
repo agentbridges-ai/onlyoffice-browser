@@ -38,6 +38,8 @@ npm 主包只包含 JS/TS 组件 API。`office-host.html` 和 OnlyOffice runtime
 - 生成后的字体资产：`/onlyoffice-browser-font-assets.json`、`/sdkjs/common/AllFonts.js`、`/sdkjs/common/Images/fonts_thumbnail*.png`、`/fonts/`、`/server/FileConverter/bin/font_selection.bin`
 - `/document_editor_service_worker.js`、`/plugins.json`、`/themes.json`、`/reset.html`
 
+生产构建默认使用精简 runtime profile：保留 Word、Spreadsheet、Presentation 三类编辑器、共享运行时、`x2t`、`libs` 和 `en_US` 字典；移除 PDF/Visio SDK、未选中字典、内置 help 大图和包内字体等低频资产。构建同时会在 `.onlyoffice-runtime-asset-packs/{core,word,cell,slide}` 生成 canonical 路径的拆分包。生产可部署 `core` 加实际支持的文档类型包；这些 pack 都可以直接拷贝到同一个 editor-host 根路径，不需要改写 OnlyOffice 内部路径。
+
 ## 使用
 
 ```ts
@@ -89,6 +91,14 @@ pnpm run build
 ```
 
 将生成的 `dist/` 和运行时资源部署到 editor host origin。父应用创建实例时必须通过 `hostUrl` 传入这个 host 的 `office-host.html` 地址。
+
+如果需要在 demo 构建之外单独生成优化后的 runtime 资产：
+
+```bash
+npm run assets:build
+```
+
+生成的 `.onlyoffice-runtime-assets` 可直接部署；`.onlyoffice-runtime-asset-packs` 中包含拆分后的 `core`、`word`、`cell`、`slide` 包，适合 CDN 或 Release artifact 工作流。需要更窄或更宽的资产范围时，可直接调用 `scripts/build-onlyoffice-runtime-assets.mjs` 并传入 `--types word,slide` 或 `--dictionaries en_US,en_GB`。本轮暂不拆 preview/edit 模式；每个文档类型 pack 内仍同时保留 `embed` 和 `main` 外壳。
 
 ## GitHub Actions
 

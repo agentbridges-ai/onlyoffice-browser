@@ -8,6 +8,13 @@ echo "Starting build process..."
 # Run Vite build through the project-local binary.
 ./node_modules/.bin/vite build
 
+# Keep the deployable demo/runtime lean by removing low-frequency bundled
+# assets and emitting canonical path packs for per-document-type CDN sync.
+node scripts/build-onlyoffice-runtime-assets.mjs \
+    --input dist \
+    --prune-root \
+    --split-output .onlyoffice-runtime-asset-packs
+
 # Inject timestamp into sw.js for versioning
 SW_PATH="dist/sw.js"
 if [ -f "$SW_PATH" ]; then

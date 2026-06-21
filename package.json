@@ -1,6 +1,6 @@
 {
   "name": "@agentbridges-ai/onlyoffice-browser",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "packageManager": "pnpm@11.4.0",
   "description": "A local web-based document editor based on OnlyOffice, allowing you to edit documents directly in your browser without server-side processing, ensuring your privacy and security.",
   "type": "module",
@@ -15,10 +15,12 @@
   },
   "bin": {
     "onlyoffice-browser-generate-font-assets": "scripts/generate-onlyoffice-font-assets.mjs",
+    "onlyoffice-browser-build-runtime-assets": "scripts/build-onlyoffice-runtime-assets.mjs",
     "onlyoffice-browser-verify-font-assets": "scripts/verify-onlyoffice-font-assets.mjs"
   },
   "files": [
     "dist/npm",
+    "scripts/build-onlyoffice-runtime-assets.mjs",
     "scripts/generate-onlyoffice-font-assets.mjs",
     "scripts/verify-onlyoffice-font-assets.mjs",
     "docs/fonts.md",
@@ -49,6 +51,8 @@
     "test:e2e:ui": "playwright test --ui",
     "fonts:generate": "node scripts/generate-onlyoffice-font-assets.mjs",
     "fonts:verify": "node scripts/verify-onlyoffice-font-assets.mjs",
+    "assets:build": "node scripts/build-onlyoffice-runtime-assets.mjs --input public --output .onlyoffice-runtime-assets --split-output .onlyoffice-runtime-asset-packs",
+    "assets:optimize:dist": "node scripts/build-onlyoffice-runtime-assets.mjs --input dist --prune-root --split-output .onlyoffice-runtime-asset-packs",
     "memory:chrome-cdp": "node scripts/chrome-cdp-memory-stress.mjs",
     "test:real-load": "node scripts/chrome-cdp-memory-stress.mjs --host-url=http://host.localhost:5173/office-host.html --require-real-files --modes=edit,readonly,preview --batch-size=3 --iterations=60 --stay-ms=2000 --home-dwell-ms=0 --final-settle-ms=30000 --close-mode=app",
     "format": "prettier --write .",

@@ -38,6 +38,8 @@ The runtime assets must be reachable from the editor host origin:
 - generated font assets: `/onlyoffice-browser-font-assets.json`, `/sdkjs/common/AllFonts.js`, `/sdkjs/common/Images/fonts_thumbnail*.png`, `/fonts/`, and `/server/FileConverter/bin/font_selection.bin`
 - `/document_editor_service_worker.js`, `/plugins.json`, `/themes.json`, and `/reset.html`
 
+The production build uses a compact runtime profile. It keeps the Word, Spreadsheet, and Presentation editors, shared runtime files, `x2t`, `libs`, and `en_US` dictionaries, and removes low-frequency bundled assets such as PDF/Visio SDKs, non-selected dictionaries, bundled help images, and package fonts. It also emits canonical-path packs under `.onlyoffice-runtime-asset-packs/{core,word,cell,slide}`. Deploy `core` plus the document-type packs you support; each pack can be copied to the same editor-host root without rewriting OnlyOffice paths.
+
 ## Usage
 
 ```ts
@@ -89,6 +91,14 @@ pnpm run build
 ```
 
 Deploy the generated `dist/` directory and runtime assets as static files on the editor host origin. The parent app must pass that host's `office-host.html` URL as `hostUrl`.
+
+To build optimized runtime assets separately from the demo build:
+
+```bash
+npm run assets:build
+```
+
+The generated `.onlyoffice-runtime-assets` directory is directly deployable. The `.onlyoffice-runtime-asset-packs` directory contains split `core`, `word`, `cell`, and `slide` packs for CDN or release-artifact workflows. Pass `--types word,slide` or `--dictionaries en_US,en_GB` to `scripts/build-onlyoffice-runtime-assets.mjs` when you need a narrower or broader deployment profile. Preview/edit mode assets are intentionally not split yet; both `embed` and `main` shells stay inside each document-type pack.
 
 ## GitHub Actions
 

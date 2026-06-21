@@ -20,6 +20,16 @@ Deploy `office-host.html` and these runtime assets from the same independent ori
 - generated font assets: `onlyoffice-browser-font-assets.json`, `sdkjs/common/AllFonts.js`, `sdkjs/common/Images/fonts_thumbnail*.png`, `fonts/`, and `server/FileConverter/bin/font_selection.bin`.
 - `document_editor_service_worker.js`, `plugins.json`, `themes.json`, `reset.html`: root files expected by the OnlyOffice wrapper.
 
+The repository build produces a compact runtime by default. It keeps shared assets plus the Word, Spreadsheet, and Presentation editor families, and removes bundled PDF/Visio SDKs, non-selected dictionaries, package fonts, and large help resources. The same optimization CLI can be used directly:
+
+```bash
+npm run assets:build
+```
+
+This writes a directly deployable `.onlyoffice-runtime-assets` directory and split canonical-path packs under `.onlyoffice-runtime-asset-packs/{core,word,cell,slide}`. For production CDN workflows, publish `core` plus the document-type packs your product supports to the same editor-host root. For example, a DOCX/PPTX-only product can publish `core`, `word`, and `slide`, omitting `cell`. The paths inside each pack remain `/web-apps/...`, `/sdkjs/...`, `/wasm/...`, etc.; do not rewrite OnlyOffice internal asset URLs.
+
+Preview/edit mode assets are not split in this profile. Each document-type pack keeps both upstream `embed` and `main` shells, because they share renderer/conversion assets and splitting them creates more path and lifecycle risk than size benefit for now.
+
 Pass that host page as `hostUrl`. The component rejects same-origin `hostUrl` values because the memory-isolation cleanup relies on an independent iframe origin.
 
 If a page opens multiple large documents at the same time, prefer one host origin per editor instead of sharing a single `office-host.example.com` origin. In production, configure wildcard DNS/TLS such as `*.office-host.example.com`, then pass a `hostUrl` resolver that returns a session-specific subdomain. This lets Chrome retire each editor's subframe renderer when that document closes. In local development, `.localhost` host URLs are automatically derived into `host-<session>.localhost` to emulate the same per-instance isolation.

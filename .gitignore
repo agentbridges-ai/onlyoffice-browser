@@ -20,3 +20,5 @@ playwright-report/
 test-results/
 /public/fonts/
 .onlyoffice-font-assets/
+.onlyoffice-runtime-assets/
+.onlyoffice-runtime-asset-packs/
