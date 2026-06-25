@@ -39,6 +39,7 @@ export interface CreateOfficeEditorOptions {
   fileName?: string;
   mode?: OfficeEditorMode;
   readonly?: boolean;
+  spellcheck?: boolean;
   lang?: string;
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
@@ -259,6 +260,7 @@ async function prepareHostInit(
       fileName,
       mode: options.mode,
       readonly: options.readonly,
+      spellcheck: options.spellcheck ?? false,
       lang: options.lang,
       source,
     },

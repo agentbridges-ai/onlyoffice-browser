@@ -9,6 +9,7 @@ import { assertGeneratedFontAssetsAvailable } from './font-assets';
 
 const ONLYOFFICE_BROWSER_BUILD_VERSION = '9.3.0';
 const ONLYOFFICE_BROWSER_BUILD_NUMBER = 140;
+const ONLYOFFICE_ZOOM_FIT_TO_WIDTH = -2;
 const SAVE_TIMEOUT_MS = 60_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
@@ -27,6 +28,7 @@ export interface CreateOfficeEditorOptions {
   fileName?: string;
   mode?: OfficeEditorMode;
   readonly?: boolean;
+  spellcheck?: boolean;
   lang?: string;
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
@@ -106,6 +108,27 @@ function toError(error: unknown): Error {
 
 function resolveInitialMode(options: CreateOfficeEditorOptions): OfficeEditorMode {
   return options.mode || (options.readonly ? 'readonly' : 'edit');
+}
+
+function shouldFitEditorModePreviewToWidth(fileType: string, previewMode: boolean): boolean {
+  if (previewMode) return false;
+  const documentType = getDocumentType(fileType);
+  return documentType === 'word' || documentType === 'slide';
+}
+
+function getDefaultEditorModePreviewZoom(fileType: string, previewMode: boolean): number | undefined {
+  return shouldFitEditorModePreviewToWidth(fileType, previewMode) ? ONLYOFFICE_ZOOM_FIT_TO_WIDTH : undefined;
+}
+
+function persistDefaultEditorModePreviewZoom(fileType: string, previewMode: boolean): void {
+  if (!shouldFitEditorModePreviewToWidth(fileType, previewMode)) return;
+
+  const settingsKey = getDocumentType(fileType) === 'slide' ? 'pe-settings-zoom' : 'de-settings-zoom';
+  try {
+    window.localStorage.setItem(settingsKey, String(ONLYOFFICE_ZOOM_FIT_TO_WIDTH));
+  } catch {
+    // Storage can be disabled in private contexts; customization.zoom remains the primary signal.
+  }
 }
 
 function normalizeExtension(value: string | undefined, fallback: string): string {
@@ -474,6 +497,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
 
     try {
       installNestedFontPickerFilter();
+      const defaultZoom = getDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
+      persistDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       const editor = new runtimeWindow.DocsAPI.DocEditor(this.placeholder.id, {
         type: this.previewMode ? 'embedded' : 'desktop',
         width: '100%',
@@ -504,6 +529,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             help: false,
             about: false,
             hideRightMenu: true,
+            zoom: defaultZoom,
+            spellcheck: this.options.spellcheck ?? false,
             plugins: false,
             features: {
               spellcheck: {
@@ -525,6 +552,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             installNestedFontPickerFilter();
             this.status = 'ready';
             this.applyReadonlyState();
+            this.applyDefaultEditorModePreviewZoom();
             this.options.onReady?.(this);
           },
           onSave: (event: SaveEvent) => {
@@ -601,6 +629,11 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       enabled: canEdit,
       message,
     });
+  }
+
+  private applyDefaultEditorModePreviewZoom(): void {
+    if (!this.editor || !shouldFitEditorModePreviewToWidth(this.fileType, this.previewMode)) return;
+    this.editor.zoomFitToWidth?.();
   }
 
   private cleanupSaveRequest(error?: Error): void {

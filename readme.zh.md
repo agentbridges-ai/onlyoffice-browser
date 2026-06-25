@@ -68,6 +68,9 @@ editor.destroy();
 - `readonly`：编辑运行时，但禁用编辑权；可通过 `setReadonly(false)` 恢复编辑。
 - `preview`：OnlyOffice 上游 embedded viewer，不显示编辑 ribbon；需要销毁并重建实例才能切回编辑。
 
+拼写检查默认关闭。只有宿主应用确实需要默认打开拼写检查时，才传入 `spellcheck: true`。
+Word 和演示文稿在编辑器运行态中默认使用适合宽度缩放，让页面/幻灯片优先占满可用预览区域。
+
 多文档同时打开时，宿主为每个文档创建一个容器和一个组件实例即可。推荐使用 wildcard DNS/TLS 给每个实例分配独立 host origin，例如 `https://<session>.office-host.example.com/office-host.html`；这样逐个关闭文档时，对应子框架任务可以独立退出。开发环境下，`.localhost` host 会自动派生为 `host-<session>.localhost`。
 
 ## 开发

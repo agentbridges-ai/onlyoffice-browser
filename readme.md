@@ -68,6 +68,9 @@ Supported `mode` values:
 - `readonly`: opens the editor runtime with edit rights disabled; `setReadonly(false)` can restore editing.
 - `preview`: upstream OnlyOffice embedded viewer with no editing ribbon; recreate the instance to switch back to editing.
 
+Spellcheck is disabled by default. Pass `spellcheck: true` only when the host app should open documents with spell checking enabled.
+Word and presentation documents opened in the editor runtime default to fit-to-width zoom so the page/slide uses the available preview area.
+
 For multiple documents, create one container and one component instance per document. Prefer wildcard DNS/TLS so each instance gets its own host origin, such as `https://<session>.office-host.example.com/office-host.html`; this lets the corresponding subframe task exit when an individual document closes. In local development, `.localhost` hosts are automatically derived into `host-<session>.localhost`.
 
 ## Development

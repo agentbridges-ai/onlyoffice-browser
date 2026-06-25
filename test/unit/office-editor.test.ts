@@ -164,6 +164,7 @@ describe('office-editor parent proxy', () => {
       type: 'INIT',
       options: {
         fileName: 'alpha.docx',
+        spellcheck: false,
         source: {
           kind: 'buffer',
           fileName: 'alpha.docx',

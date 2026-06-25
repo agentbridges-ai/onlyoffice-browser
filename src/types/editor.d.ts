@@ -36,6 +36,10 @@ interface DocEditorConfig {
       help: boolean;
       about: boolean;
       hideRightMenu: boolean;
+      /** OnlyOffice zoom preset. -2 maps to native fit-to-width. */
+      zoom?: number;
+      /** Whether spell checking is enabled by default. */
+      spellcheck?: boolean;
       /** Enable/disable plugins. Set to false to disable plugins */
       plugins?: boolean;
       features: {
@@ -134,6 +138,7 @@ interface DocEditor {
   }) => void;
   openDocument?: (data: Uint8Array) => void;
   downloadAs?: (data?: string) => void;
+  zoomFitToWidth?: () => void;
   processRightsChange?: (enabled: boolean, message?: string) => void;
   connectMockServer?: (server: OnlyOfficeMockServer) => void;
   cryptPadMessageToOO?: (msg: any) => void;

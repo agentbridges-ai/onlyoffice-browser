@@ -16,6 +16,7 @@ export interface OfficeHostInitOptions {
   fileName?: string;
   mode?: 'edit' | 'readonly' | 'preview';
   readonly?: boolean;
+  spellcheck?: boolean;
   lang?: string;
   source: OfficeHostSource;
 }

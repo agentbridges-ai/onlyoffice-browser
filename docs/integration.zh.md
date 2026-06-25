@@ -71,6 +71,9 @@ const editor = await createOfficeEditor(container, {
 
 `readonly: true` 等价于 `mode: 'readonly'`，保留用于兼容旧调用。
 
+拼写检查默认关闭。只有宿主应用确实需要默认打开拼写检查时，才传入 `spellcheck: true`。
+Word 和演示文稿在编辑器运行态中默认使用适合宽度缩放，让页面/幻灯片优先占满可用预览区域。
+
 ## 多文档同时打开
 
 组件不内置标签栏。宿主应用为每个文档创建一个容器，并保存返回的实例：

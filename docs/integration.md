@@ -71,6 +71,9 @@ const editor = await createOfficeEditor(container, {
 
 `readonly: true` is equivalent to `mode: 'readonly'` and remains supported for compatibility.
 
+Spellcheck is disabled by default. Pass `spellcheck: true` only when the host app should open documents with spell checking enabled.
+Word and presentation documents opened in the editor runtime default to fit-to-width zoom so the page/slide uses the available preview area.
+
 ## Multiple Documents
 
 The component does not include tabs. The host creates one container per document and stores the returned instances:

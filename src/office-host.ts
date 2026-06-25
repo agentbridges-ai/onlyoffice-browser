@@ -351,6 +351,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       fileName: message.options.fileName,
       mode: message.options.mode,
       readonly: message.options.readonly,
+      spellcheck: message.options.spellcheck ?? false,
       lang: message.options.lang,
       onReady: (instance) => {
         postState('STATE', instance.getState());
