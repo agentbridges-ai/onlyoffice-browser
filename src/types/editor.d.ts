@@ -24,6 +24,10 @@ interface DocEditorConfig {
   editorConfig: {
     lang: string;
     mode?: 'edit' | 'view';
+    user?: {
+      id: string;
+      name: string;
+    };
     embedded?: {
       autostart?: 'document' | 'player';
       toolbarDocked?: 'top' | 'bottom';
@@ -36,6 +40,8 @@ interface DocEditorConfig {
       help: boolean;
       about: boolean;
       hideRightMenu: boolean;
+      /** Start with the native OnlyOffice ribbon collapsed. */
+      compactToolbar?: boolean;
       /** OnlyOffice zoom preset. -2 maps to native fit-to-width. */
       zoom?: number;
       /** Whether spell checking is enabled by default. */
@@ -43,6 +49,8 @@ interface DocEditorConfig {
       /** Enable/disable plugins. Set to false to disable plugins */
       plugins?: boolean;
       features: {
+        /** Disable built-in new-feature coach marks. */
+        featuresTips?: boolean;
         spellcheck: {
           change: boolean;
         };
@@ -117,6 +125,7 @@ interface OnlyOfficeMockServer {
   };
   getImageURL?: (name: string) => Promise<string>;
   onAuth?: () => void;
+  handleMessage?: (msg: any, respond: (response: any) => void) => boolean;
   onMessage: (msg: any) => void;
   onCorruptionWarning?: (duplicateId: string) => void;
 }

@@ -3,7 +3,7 @@ import { c_oAscFileType2 } from './file-types';
 import { convertBinToDocument, convertDocument, initX2T } from './converter';
 import { getDocumentType, getMimeTypeFromExtension, BASE_PATH } from './document-utils';
 import { getOnlyOfficeLang, t } from './i18n';
-import { createOnlyOfficeMockServer } from './onlyoffice-mock-server';
+import { createOnlyOfficeMockServer, LOCAL_ONLYOFFICE_USER_ID, LOCAL_ONLYOFFICE_USER_NAME } from './onlyoffice-mock-server';
 import type { BinConversionResult, SaveEvent } from './document-types';
 import { assertGeneratedFontAssetsAvailable } from './font-assets';
 
@@ -107,6 +107,7 @@ function toError(error: unknown): Error {
 }
 
 function resolveInitialMode(options: CreateOfficeEditorOptions): OfficeEditorMode {
+  if (options.readonly && options.mode !== 'preview') return 'readonly';
   return options.mode || (options.readonly ? 'readonly' : 'edit');
 }
 
@@ -499,6 +500,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       installNestedFontPickerFilter();
       const defaultZoom = getDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       persistDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
+      const canEditInitially = !this.previewMode && !this.readonlyMode.value;
       const editor = new runtimeWindow.DocsAPI.DocEditor(this.placeholder.id, {
         type: this.previewMode ? 'embedded' : 'desktop',
         width: '100%',
@@ -510,7 +512,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           fileType: this.fileType,
           key: `local-${this.id}-${Date.now()}`,
           permissions: {
-            edit: !this.previewMode,
+            edit: canEditInitially,
             download: !this.previewMode,
             chat: false,
             protect: false,
@@ -519,6 +521,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         editorConfig: {
           lang: this.editorLang,
           mode: this.previewMode ? 'view' : 'edit',
+          user: {
+            id: LOCAL_ONLYOFFICE_USER_ID,
+            name: LOCAL_ONLYOFFICE_USER_NAME,
+          },
           embedded: this.previewMode
             ? {
                 autostart: 'document',
@@ -529,17 +535,19 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             help: false,
             about: false,
             hideRightMenu: true,
+            compactToolbar: true,
             zoom: defaultZoom,
             spellcheck: this.options.spellcheck ?? false,
             plugins: false,
             features: {
+              featuresTips: false,
               spellcheck: {
                 change: false,
               },
             },
             anonymous: {
               request: false,
-              label: 'Guest',
+              label: LOCAL_ONLYOFFICE_USER_NAME,
             },
           },
         },
@@ -551,7 +559,6 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             if (this.destroyed) return;
             installNestedFontPickerFilter();
             this.status = 'ready';
-            this.applyReadonlyState();
             this.applyDefaultEditorModePreviewZoom();
             this.options.onReady?.(this);
           },

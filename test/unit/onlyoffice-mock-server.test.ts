@@ -17,7 +17,7 @@ describe('onlyoffice-mock-server', () => {
         {
           id: 1,
           idOriginal: 'local-browser-user',
-          username: 'Guest',
+          username: 'Local Browser User',
           indexUser: 0,
           connectionId: 'local-browser-session',
           isCloseCoAuthoring: false,
@@ -48,6 +48,76 @@ describe('onlyoffice-mock-server', () => {
     server.onMessage(msg);
 
     expect(onMessage).toHaveBeenCalledWith(msg);
+  });
+
+  it('acknowledges local save protocol messages without emitting remote changes', () => {
+    const server = createOnlyOfficeMockServer();
+    const respond = vi.fn();
+
+    expect(server.handleMessage?.({ type: 'isSaveLock' }, respond)).toBe(true);
+    expect(respond).toHaveBeenLastCalledWith({
+      type: 'saveLock',
+      saveLock: false,
+      syncChangesIndex: 0,
+    });
+
+    expect(
+      server.handleMessage?.(
+        {
+          type: 'saveChanges',
+          changes: JSON.stringify(['change-one', 'change-two']),
+          endSaveChanges: true,
+        },
+        respond,
+      ),
+    ).toBe(true);
+
+    expect(respond).toHaveBeenNthCalledWith(2, {
+      type: 'saveChanges',
+      changes: [],
+      changesIndex: 2,
+      syncChangesIndex: 0,
+      endSaveChanges: true,
+    });
+    expect(respond).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        type: 'unSaveLock',
+        index: 2,
+        syncChangesIndex: 0,
+      }),
+    );
+  });
+
+  it('acknowledges save chunks and finishes with the accumulated change index', () => {
+    const server = createOnlyOfficeMockServer();
+    const respond = vi.fn();
+
+    expect(
+      server.handleMessage?.(
+        {
+          type: 'saveChanges',
+          changes: JSON.stringify(['chunk-one']),
+          endSaveChanges: false,
+        },
+        respond,
+      ),
+    ).toBe(true);
+
+    expect(respond).toHaveBeenCalledWith({
+      type: 'savePartChanges',
+      changesIndex: 1,
+      syncChangesIndex: 0,
+    });
+
+    expect(server.handleMessage?.({ type: 'unLockDocument' }, respond)).toBe(true);
+    expect(respond).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: 'unSaveLock',
+        index: 1,
+        syncChangesIndex: 0,
+      }),
+    );
   });
 
   it('exposes build metadata for the CryptPad wrapper auth response', () => {

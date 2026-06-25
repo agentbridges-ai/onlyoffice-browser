@@ -24,7 +24,18 @@ function flush(): Promise<void> {
 }
 
 type CapturedDocEditorConfig = {
+  document: {
+    permissions: {
+      edit: boolean;
+      download?: boolean;
+    };
+  };
   editorConfig: {
+    mode?: 'edit' | 'view';
+    user?: {
+      id: string;
+      name: string;
+    };
     customization: {
       zoom?: number;
       spellcheck?: boolean;
@@ -32,6 +43,10 @@ type CapturedDocEditorConfig = {
         spellcheck: {
           change: boolean;
         };
+      };
+      anonymous: {
+        request: boolean;
+        label: string;
       };
     };
   };
@@ -100,8 +115,10 @@ describe('office editor runtime', () => {
 
     expect(docEditorConfigs).toHaveLength(1);
     expect(docEditorConfigs[0].editorConfig.customization).toMatchObject({
+      compactToolbar: true,
       spellcheck: false,
       features: {
+        featuresTips: false,
         spellcheck: {
           change: false,
         },
@@ -123,13 +140,78 @@ describe('office editor runtime', () => {
     });
 
     expect(docEditorConfigs[0].editorConfig.customization).toMatchObject({
+      compactToolbar: true,
       spellcheck: true,
       features: {
+        featuresTips: false,
         spellcheck: {
           change: false,
         },
       },
     });
+
+    await instance.destroy();
+  });
+
+  it('sets a stable local user identity for editor notifications', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+    });
+
+    expect(docEditorConfigs[0].editorConfig.user).toEqual({
+      id: 'local-browser-user',
+      name: 'Local Browser User',
+    });
+    expect(docEditorConfigs[0].editorConfig.customization.anonymous).toEqual({
+      request: false,
+      label: 'Local Browser User',
+    });
+
+    await instance.destroy();
+  });
+
+  it('opens initial readonly mode through native edit permissions without a rights-change toast', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+      readonly: true,
+    });
+    await flush();
+
+    expect(docEditorConfigs[0].document.permissions.edit).toBe(false);
+    expect(docEditorConfigs[0].editorConfig.mode).toBe('edit');
+    expect(docEditorInstances[0].processRightsChange).not.toHaveBeenCalled();
+    expect(instance.getState().readonly).toBe(true);
+
+    await instance.destroy();
+  });
+
+  it('still uses processRightsChange for runtime readonly toggles after the editor is ready', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+    });
+    await flush();
+
+    expect(docEditorConfigs[0].document.permissions.edit).toBe(true);
+    expect(docEditorInstances[0].processRightsChange).not.toHaveBeenCalled();
+
+    instance.setReadonly(true);
+
+    expect(docEditorInstances[0].processRightsChange).toHaveBeenCalledWith(false, 'Readonly mode');
 
     await instance.destroy();
   });
