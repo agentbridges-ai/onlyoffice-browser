@@ -1,5 +1,6 @@
 import type { BinConversionResult, ConversionResult, DocumentType, EmscriptenModule } from './document-types';
 import { BASE_PATH, DOCUMENT_TYPE_MAP } from './document-utils';
+import { oAscFileType } from './file-types';
 import { fetchGeneratedFontAssetsManifest, fetchRuntimeBinaryAsset, getAssetFileName } from './font-assets';
 
 function createObjectURL(blob: Blob): string {
@@ -34,6 +35,26 @@ function loadScriptOnce(src: string): Promise<void> {
     document.head.appendChild(script);
   });
 }
+
+const X2T_SOURCE_FORMAT_BY_EXTENSION: Record<string, number> = {
+  csv: oAscFileType.CSV,
+  doc: oAscFileType.DOC,
+  docx: oAscFileType.DOCX,
+  odp: oAscFileType.ODP,
+  ods: oAscFileType.ODS,
+  ppt: oAscFileType.PPT,
+  pptx: oAscFileType.PPTX,
+  rtf: oAscFileType.RTF,
+  txt: oAscFileType.TXT,
+  xls: oAscFileType.XLS,
+  xlsx: oAscFileType.XLSX,
+};
+
+const X2T_CANVAS_FORMAT_BY_DOCUMENT_TYPE: Record<DocumentType, number> = {
+  cell: oAscFileType.CANVAS_SPREADSHEET,
+  slide: oAscFileType.CANVAS_PRESENTATION,
+  word: oAscFileType.CANVAS_WORD,
+};
 
 export class X2TConverter {
   private x2tModule: EmscriptenModule | null = null;
@@ -293,6 +314,25 @@ export class X2TConverter {
 </TaskQueueDataConvert>`;
   }
 
+  private createDocumentToBinParams(
+    fromPath: string,
+    toPath: string,
+    sourceExtension: string,
+    documentType: DocumentType,
+  ): string {
+    const normalizedExtension = sourceExtension.toLowerCase();
+    const sourceFormat = X2T_SOURCE_FORMAT_BY_EXTENSION[normalizedExtension];
+    const targetFormat = X2T_CANVAS_FORMAT_BY_DOCUMENT_TYPE[documentType];
+    const formatParams =
+      sourceFormat && targetFormat
+        ? `<m_nFormatFrom>${sourceFormat}</m_nFormatFrom>
+  <m_nFormatTo>${targetFormat}</m_nFormatTo>
+  <m_sFontDir>/working/fonts/</m_sFontDir>`
+        : '';
+
+    return this.createConversionParams(fromPath, toPath, formatParams);
+  }
+
   /**
    * Read media files
    */
@@ -444,7 +484,7 @@ export class X2TConverter {
           this.x2tModule!.FS.writeFile(inputPath, xlsxData);
 
           // Create conversion parameters - no special params needed for XLSX
-          const params = this.createConversionParams(inputPath, outputPath, '');
+          const params = this.createDocumentToBinParams(inputPath, outputPath, 'xlsx', documentType);
           this.x2tModule!.FS.writeFile('/working/params.xml', params);
 
           // Execute conversion
@@ -479,7 +519,7 @@ export class X2TConverter {
       this.x2tModule!.FS.writeFile(inputPath, data);
 
       // Create conversion parameters - no special params needed for non-CSV files
-      const params = this.createConversionParams(inputPath, outputPath, '');
+      const params = this.createDocumentToBinParams(inputPath, outputPath, fileExt, documentType);
       this.x2tModule!.FS.writeFile('/working/params.xml', params);
 
       // Execute conversion
