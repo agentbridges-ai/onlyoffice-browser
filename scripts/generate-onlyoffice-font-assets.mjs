@@ -625,11 +625,11 @@ export function generateOnlyOfficeFontAssets(options) {
   console.log(`Using Docker image: ${validated.image}`);
   console.log(`Found ${validated.fontFiles.length} font files in ${validated.input}`);
   assertDockerAvailable();
-  prepareOutputDirectory(validated.output);
-  console.log(`Prepared output directory: ${validated.output}`);
   const stagingDir = createFontStagingDirectory(validated.fontFiles);
   console.log(`Prepared temporary font input: ${stagingDir}`);
   try {
+    prepareOutputDirectory(validated.output);
+    console.log(`Prepared output directory: ${validated.output}`);
     console.log('Running official OnlyOffice font generator...');
     runDockerGenerator({ ...validated, input: stagingDir });
     assertGeneratedAssets(validated.output);

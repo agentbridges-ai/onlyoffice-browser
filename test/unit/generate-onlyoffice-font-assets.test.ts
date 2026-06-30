@@ -20,6 +20,7 @@ interface GeneratorModule {
   FONT_SET_ENV: string;
   collectFontFiles(inputDir: string): string[];
   dockerGenerationScript(options: { fontSet: string; keepFonts: string[] }): string;
+  generateOnlyOfficeFontAssets(options: GeneratorOptions): void;
   isSupportedFontFileName(fileName: string): boolean;
   parseGenerateFontAssetsArgs(argv: string[], env?: Record<string, string>): GeneratorOptions;
   validateGenerateFontAssetsOptions(options: GeneratorOptions): {
@@ -42,6 +43,7 @@ const {
   FONT_SET_ENV,
   collectFontFiles,
   dockerGenerationScript,
+  generateOnlyOfficeFontAssets,
   isSupportedFontFileName,
   parseGenerateFontAssetsArgs,
   validateGenerateFontAssetsOptions,
@@ -170,5 +172,15 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(script).toContain('Noto Sans SC');
     expect(script).not.toContain('first_source_index(find_font_info("Calibri")) or');
     expect(script).not.toContain('first_source_index(find_font_info("Microsoft YaHei")) or');
+  });
+
+  it('stages input fonts before cleaning the output directory', () => {
+    const source = generateOnlyOfficeFontAssets.toString();
+
+    expect(source.indexOf('createFontStagingDirectory(validated.fontFiles)')).toBeGreaterThanOrEqual(0);
+    expect(source.indexOf('prepareOutputDirectory(validated.output)')).toBeGreaterThanOrEqual(0);
+    expect(source.indexOf('createFontStagingDirectory(validated.fontFiles)')).toBeLessThan(
+      source.indexOf('prepareOutputDirectory(validated.output)'),
+    );
   });
 });
