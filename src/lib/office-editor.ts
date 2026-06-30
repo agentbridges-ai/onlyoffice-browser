@@ -297,6 +297,20 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function applyFillContainerDefaults(element: HTMLElement): void {
+  const { style } = element;
+  style.width ||= '100%';
+  style.height ||= '100%';
+  style.minWidth ||= '0';
+  style.minHeight ||= '0';
+}
+
+function applyHostFrameDefaults(iframe: HTMLIFrameElement): void {
+  applyFillContainerDefaults(iframe);
+  iframe.style.display ||= 'block';
+  iframe.style.border ||= '0';
+}
+
 class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   readonly id: string;
   private readonly container: HTMLElement;
@@ -339,6 +353,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private mount(): Promise<BrowserOfficeEditorProxy> {
     this.container.replaceChildren();
     this.container.classList.add('office-editor-host');
+    applyFillContainerDefaults(this.container);
 
     const iframe = document.createElement('iframe');
     iframe.className = 'office-editor-host-frame';
@@ -346,6 +361,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     iframe.setAttribute('sandbox', OUTER_IFRAME_SANDBOX);
     iframe.setAttribute('allow', OUTER_IFRAME_ALLOW);
     iframe.setAttribute('referrerpolicy', 'no-referrer');
+    applyHostFrameDefaults(iframe);
 
     this.iframe = iframe;
     this.hostWindow = iframe.contentWindow;

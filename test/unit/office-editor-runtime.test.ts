@@ -88,9 +88,12 @@ describe('office editor runtime', () => {
       processRightsChange = vi.fn();
       zoomFitToWidth = vi.fn();
 
-      constructor(_elementId: string, config: CapturedDocEditorConfig) {
+      constructor(elementId: string, config: CapturedDocEditorConfig) {
         docEditorConfigs.push(config);
         docEditorInstances.push(this);
+        const frame = document.createElement('iframe');
+        frame.name = 'frameEditor';
+        document.getElementById(elementId)?.appendChild(frame);
         queueMicrotask(() => {
           config.events.onAppReady();
           config.events.onDocumentReady();
@@ -124,6 +127,36 @@ describe('office editor runtime', () => {
         },
       },
     });
+
+    await instance.destroy();
+  });
+
+  it('defaults runtime containers and the nested OnlyOffice frame to fill available space', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+    });
+    const placeholder = container.querySelector<HTMLElement>('.office-editor-frame');
+    const frame = container.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+
+    expect(container.classList.contains('office-editor-host')).toBe(true);
+    expect(container.style.width).toBe('100%');
+    expect(container.style.height).toBe('100%');
+    expect(container.style.minWidth).toBe('0px');
+    expect(container.style.minHeight).toBe('0px');
+    expect(placeholder?.style.width).toBe('100%');
+    expect(placeholder?.style.height).toBe('100%');
+    expect(placeholder?.style.minWidth).toBe('0px');
+    expect(placeholder?.style.minHeight).toBe('0px');
+    expect(frame?.style.display).toBe('block');
+    expect(frame?.style.width).toBe('100%');
+    expect(frame?.style.height).toBe('100%');
+    expect(frame?.style.minWidth).toBe('0px');
+    expect(frame?.style.minHeight).toBe('0px');
 
     await instance.destroy();
   });

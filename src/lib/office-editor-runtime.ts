@@ -260,6 +260,20 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function applyFillContainerDefaults(element: HTMLElement): void {
+  const { style } = element;
+  style.width ||= '100%';
+  style.height ||= '100%';
+  style.minWidth ||= '0';
+  style.minHeight ||= '0';
+}
+
+function applyOnlyOfficeFrameDefaults(iframe: HTMLIFrameElement): void {
+  applyFillContainerDefaults(iframe);
+  iframe.style.display ||= 'block';
+  iframe.style.border ||= '0';
+}
+
 function getFontNameForFilter(font: unknown): string {
   if (!font || typeof font !== 'object') return '';
   const value = font as { name?: unknown; Name?: unknown; asc_getFontName?: unknown };
@@ -488,8 +502,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
 
     this.container.replaceChildren();
     this.container.classList.add('office-editor-host');
+    applyFillContainerDefaults(this.container);
     this.placeholder.id = `${this.id}-frame`;
     this.placeholder.className = 'office-editor-frame';
+    applyFillContainerDefaults(this.placeholder);
     this.container.appendChild(this.placeholder);
 
     this.editorBinUrl = createObjectUrl(new Blob([prepared.binData], { type: 'application/octet-stream' }));
@@ -553,10 +569,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         },
         events: {
           onAppReady: () => {
+            this.applyNestedEditorFrameDefaults();
             installNestedFontPickerFilter();
           },
           onDocumentReady: () => {
             if (this.destroyed) return;
+            this.applyNestedEditorFrameDefaults();
             installNestedFontPickerFilter();
             this.status = 'ready';
             this.applyDefaultEditorModePreviewZoom();
@@ -575,6 +593,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       });
 
       this.editor = editor;
+      this.applyNestedEditorFrameDefaults();
       this.attachDestroyCleanup(editor);
 
       if (typeof editor.connectMockServer !== 'function') {
@@ -603,6 +622,11 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       await this.destroy();
       throw error;
     }
+  }
+
+  private applyNestedEditorFrameDefaults(): void {
+    const frame = this.placeholder.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+    if (frame) applyOnlyOfficeFrameDefaults(frame);
   }
 
   private attachDestroyCleanup(editor: DocEditor): void {

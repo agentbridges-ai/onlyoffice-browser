@@ -88,6 +88,34 @@ describe('office-editor parent proxy', () => {
     expect(document.querySelectorAll('script[data-office-editor-api="true"]')).toHaveLength(0);
   });
 
+  it('defaults the isolated host iframe to fill its container', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      destroyTimeoutMs: 1,
+    });
+    const { iframe } = await connectHost(container);
+    const instance = await promise;
+
+    expect(container.classList.contains('office-editor-host')).toBe(true);
+    expect(container.style.width).toBe('100%');
+    expect(container.style.height).toBe('100%');
+    expect(container.style.minWidth).toBe('0px');
+    expect(container.style.minHeight).toBe('0px');
+    expect(iframe.className).toBe('office-editor-host-frame');
+    expect(iframe.style.display).toBe('block');
+    expect(iframe.style.width).toBe('100%');
+    expect(iframe.style.height).toBe('100%');
+    expect(iframe.style.minWidth).toBe('0px');
+    expect(iframe.style.minHeight).toBe('0px');
+
+    await instance.destroy();
+  });
+
   it('isolates localhost hostUrl to a per-editor origin', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
