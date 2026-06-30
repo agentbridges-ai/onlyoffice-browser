@@ -19,6 +19,7 @@ interface GeneratorModule {
   DEFAULT_FONT_SET: string;
   FONT_SET_ENV: string;
   collectFontFiles(inputDir: string): string[];
+  dockerGenerationScript(options: { fontSet: string; keepFonts: string[] }): string;
   isSupportedFontFileName(fileName: string): boolean;
   parseGenerateFontAssetsArgs(argv: string[], env?: Record<string, string>): GeneratorOptions;
   validateGenerateFontAssetsOptions(options: GeneratorOptions): {
@@ -40,6 +41,7 @@ const {
   FONT_GENERATOR_IMAGE_ENV,
   FONT_SET_ENV,
   collectFontFiles,
+  dockerGenerationScript,
   isSupportedFontFileName,
   parseGenerateFontAssetsArgs,
   validateGenerateFontAssetsOptions,
@@ -157,5 +159,16 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(isSupportedFontFileName('cambria.otc')).toBe(true);
     expect(isSupportedFontFileName('embedded.tte')).toBe(true);
     expect(isSupportedFontFileName('notes.txt')).toBe(false);
+  });
+
+  it('does not treat a missing primary fallback font as a selected source index', () => {
+    const script = dockerGenerationScript({ fontSet: 'zh-core', keepFonts: [] });
+
+    expect(script).toContain('def first_available_source(*family_names):');
+    expect(script).toContain('latin_fallback_family_name, latin_fallback_source_index = first_available_source(');
+    expect(script).toContain('cjk_fallback_family_name, cjk_fallback_source_index = first_available_source(');
+    expect(script).toContain('Noto Sans SC');
+    expect(script).not.toContain('first_source_index(find_font_info("Calibri")) or');
+    expect(script).not.toContain('first_source_index(find_font_info("Microsoft YaHei")) or');
   });
 });

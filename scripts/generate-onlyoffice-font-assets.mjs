@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const DEFAULT_FONT_GENERATOR_IMAGE = 'onlyoffice/documentserver:9.3.0';
 export const FONT_GENERATOR_IMAGE_ENV = 'ONLYOFFICE_BROWSER_FONT_GENERATOR_IMAGE';
@@ -61,6 +61,19 @@ const ZH_CORE_SOURCE_FILE_NAMES = [
   'timesbd.ttf',
   'timesbi.ttf',
   'timesi.ttf',
+];
+const LATIN_FALLBACK_FONT_FAMILIES = ['Calibri', 'Arial', 'Carlito', 'Liberation Sans', 'DejaVu Sans', 'Open Sans'];
+const CJK_FALLBACK_FONT_FAMILIES = [
+  'Microsoft YaHei',
+  'SimSun',
+  'Noto Sans SC',
+  'Noto Sans CJK SC',
+  'Noto Sans TC',
+  'Noto Sans JP',
+  'Noto Sans KR',
+  'WenQuanYi Zen Hei',
+  'Droid Sans Fallback',
+  'AR PL UKai CN',
 ];
 const GENERATED_OUTPUT_PATHS = [
   'fonts',
@@ -270,11 +283,13 @@ function hostUserEnv() {
   return { uid, gid };
 }
 
-function dockerGenerationScript(options) {
+export function dockerGenerationScript(options) {
   const zhCoreFontFamilies = Array.from(new Set(ZH_CORE_FONT_FAMILIES)).sort();
   const zhCoreSourceFileNames = Array.from(
     new Set(ZH_CORE_SOURCE_FILE_NAMES.map((fileName) => fileName.toLowerCase())),
   ).sort();
+  const latinFallbackFontFamilies = Array.from(new Set(LATIN_FALLBACK_FONT_FAMILIES));
+  const cjkFallbackFontFamilies = Array.from(new Set(CJK_FALLBACK_FONT_FAMILIES));
   const keepFontFamilies = Array.from(new Set(options.keepFonts)).sort();
   return `
 set -euo pipefail
@@ -303,7 +318,7 @@ if [ -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" ]; then
   cp -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" "$OUT/server/FileConverter/bin/AllFonts.js"
 fi
 
-OUT_DIR="$OUT" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
+OUT_DIR="$OUT" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
 import json
 import os
 import re
@@ -313,6 +328,8 @@ out = os.environ["OUT_DIR"]
 font_set = os.environ["FONT_SET"]
 zh_core_font_families = set(json.loads(os.environ["ZH_CORE_FONT_FAMILIES"]))
 zh_core_source_file_names = set(json.loads(os.environ["ZH_CORE_SOURCE_FILE_NAMES"]))
+latin_fallback_font_families = json.loads(os.environ["LATIN_FALLBACK_FONT_FAMILIES"])
+cjk_fallback_font_families = json.loads(os.environ["CJK_FALLBACK_FONT_FAMILIES"])
 keep_font_families = set(json.loads(os.environ["KEEP_FONT_FAMILIES"]))
 server_allfonts = os.path.join(out, "server/FileConverter/bin/AllFonts.js")
 web_allfonts = os.path.join(out, "sdkjs/common/AllFonts.js")
@@ -366,6 +383,13 @@ def first_source_index(info):
             return source_index
     return -1
 
+def first_available_source(*family_names):
+    for family_name in family_names:
+        source_index = first_source_index(find_font_info(family_name))
+        if source_index >= 0:
+            return family_name, source_index
+    return "", -1
+
 def source_file_name(source_index):
     if source_index < 0 or source_index >= len(source_files):
         return ""
@@ -393,17 +417,24 @@ source_files = parse_js_array(server_source, "__fonts_files")
 web_infos = parse_js_array(web_source, "__fonts_infos")
 web_ranges = parse_js_array(web_source, "__fonts_ranges")
 
+latin_fallback_family_name, latin_fallback_source_index = first_available_source(*latin_fallback_font_families)
+cjk_fallback_family_name, cjk_fallback_source_index = first_available_source(*cjk_fallback_font_families)
+if latin_fallback_source_index < 0 or cjk_fallback_source_index < 0:
+    raise SystemExit(
+        "Unable to locate fallback fonts in generated AllFonts.js. "
+        + "Latin candidates: "
+        + ", ".join(latin_fallback_font_families)
+        + "; CJK candidates: "
+        + ", ".join(cjk_fallback_font_families)
+    )
+
 if font_set == "zh-core":
     kept_family_names = {info[0] for info in web_infos if info and (info[0] in zh_core_font_families or info[0] in keep_font_families)}
+    kept_family_names.update(name for name in [latin_fallback_family_name, cjk_fallback_family_name] if name)
     if not kept_family_names:
         raise SystemExit("zh-core font set did not match any generated font families")
 else:
     kept_family_names = {info[0] for info in web_infos if info}
-
-latin_fallback_source_index = first_source_index(find_font_info("Calibri")) or first_source_index(find_font_info("Arial"))
-cjk_fallback_source_index = first_source_index(find_font_info("Microsoft YaHei")) or first_source_index(find_font_info("SimSun"))
-if latin_fallback_source_index < 0 or cjk_fallback_source_index < 0:
-    raise SystemExit("Unable to locate fallback fonts in generated AllFonts.js")
 
 used_source_indexes = []
 used_source_index_set = set()
@@ -619,7 +650,17 @@ function main() {
   console.log(`Generated OnlyOffice font assets at ${path.resolve(options.output)}`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+function isDirectRun() {
+  if (!process.argv[1]) return false;
+
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  }
+}
+
+if (isDirectRun()) {
   try {
     main();
   } catch (error) {
