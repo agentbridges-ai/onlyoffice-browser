@@ -70,6 +70,209 @@ function assertStringArray(value, label) {
   }
 }
 
+function parseJsArray(source, name) {
+  const match = source.match(new RegExp(`window\\["${name}"\\]\\s*=\\s*(\\[[\\s\\S]*?\\]);`));
+  if (!match) {
+    throw new Error(`Generated AllFonts.js is missing ${name}`);
+  }
+
+  try {
+    return JSON.parse(match[1]);
+  } catch (error) {
+    throw new Error(`Generated AllFonts.js has invalid ${name}: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+function assertInteger(value, label) {
+  if (!Number.isInteger(value)) {
+    throw new Error(`Generated AllFonts.js has invalid ${label}`);
+  }
+}
+
+function isUrlLike(value) {
+  return /^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(value) || value.startsWith('data:') || value.startsWith('blob:');
+}
+
+function resolveGeneratedFontFile(root, fontFile) {
+  if (typeof fontFile !== 'string' || fontFile.length === 0) {
+    throw new Error('Generated AllFonts.js has an invalid font file entry');
+  }
+  if (isUrlLike(fontFile)) return null;
+
+  const normalized = fontFile.replaceAll('\\', '/').replace(/^\/+/, '');
+  const relativePath = normalized.startsWith('fonts/') ? normalized : `fonts/${normalized}`;
+  const filePath = path.resolve(root, relativePath);
+  const relative = path.relative(root, filePath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`Generated AllFonts.js font file path escapes input directory: ${fontFile}`);
+  }
+  return { filePath, relativePath };
+}
+
+function assertGeneratedFontFile(root, fontFile) {
+  const resolved = resolveGeneratedFontFile(root, fontFile);
+  if (!resolved) return;
+  if (!fs.existsSync(resolved.filePath) || !fs.statSync(resolved.filePath).isFile()) {
+    throw new Error(`Generated AllFonts.js references missing font file: ${resolved.relativePath}`);
+  }
+}
+
+function readPngDimensions(filePath) {
+  const header = fs.readFileSync(filePath, { encoding: null, flag: 'r' }).subarray(0, 24);
+  const pngSignature = '89504e470d0a1a0a';
+  if (header.length < 24 || header.subarray(0, 8).toString('hex') !== pngSignature) {
+    throw new Error(`Generated font thumbnail is not a PNG: ${path.basename(filePath)}`);
+  }
+  return {
+    width: header.readUInt32BE(16),
+    height: header.readUInt32BE(20),
+  };
+}
+
+function isCjkCodePoint(value) {
+  return (
+    (value >= 0x2e80 && value <= 0x2eff) ||
+    (value >= 0x3000 && value <= 0x303f) ||
+    (value >= 0x3040 && value <= 0x30ff) ||
+    (value >= 0x3100 && value <= 0x312f) ||
+    (value >= 0x31a0 && value <= 0x31bf) ||
+    (value >= 0x31f0 && value <= 0x31ff) ||
+    (value >= 0x3400 && value <= 0x4dbf) ||
+    (value >= 0x4e00 && value <= 0x9fff) ||
+    (value >= 0xac00 && value <= 0xd7af) ||
+    (value >= 0xf900 && value <= 0xfaff) ||
+    (value >= 0x20000 && value <= 0x2fa1f)
+  );
+}
+
+function isCjkFamilyName(name) {
+  const lowered = name.toLowerCase();
+  return [
+    'fang',
+    'hei',
+    'heiti',
+    'jheng',
+    'kai',
+    'kaiti',
+    'ming',
+    'mincho',
+    'simsun',
+    'song',
+    'songti',
+    'ukai',
+    'wqy',
+    'yahei',
+    'deng',
+    'gothic',
+    'dotum',
+    'gulim',
+    'batang',
+    'gungsuh',
+    'noto sans cjk',
+    'noto sans sc',
+    'noto sans tc',
+    'noto sans jp',
+    'noto sans kr',
+    'droid sans fallback',
+    'pingfang',
+    'hiragino sans gb',
+    'arial unicode',
+    '宋',
+    '黑',
+    '楷',
+    '仿',
+    '等线',
+    '微软雅黑',
+    '苹方',
+    '蘋方',
+  ].some((marker) => lowered.includes(marker));
+}
+
+function verifyAllFonts(root, allFontsRelativePath, thumbnails) {
+  const allFontsPath = path.resolve(root, allFontsRelativePath);
+  const source = fs.readFileSync(allFontsPath, 'utf8');
+  const fontFiles = parseJsArray(source, '__fonts_files');
+  const fontInfos = parseJsArray(source, '__fonts_infos');
+  const fontRanges = parseJsArray(source, '__fonts_ranges');
+  const visibleNames = source.includes('window["__fonts_visible_names"]')
+    ? parseJsArray(source, '__fonts_visible_names')
+    : [];
+
+  if (!Array.isArray(fontFiles) || fontFiles.length === 0) {
+    throw new Error('Generated AllFonts.js has invalid __fonts_files');
+  }
+  if (!Array.isArray(fontInfos) || fontInfos.length === 0) {
+    throw new Error('Generated AllFonts.js has invalid __fonts_infos');
+  }
+  if (!Array.isArray(fontRanges) || fontRanges.length % 3 !== 0) {
+    throw new Error('Generated AllFonts.js has invalid __fonts_ranges');
+  }
+  if (!Array.isArray(visibleNames) || !visibleNames.every((name) => typeof name === 'string' && name.length > 0)) {
+    throw new Error('Generated AllFonts.js has invalid __fonts_visible_names');
+  }
+
+  for (const fontFile of fontFiles) assertGeneratedFontFile(root, fontFile);
+
+  const fontInfoNames = new Set();
+  for (const [infoIndex, info] of fontInfos.entries()) {
+    if (!Array.isArray(info) || typeof info[0] !== 'string' || info[0].length === 0) {
+      throw new Error(`Generated AllFonts.js has invalid __fonts_infos entry at index ${infoIndex}`);
+    }
+    fontInfoNames.add(info[0]);
+    for (let slotIndex = 1; slotIndex < info.length; slotIndex += 2) {
+      const fileIndex = info[slotIndex];
+      const faceIndex = info[slotIndex + 1];
+      assertInteger(fileIndex, `font file index for ${info[0]}`);
+      assertInteger(faceIndex, `font face index for ${info[0]}`);
+      if (fileIndex < -1 || fileIndex >= fontFiles.length) {
+        throw new Error(`Generated AllFonts.js font ${info[0]} references missing __fonts_files index ${fileIndex}`);
+      }
+      if (faceIndex < -1) {
+        throw new Error(`Generated AllFonts.js font ${info[0]} has invalid face index ${faceIndex}`);
+      }
+    }
+  }
+
+  for (const visibleName of visibleNames) {
+    if (!fontInfoNames.has(visibleName)) {
+      throw new Error(`Generated AllFonts.js visible font is missing from __fonts_infos: ${visibleName}`);
+    }
+  }
+
+  for (let index = 0; index < fontRanges.length; index += 3) {
+    const start = fontRanges[index];
+    const end = fontRanges[index + 1];
+    const fontInfoIndex = fontRanges[index + 2];
+    assertInteger(start, `range start at __fonts_ranges[${index}]`);
+    assertInteger(end, `range end at __fonts_ranges[${index + 1}]`);
+    assertInteger(fontInfoIndex, `range font index at __fonts_ranges[${index + 2}]`);
+    if (start > end || fontInfoIndex < 0 || fontInfoIndex >= fontInfos.length) {
+      throw new Error(`Generated AllFonts.js has invalid __fonts_ranges entry at offset ${index}`);
+    }
+    if ((isCjkCodePoint(start) || isCjkCodePoint(end)) && !isCjkFamilyName(fontInfos[fontInfoIndex][0])) {
+      throw new Error(
+        `Generated AllFonts.js maps CJK range ${start}-${end} to non-CJK font ${fontInfos[fontInfoIndex][0]}`,
+      );
+    }
+  }
+
+  for (const thumbnail of thumbnails) {
+    const thumbnailPath = path.resolve(root, thumbnail);
+    const { height } = readPngDimensions(thumbnailPath);
+    if (height % fontInfos.length !== 0) {
+      throw new Error(
+        `Generated font thumbnail row count does not match __fonts_infos: ${thumbnail} has height ${height} for ${fontInfos.length} fonts`,
+      );
+    }
+    const rowHeight = height / fontInfos.length;
+    if (rowHeight < 20) {
+      throw new Error(
+        `Generated font thumbnail row height is too small for __fonts_infos: ${thumbnail} has row height ${rowHeight}`,
+      );
+    }
+  }
+}
+
 export function verifyOnlyOfficeFontAssets(input) {
   if (!input) {
     throw new Error(`Missing required --input <dir> or ${FONT_ASSETS_DIR_ENV}`);
@@ -102,6 +305,7 @@ export function verifyOnlyOfficeFontAssets(input) {
   assertFile(root, manifest.fontSelection);
   for (const thumbnail of manifest.fontThumbnails) assertFile(root, thumbnail);
   for (const font of manifest.fonts) assertFile(root, font);
+  verifyAllFonts(root, manifest.allFonts, manifest.fontThumbnails);
 
   return {
     root,

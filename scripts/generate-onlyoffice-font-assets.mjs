@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyOnlyOfficeFontAssets } from './verify-onlyoffice-font-assets.mjs';
 
 export const DEFAULT_FONT_GENERATOR_IMAGE = 'onlyoffice/documentserver:9.3.0';
 export const FONT_GENERATOR_IMAGE_ENV = 'ONLYOFFICE_BROWSER_FONT_GENERATOR_IMAGE';
@@ -634,6 +635,7 @@ export function generateOnlyOfficeFontAssets(options) {
     runDockerGenerator({ ...validated, input: stagingDir });
     assertGeneratedAssets(validated.output);
     writeGeneratedManifest(validated.output, validated);
+    verifyOnlyOfficeFontAssets(validated.output);
   } finally {
     fs.rmSync(stagingDir, { recursive: true, force: true });
   }
