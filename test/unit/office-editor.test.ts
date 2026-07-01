@@ -44,6 +44,7 @@ async function connectHost(
       messages.push(event.data);
       onChildMessage?.(event.data, childPort!);
       if (event.data.type === 'INIT') {
+        const sourceKind = event.data.options.source.kind === 'empty' ? 'new-document' : event.data.options.source.sourceKind;
         childPort!.postMessage({
           protocol: OFFICE_HOST_PROTOCOL,
           type: 'READY',
@@ -55,6 +56,7 @@ async function connectHost(
             mode: event.data.options.mode || (event.data.options.readonly ? 'readonly' : 'edit'),
             readonly: event.data.options.mode === 'preview' || Boolean(event.data.options.readonly),
             dirty: false,
+            sourceKind,
             status: 'ready',
             destroyed: false,
           },
@@ -201,6 +203,7 @@ describe('office-editor parent proxy', () => {
         source: {
           kind: 'buffer',
           fileName: 'alpha.docx',
+          sourceKind: 'local-file',
         },
       },
     });
@@ -250,7 +253,7 @@ describe('office-editor parent proxy', () => {
       fileName: 'alpha.docx',
       onSave,
     });
-    await connectHost(container, (message, childPort) => {
+    const { messages } = await connectHost(container, (message, childPort) => {
       if (message.type !== 'SAVE') return;
       const buffer = new Uint8Array([9, 8, 7]).buffer;
       childPort.postMessage(
@@ -270,9 +273,15 @@ describe('office-editor parent proxy', () => {
 
     await expect(instance.save('DOCX')).resolves.toMatchObject({ name: 'alpha.docx', size: 3 });
     expect(onSave).toHaveBeenCalledTimes(1);
+    await waitForMessage();
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'SAVE_ACK',
+      requestId: expect.any(String),
+      ok: true,
+    }));
   });
 
-  it('ignores save results without a request id', async () => {
+  it('handles native save results without a pending programmatic save request', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const onSave = vi.fn();
@@ -283,15 +292,17 @@ describe('office-editor parent proxy', () => {
       fileName: 'alpha.docx',
       onSave,
     });
-    const { childPort, iframe } = await connectHost(container);
+    const { childPort, iframe, messages } = await connectHost(container);
     const instance = await promise;
     const buffer = new Uint8Array([4, 5, 6]).buffer;
+    const requestId = `${getSessionId(iframe)}-native-save-1`;
 
     childPort.postMessage(
       {
         protocol: OFFICE_HOST_PROTOCOL,
         type: 'SAVE_RESULT',
         sessionId: getSessionId(iframe),
+        requestId,
         buffer,
         fileName: 'alpha.docx',
         mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -301,7 +312,12 @@ describe('office-editor parent proxy', () => {
     await waitForMessage();
 
     expect(instance.getState().status).toBe('ready');
-    expect(onSave).not.toHaveBeenCalled();
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'SAVE_ACK',
+      requestId,
+      ok: true,
+    }));
   });
 
   it('reports dirty state changes from the host', async () => {
@@ -330,6 +346,7 @@ describe('office-editor parent proxy', () => {
         mode: 'edit',
         readonly: false,
         dirty: true,
+        sourceKind: 'local-file',
         status: 'ready',
         destroyed: false,
       },
@@ -353,7 +370,7 @@ describe('office-editor parent proxy', () => {
       fileName: 'alpha.docx',
       onSave,
     });
-    const { childPort, iframe } = await connectHost(container, (message, port) => {
+    const { childPort, iframe, messages } = await connectHost(container, (message, port) => {
       if (message.type !== 'SAVE') return;
       const buffer = new Uint8Array([9, 8, 7]).buffer;
       port.postMessage(
@@ -382,6 +399,7 @@ describe('office-editor parent proxy', () => {
         mode: 'edit',
         readonly: false,
         dirty: true,
+        sourceKind: 'local-file',
         status: 'ready',
         destroyed: false,
       },
@@ -391,6 +409,13 @@ describe('office-editor parent proxy', () => {
     await expect(instance.save('DOCX')).rejects.toThrow('write failed');
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(instance.getState().dirty).toBe(true);
+    await waitForMessage();
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'SAVE_ACK',
+      requestId: expect.any(String),
+      ok: false,
+      message: 'write failed',
+    }));
   });
 
   it('destroys idempotently and force-removes the host iframe without an ack', async () => {

@@ -89,6 +89,88 @@ describe('onlyoffice-mock-server', () => {
     );
   });
 
+  it('delays final save acknowledgement until the local save request completes', async () => {
+    let resolveSave!: () => void;
+    const onSaveRequest = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const server = createOnlyOfficeMockServer({ onSaveRequest });
+    const respond = vi.fn();
+
+    expect(
+      server.handleMessage?.(
+        {
+          type: 'saveChanges',
+          changes: JSON.stringify(['change-one']),
+          endSaveChanges: true,
+        },
+        respond,
+      ),
+    ).toBe(true);
+
+    await Promise.resolve();
+    expect(onSaveRequest).toHaveBeenCalledTimes(1);
+    expect(respond).not.toHaveBeenCalled();
+
+    resolveSave();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(respond).toHaveBeenNthCalledWith(1, {
+      type: 'saveChanges',
+      changes: [],
+      changesIndex: 1,
+      syncChangesIndex: 0,
+      endSaveChanges: true,
+    });
+    expect(respond).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        type: 'unSaveLock',
+        index: 1,
+        syncChangesIndex: 0,
+      }),
+    );
+  });
+
+  it('runs the local save request when chunked changes finish on unlock', async () => {
+    const onSaveRequest = vi.fn();
+    const server = createOnlyOfficeMockServer({ onSaveRequest });
+    const respond = vi.fn();
+
+    expect(
+      server.handleMessage?.(
+        {
+          type: 'saveChanges',
+          changes: JSON.stringify(['chunk-one']),
+          endSaveChanges: false,
+        },
+        respond,
+      ),
+    ).toBe(true);
+    expect(onSaveRequest).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith({
+      type: 'savePartChanges',
+      changesIndex: 1,
+      syncChangesIndex: 0,
+    });
+
+    respond.mockClear();
+    expect(server.handleMessage?.({ type: 'unLockDocument' }, respond)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onSaveRequest).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'unSaveLock',
+        index: 1,
+        syncChangesIndex: 0,
+      }),
+    );
+  });
+
   it('acknowledges save chunks and finishes with the accumulated change index', () => {
     const server = createOnlyOfficeMockServer();
     const respond = vi.fn();

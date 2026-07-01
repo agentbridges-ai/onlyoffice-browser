@@ -51,14 +51,15 @@ const editor = await createOfficeEditor(container, {
   fileName: fileInput.files![0].name,
   mode: 'edit',
   readonly: false,
+  saveBehavior: 'callback',
   onReady(instance) {
     console.log('ready', instance.getState());
   },
   onSave(file) {
-    console.log('saved', file.name, file.size);
+    console.log('write this file to your storage target', file.name, file.size);
   },
   onDirtyChange(dirty) {
-    saveButton.disabled = !dirty;
+    console.log('dirty', dirty);
   },
   onError(error) {
     console.error(error);
@@ -101,11 +102,24 @@ The OnlyOffice API script and x2t WASM initialization happen inside each host if
 ## Opening Documents
 
 ```ts
-// New document
-await createOfficeEditor(container, { hostUrl: officeHostUrl, emptyType: 'docx', fileName: 'New_Document.docx' });
+// New document. The native OnlyOffice Save button downloads by default.
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  emptyType: 'docx',
+  fileName: 'New_Document.docx',
+  saveBehavior: 'download',
+});
 
-// File / Blob
-await createOfficeEditor(container, { hostUrl: officeHostUrl, file, fileName: file.name });
+// File / Blob. The native OnlyOffice Save button calls onSave.
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  file,
+  fileName: file.name,
+  saveBehavior: 'callback',
+  onSave: async (savedFile) => {
+    await uploadOrWriteBack(savedFile);
+  },
+});
 
 // ArrayBuffer / Uint8Array
 await createOfficeEditor(container, { hostUrl: officeHostUrl, buffer, fileName: 'report.xlsx' });
@@ -132,13 +146,19 @@ await fetch('/api/files/123', {
 });
 ```
 
-`save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests. The package does not persist the file by itself: the host application must write this `File` to its own storage target, such as a backend upload endpoint or a File System Access `createWritable()` handle.
+`save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests. This API remains available for programmatic integrations and tests. User-facing UI should use the native OnlyOffice Save button in the editor toolbar, not a duplicate host-side Save button.
 
-Autosave and force-save are disabled in the embedded OnlyOffice config, and co-editing is forced to `strict` mode so upstream fast-mode autosave cannot turn itself back on. The supported persistence entry point is an external Save command in your host UI that calls `editor.save()`. Use `onDirtyChange(dirty)` or `editor.getState().dirty` to enable that Save command only when the document has unsaved edits.
+Autosave and force-save are disabled in the embedded OnlyOffice config, and co-editing is forced to `strict` mode so upstream fast-mode autosave cannot turn itself back on. Only a manual native Save should persist or download edited content.
 
-The package exports edited bytes by calling the browser runtime's native bin export and converting that bin with the bundled x2t WASM converter. It does not call `downloadAs()` for local persistence, so host-side saves do not open a browser download dialog.
+The package exports edited bytes by calling the browser runtime's native bin export and converting that bin with the bundled x2t WASM converter. It does not call `downloadAs()` for local persistence, so callback saves do not open a browser download dialog.
 
-`onSave(file)` is called during `editor.save()` and is awaited before the save promise resolves. If `onSave` rejects, `editor.save()` rejects and the proxy keeps the document dirty:
+`saveBehavior` controls what happens after native export:
+
+- `auto` (default): existing `file`/`buffer`/`url` sources use `onSave`; missing `onSave` rejects. `emptyType` new documents download unless `onSave` returns `true`.
+- `callback`: require `onSave` and wait for it. Use this for local files that must be written back through File System Access.
+- `download`: trigger a browser download. Use this for blank documents that do not yet have a storage path.
+
+`onSave(file)` is called by the native Save path and by `editor.save()`, and the save acknowledgement waits for it. If `onSave` throws or rejects, the proxy keeps the document dirty and the native Save is acknowledged as failed:
 
 ```ts
 await createOfficeEditor(container, {

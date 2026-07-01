@@ -51,14 +51,17 @@ const editor = await createOfficeEditor(document.querySelector('#editor') as HTM
   fileName: file.name,
   mode: 'edit',
   lang: 'en',
+  saveBehavior: 'callback',
   onSave(savedFile) {
-    console.log(savedFile.name, savedFile.size);
+    console.log('write this file to your storage target', savedFile.name, savedFile.size);
   },
   onDirtyChange(dirty) {
-    saveButton.disabled = !dirty;
+    console.log('dirty', dirty);
   },
 });
 
+// Programmatic saves remain available for automation. User-facing UI should use
+// the native OnlyOffice Save button in the editor toolbar.
 const saved = await editor.save('DOCX');
 editor.setReadonly(true);
 editor.setReadonly(false);
@@ -73,7 +76,7 @@ Supported `mode` values:
 
 Spellcheck is disabled by default. Pass `spellcheck: true` only when the host app should open documents with spell checking enabled.
 Word and presentation documents opened in the editor runtime default to fit-to-width zoom so the page/slide uses the available preview area.
-Autosave and force-save are disabled; host applications should expose their own dirty-gated Save command that calls `editor.save()`.
+Autosave and force-save are disabled. User-facing saves should go through the native OnlyOffice Save button; `editor.save()` is kept for programmatic integrations and tests.
 
 For multiple documents, create one container and one component instance per document. Prefer wildcard DNS/TLS so each instance gets its own host origin, such as `https://<session>.office-host.example.com/office-host.html`; this lets the corresponding subframe task exit when an individual document closes. In local development, `.localhost` hosts are automatically derived into `host-<session>.localhost`.
 
@@ -128,7 +131,7 @@ The workflow uses GitHub OIDC through `id-token: write`, so it does not need a l
 - No document upload during normal open/edit/save.
 - No `/doc/.../c`, websocket, long-poll, CommandService, or ConvertService dependency.
 - Blob URLs live only for the current tab lifetime.
-- Collaboration, server-side history, and in-place filesystem writeback are out of scope.
+- Collaboration, server-side history, and direct filesystem writes inside the package are out of scope; host apps own `onSave` persistence.
 
 ## Fonts
 

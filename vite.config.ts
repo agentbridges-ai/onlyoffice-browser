@@ -179,6 +179,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'pages/index.html'),
         officeHost: resolve(__dirname, 'pages/office-host.html'),
+        saveE2E: resolve(__dirname, 'pages/save-e2e.html'),
       },
     },
   },

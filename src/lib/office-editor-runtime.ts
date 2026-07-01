@@ -17,8 +17,11 @@ const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
 type OfficeEmptyType = (typeof SUPPORTED_EMPTY_TYPES)[number];
 type OfficeEditorStatus = 'opening' | 'ready' | 'destroyed' | 'error';
 export type OfficeEditorMode = 'edit' | 'readonly' | 'preview';
+export type OfficeEditorSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
+export type OfficeSaveBehavior = 'auto' | 'callback' | 'download';
 
 export type OfficeEditorInput = Blob | ArrayBuffer | Uint8Array;
+export type OfficeSaveCallbackResult = void | boolean;
 
 export interface CreateOfficeEditorOptions {
   file?: File | Blob;
@@ -26,6 +29,7 @@ export interface CreateOfficeEditorOptions {
   url?: string;
   emptyType?: OfficeEmptyType;
   fileName?: string;
+  sourceKind?: OfficeEditorSourceKind;
   mode?: OfficeEditorMode;
   readonly?: boolean;
   spellcheck?: boolean;
@@ -33,7 +37,8 @@ export interface CreateOfficeEditorOptions {
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
   onReady?: (instance: OfficeEditorInstance) => void;
-  onSave?: (file: File, instance: OfficeEditorInstance) => void | Promise<void>;
+  saveBehavior?: OfficeSaveBehavior;
+  onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
 }
@@ -45,6 +50,7 @@ export interface OfficeEditorState {
   mode: OfficeEditorMode;
   readonly: boolean;
   dirty: boolean;
+  sourceKind: OfficeEditorSourceKind;
   status: OfficeEditorStatus;
   destroyed: boolean;
 }
@@ -64,6 +70,7 @@ type PreparedDocument = {
   media?: Record<string, string>;
   sourceObjectUrl?: string;
   originalFile?: File;
+  sourceKind: OfficeEditorSourceKind;
 };
 
 type SaveRequest = {
@@ -75,7 +82,7 @@ type SaveRequest = {
 };
 
 type NativeSaveData = Uint8Array | ArrayBuffer | ArrayBufferView | {
-  data?: Uint8Array | ArrayBuffer | ArrayBufferView;
+  data?: unknown;
   header?: string;
 };
 type DocumentStateChangeEvent = boolean | { data?: boolean };
@@ -108,6 +115,18 @@ const mediaRegistry = new Map<string, Record<string, string>>();
 
 function createObjectUrl(blob: Blob): string {
   return URL.createObjectURL(blob);
+}
+
+function downloadFile(file: File): void {
+  const objectUrl = createObjectUrl(file);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = file.name || 'document';
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 function toError(error: unknown): Error {
@@ -148,6 +167,11 @@ function getFileExtension(fileName: string): string {
   return fileName.split('.').pop()?.toLowerCase() || '';
 }
 
+function replaceFileExtension(fileName: string, extension: string): string {
+  const normalized = normalizeExtension(extension, getFileExtension(fileName) || 'docx').toLowerCase();
+  return fileName.includes('.') ? fileName.replace(/\.[^/.]+$/, `.${normalized}`) : `${fileName}.${normalized}`;
+}
+
 function getDefaultFileName(emptyType: OfficeEmptyType): string {
   return `New_Document.${emptyType}`;
 }
@@ -178,7 +202,44 @@ function toUint8Array(data: unknown): Uint8Array {
     const arrayBuffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
     return new Uint8Array(arrayBuffer);
   }
+  if (Array.isArray(data)) {
+    return Uint8Array.from(data.map((value) => Number(value) & 0xff));
+  }
+  if (typeof data === 'string') {
+    const trimmed = data.trim();
+    if (/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
+      try {
+        const decoded = window.atob(trimmed);
+        if (/^(DOCY|XLSY|PPTY|PK)/.test(decoded)) {
+          return Uint8Array.from(decoded, (char) => char.charCodeAt(0) & 0xff);
+        }
+      } catch {
+        // Fall back to treating it as a binary string below.
+      }
+    }
+    return Uint8Array.from(data, (char) => char.charCodeAt(0) & 0xff);
+  }
+  if (data && typeof data === 'object') {
+    const record = data as Record<string, unknown>;
+    if (record.data && record.data !== data) {
+      return toUint8Array(record.data);
+    }
+    if (typeof record.length === 'number' && Number.isFinite(record.length)) {
+      const length = Math.max(0, Math.floor(record.length));
+      return Uint8Array.from({ length }, (_value, index) => Number(record[index]) & 0xff);
+    }
+    const numericKeys = Object.keys(record)
+      .filter((key) => /^\d+$/.test(key))
+      .sort((left, right) => Number(left) - Number(right));
+    if (numericKeys.length > 0) {
+      return Uint8Array.from(numericKeys.map((key) => Number(record[key]) & 0xff));
+    }
+  }
   throw new Error('Unsupported binary data type');
+}
+
+function looksLikeZipPackage(data: Uint8Array): boolean {
+  return data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b;
 }
 
 function makeFileFromInput(input: OfficeEditorInput | Blob, fileName: string): File {
@@ -395,6 +456,7 @@ async function prepareDocument(options: CreateOfficeEditorOptions): Promise<Prep
         binData: converted.bin,
         media: converted.media,
         originalFile: file,
+        sourceKind: 'new-document',
       };
     }
 
@@ -408,6 +470,7 @@ async function prepareDocument(options: CreateOfficeEditorOptions): Promise<Prep
       fileType: emptyType,
       binData: template,
       media: {},
+      sourceKind: 'new-document',
     };
   }
 
@@ -428,6 +491,7 @@ async function prepareDocument(options: CreateOfficeEditorOptions): Promise<Prep
       media: converted.media,
       sourceObjectUrl,
       originalFile: file,
+      sourceKind: 'url',
     };
   }
 
@@ -447,6 +511,7 @@ async function prepareDocument(options: CreateOfficeEditorOptions): Promise<Prep
     media: converted.media,
     sourceObjectUrl,
     originalFile: file,
+    sourceKind: options.sourceKind || (options.file ? 'local-file' : 'buffer'),
   };
 }
 
@@ -466,6 +531,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private readonly fileName: string;
   private readonly fileType: string;
   private readonly originalFile?: File;
+  private readonly sourceKind: OfficeEditorSourceKind;
   private readonly editorLang: string;
   private readonly readonlyMode: { value: boolean };
   private readonly previewMode: boolean;
@@ -484,6 +550,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.fileName = prepared.fileName;
     this.fileType = prepared.fileType;
     this.originalFile = prepared.originalFile;
+    this.sourceKind = prepared.sourceKind;
     this.sourceObjectUrl = prepared.sourceObjectUrl || null;
     this.media = prepared.media || {};
     this.editorLang = options.lang || getOnlyOfficeLang();
@@ -628,6 +695,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
               console.warn('OnlyOffice auth requested an unexpected document URL');
             }
           },
+          onSaveRequest: () => this.saveNativeBinary(this.fileName.toLowerCase().endsWith('.csv') ? 'CSV' : getFileExtension(this.fileName).toUpperCase()),
           onCorruptionWarning: (duplicateId) => {
             console.warn('OnlyOffice corruption warning:', duplicateId);
           },
@@ -715,35 +783,67 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   private async convertSavedBin(data: Uint8Array | ArrayBuffer, targetFormat: string): Promise<File> {
-    const result: BinConversionResult = await convertBinToDocument(toUint8Array(data), this.fileName, targetFormat);
-    const bytes = toUint8Array(result.data);
-    return new File([bytes as BlobPart], result.fileName, { type: getSavedFileMimeType(result.fileName) });
+    const sourceBytes = toUint8Array(data);
+    try {
+      const result: BinConversionResult = await convertBinToDocument(sourceBytes, this.fileName, targetFormat);
+      const bytes = toUint8Array(result.data);
+      return new File([bytes as BlobPart], result.fileName, { type: getSavedFileMimeType(result.fileName) });
+    } catch (error) {
+      if (!looksLikeZipPackage(sourceBytes)) {
+        const header = Array.from(sourceBytes.slice(0, 16))
+          .map((byte) => byte.toString(16).padStart(2, '0'))
+          .join(' ');
+        throw new Error(`${toError(error).message}; native header: ${header}`);
+      }
+      const fileName = replaceFileExtension(this.fileName, targetFormat);
+      return new File([sourceBytes as BlobPart], fileName, { type: getSavedFileMimeType(fileName) });
+    }
+  }
+
+  private getSaveBehavior(): OfficeSaveBehavior {
+    return this.options.saveBehavior || 'auto';
+  }
+
+  private async invokeSaveCallback(file: File): Promise<boolean> {
+    const behavior = this.getSaveBehavior();
+    const shouldCallCallback =
+      behavior === 'callback' || (behavior === 'auto' && (this.sourceKind !== 'new-document' || Boolean(this.options.onSave)));
+
+    if (!shouldCallCallback) return false;
+    if (!this.options.onSave) {
+      throw new Error('A save callback is required for this document source. Provide onSave or use saveBehavior: "download".');
+    }
+
+    const handled = await this.options.onSave(file, this);
+    return handled === true;
+  }
+
+  private async persistSavedFile(file: File): Promise<void> {
+    const behavior = this.getSaveBehavior();
+    const handledByCallback = await this.invokeSaveCallback(file);
+
+    if (behavior === 'download' || (behavior === 'auto' && this.sourceKind === 'new-document' && !handledByCallback)) {
+      downloadFile(file);
+    }
   }
 
   private async emitSavedFile(file: File): Promise<void> {
-    await this.options.onSave?.(file, this);
+    await this.persistSavedFile(file);
     this.setDirty(false);
     this.resolveSaveRequest(file);
   }
 
   private async handleSaveDocument(event: SaveEvent): Promise<void> {
-    if (!this.saveRequest) {
-      this.sendOnlyOfficeCommand('asc_onSaveCallback', { err_code: 1 });
-      return;
-    }
-
     try {
       const payload = event.data?.data?.data;
-      if (!payload) {
-        throw new Error('Save event did not include document data');
-      }
-
+      const nativeData = payload ? toUint8Array(payload) : this.getNativeSaveData();
+      const outputFormat = event.data?.option?.outputformat;
       const optionFormat =
-        c_oAscFileType2[event.data.option.outputformat] || getFileExtension(this.fileName).toUpperCase();
+        (typeof outputFormat === 'number' ? c_oAscFileType2[outputFormat] : undefined) || getFileExtension(this.fileName).toUpperCase();
       const targetFormat = this.fileName.toLowerCase().endsWith('.csv')
         ? 'CSV'
         : this.saveRequest?.targetExt || optionFormat;
-      const file = await this.convertSavedBin(payload, targetFormat);
+      const file = await this.convertSavedBin(nativeData, targetFormat);
       await this.emitSavedFile(file);
       this.sendOnlyOfficeCommand('asc_onSaveCallback', { err_code: 0 });
     } catch (error) {
@@ -784,7 +884,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         this.saveRequest?.targetExt || event.data?.fileType || getFileExtension(this.fileName),
       ).toLowerCase();
       const fileName = `${baseName}.${ext}`;
-      await this.emitSavedFile(new File([blob], fileName, { type: blob.type || getSavedFileMimeType(fileName) }));
+      downloadFile(new File([blob], fileName, { type: blob.type || getSavedFileMimeType(fileName) }));
     } catch (error) {
       const normalized = toError(error);
       this.rejectSaveRequest(normalized);
@@ -897,6 +997,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       mode,
       readonly: this.readonlyMode.value,
       dirty: this.dirty,
+      sourceKind: this.sourceKind,
       status: this.status,
       destroyed: this.destroyed,
     };

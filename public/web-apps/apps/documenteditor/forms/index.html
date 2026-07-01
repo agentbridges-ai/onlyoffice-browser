@@ -556,8 +556,8 @@ window.Common = {
                     var template = document.createElement('template');
                     template.innerHTML = html;
                     // return template.content.childNodes;
-                    if ( !!id ) template.content.firstChild.id = id;
-                    return template.content.firstChild;
+                    if ( !!id ) template.content.firstElementChild.id = id;
+                    return template.content.firstElementChild;
                 }
 
                 const sprite_uid = getComputedStyle(document.body).getPropertyValue('--sprite-button-icons-uid');

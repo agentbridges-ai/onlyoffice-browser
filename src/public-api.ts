@@ -6,7 +6,10 @@ export {
   type OfficeEditorInput,
   type OfficeEditorInstance,
   type OfficeEditorMode,
+  type OfficeEditorSourceKind,
   type OfficeEditorState,
   type OfficeHostUrlContext,
   type OfficeHostUrlResolver,
+  type OfficeSaveBehavior,
+  type OfficeSaveCallbackResult,
 } from './lib/office-editor';

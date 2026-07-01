@@ -16,11 +16,21 @@ const sessionId = params.get('sessionId') || '';
 const parentOrigin = params.get('parentOrigin') || '';
 const root = document.querySelector<HTMLElement>('#office-host') ?? document.body;
 const HOST_RESET_PATH = '/reset.html';
+const SAVE_ACK_TIMEOUT_MS = 60_000;
 
 let port: MessagePort | null = null;
 let editor: OfficeEditorInstance | null = null;
 let destroyed = false;
 let activeSaveRequestId: string | undefined;
+let nativeSaveRequestSequence = 0;
+
+type PendingSaveAck = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeoutId: number;
+};
+
+const pendingSaveAcks = new Map<string, PendingSaveAck>();
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -55,6 +65,11 @@ function postPortMessage(message: OfficeHostChildMessage, transfer: Transferable
   port?.postMessage(message, transfer);
 }
 
+function nextNativeSaveRequestId(): string {
+  nativeSaveRequestSequence += 1;
+  return `${sessionId}-native-save-${Date.now()}-${nativeSaveRequestSequence}`;
+}
+
 function postError(
   phase: Extract<OfficeHostChildMessage, { type: 'ERROR' }>['phase'],
   error: unknown,
@@ -70,8 +85,25 @@ function postError(
   });
 }
 
-async function postSavedFile(file: File, requestId?: string): Promise<void> {
+function makeSaveAckError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'OnlyOfficeHostSaveAckError';
+  return error;
+}
+
+function waitForSaveAck(requestId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      pendingSaveAcks.delete(requestId);
+      reject(makeSaveAckError('Timed out waiting for parent save acknowledgement'));
+    }, SAVE_ACK_TIMEOUT_MS);
+    pendingSaveAcks.set(requestId, { resolve, reject, timeoutId });
+  });
+}
+
+async function postSavedFile(file: File, requestId = nextNativeSaveRequestId()): Promise<void> {
   const buffer = await file.arrayBuffer();
+  const ack = waitForSaveAck(requestId);
   postPortMessage(
     {
       protocol: OFFICE_HOST_PROTOCOL,
@@ -84,6 +116,7 @@ async function postSavedFile(file: File, requestId?: string): Promise<void> {
     },
     [buffer],
   );
+  await ack;
 }
 
 function postState(type: 'READY' | 'STATE', state: OfficeHostState): void {
@@ -333,6 +366,12 @@ async function destroyRuntime(): Promise<void> {
   if (destroyed) return;
   destroyed = true;
 
+  for (const [requestId, pending] of pendingSaveAcks) {
+    window.clearTimeout(pending.timeoutId);
+    pending.reject(makeSaveAckError(`Editor was destroyed before save acknowledgement completed: ${requestId}`));
+  }
+  pendingSaveAcks.clear();
+
   try {
     await editor?.destroy();
   } catch (error) {
@@ -370,6 +409,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       readonly: message.options.readonly,
       spellcheck: message.options.spellcheck ?? false,
       lang: message.options.lang,
+      saveBehavior: message.options.saveBehavior,
       onReady: (instance) => {
         postState('STATE', instance.getState());
       },
@@ -384,9 +424,11 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
 
     if (source.kind === 'empty') {
       runtimeOptions.emptyType = source.emptyType;
+      runtimeOptions.sourceKind = 'new-document';
     } else {
       runtimeOptions.buffer = source.buffer;
       runtimeOptions.fileName = source.fileName;
+      runtimeOptions.sourceKind = source.sourceKind;
     }
 
     editor = await createRuntimeOfficeEditor(root, runtimeOptions);
@@ -394,6 +436,20 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
   } catch (error) {
     postError('init', error, message.requestId);
   }
+}
+
+function handleSaveAck(message: Extract<OfficeHostParentMessage, { type: 'SAVE_ACK' }>): void {
+  const pending = pendingSaveAcks.get(message.requestId);
+  if (!pending) return;
+
+  pendingSaveAcks.delete(message.requestId);
+  window.clearTimeout(pending.timeoutId);
+  if (message.ok) {
+    pending.resolve();
+    return;
+  }
+
+  pending.reject(makeSaveAckError(message.message || 'Parent save acknowledgement failed'));
 }
 
 async function handleSave(message: Extract<OfficeHostParentMessage, { type: 'SAVE' }>): Promise<void> {
@@ -404,7 +460,9 @@ async function handleSave(message: Extract<OfficeHostParentMessage, { type: 'SAV
     activeSaveRequestId = message.requestId;
     await editor.save(message.targetExt);
   } catch (error) {
-    postError('save', error, message.requestId);
+    if (!(error instanceof Error && error.name === 'OnlyOfficeHostSaveAckError')) {
+      postError('save', error, message.requestId);
+    }
   } finally {
     if (activeSaveRequestId === message.requestId) activeSaveRequestId = undefined;
   }
@@ -442,6 +500,9 @@ function handlePortMessage(event: MessageEvent<OfficeHostParentMessage>): void {
       return;
     case 'SAVE':
       void handleSave(event.data);
+      return;
+    case 'SAVE_ACK':
+      handleSaveAck(event.data);
       return;
     case 'SET_READONLY':
       handleSetReadonly(event.data);
