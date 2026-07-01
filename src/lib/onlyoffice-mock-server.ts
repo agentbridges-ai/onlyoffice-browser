@@ -37,6 +37,7 @@ export interface OnlyOfficeMockServer {
   getParticipants: () => OnlyOfficeParticipants;
   getImageURL?: (name: string) => Promise<string>;
   onAuth?: () => void;
+  onSaveRequest?: () => void | Promise<void>;
   handleMessage?: (msg: OnlyOfficeFromMessage, respond: OnlyOfficeMessageResponder) => boolean;
   onMessage: (msg: OnlyOfficeFromMessage) => void;
   onCorruptionWarning?: (duplicateId: string) => void;
@@ -47,6 +48,7 @@ export interface CreateOnlyOfficeMockServerOptions {
   buildVersion?: string;
   media?: Record<string, string>;
   onAuth?: () => void;
+  onSaveRequest?: () => void | Promise<void>;
   onMessage?: (msg: OnlyOfficeFromMessage) => void;
   onCorruptionWarning?: (duplicateId: string) => void;
 }
@@ -125,10 +127,11 @@ function countSavedChanges(changes: unknown): number {
 }
 
 export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOptions = {}): OnlyOfficeMockServer {
-  const { buildNumber, buildVersion, media, onAuth, onMessage, onCorruptionWarning } = options;
+  const { buildNumber, buildVersion, media, onAuth, onSaveRequest, onMessage, onCorruptionWarning } = options;
   let changesIndex = 0;
   let syncChangesIndex = 0;
   let lastSaveTime = Date.now();
+  let pendingLocalSave = false;
 
   const acknowledgeSaveEnd = (respond: OnlyOfficeMessageResponder) => {
     lastSaveTime = Date.now();
@@ -138,6 +141,23 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
       time: lastSaveTime,
       syncChangesIndex,
     });
+  };
+
+  const runLocalSaveBeforeAck = (respond: OnlyOfficeMessageResponder, acknowledge: () => void) => {
+    if (!onSaveRequest || !pendingLocalSave) {
+      acknowledge();
+      return;
+    }
+
+    void Promise.resolve()
+      .then(() => onSaveRequest())
+      .then(() => {
+        pendingLocalSave = false;
+        acknowledge();
+      })
+      .catch((error) => {
+        console.error('OnlyOffice local save request failed:', error);
+      });
   };
 
   return {
@@ -150,6 +170,7 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
     }),
     getImageURL: async (name: string) => resolveOnlyOfficeMediaUrl(media, name),
     onAuth,
+    onSaveRequest,
     handleMessage: (msg, respond) => {
       if (msg.type === 'isSaveLock') {
         respond({
@@ -161,7 +182,9 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
       }
 
       if (msg.type === 'saveChanges') {
-        changesIndex += countSavedChanges(msg.changes);
+        const savedChangeCount = countSavedChanges(msg.changes);
+        changesIndex += savedChangeCount;
+        pendingLocalSave = pendingLocalSave || savedChangeCount > 0;
         if (msg.endSaveChanges === false) {
           respond({
             type: 'savePartChanges',
@@ -171,19 +194,23 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
           return true;
         }
 
-        respond({
-          type: 'saveChanges',
-          changes: [],
-          changesIndex,
-          syncChangesIndex,
-          endSaveChanges: true,
-        });
-        acknowledgeSaveEnd(respond);
+        const acknowledgeSave = () => {
+          respond({
+            type: 'saveChanges',
+            changes: [],
+            changesIndex,
+            syncChangesIndex,
+            endSaveChanges: true,
+          });
+          acknowledgeSaveEnd(respond);
+        };
+
+        runLocalSaveBeforeAck(respond, acknowledgeSave);
         return true;
       }
 
       if (msg.type === 'unLockDocument' || msg.type === 'unSaveLock') {
-        acknowledgeSaveEnd(respond);
+        runLocalSaveBeforeAck(respond, () => acknowledgeSaveEnd(respond));
         return true;
       }
 

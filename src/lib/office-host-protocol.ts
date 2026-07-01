@@ -1,5 +1,8 @@
 export const OFFICE_HOST_PROTOCOL = 'onlyoffice-browser-host/v1';
 
+export type OfficeHostSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
+export type OfficeHostSaveBehavior = 'auto' | 'callback' | 'download';
+
 export type OfficeHostSource =
   | {
       kind: 'empty';
@@ -10,6 +13,7 @@ export type OfficeHostSource =
       buffer: ArrayBuffer;
       fileName: string;
       mimeType: string;
+      sourceKind: Exclude<OfficeHostSourceKind, 'new-document'>;
     };
 
 export interface OfficeHostInitOptions {
@@ -18,6 +22,7 @@ export interface OfficeHostInitOptions {
   readonly?: boolean;
   spellcheck?: boolean;
   lang?: string;
+  saveBehavior?: OfficeHostSaveBehavior;
   source: OfficeHostSource;
 }
 
@@ -28,6 +33,7 @@ export interface OfficeHostState {
   mode: 'edit' | 'readonly' | 'preview';
   readonly: boolean;
   dirty: boolean;
+  sourceKind: OfficeHostSourceKind;
   status: 'opening' | 'ready' | 'destroyed' | 'error';
   destroyed: boolean;
 }
@@ -57,6 +63,12 @@ export type OfficeHostParentMessage =
   | (OfficeHostBaseMessage & {
       type: 'SAVE';
       targetExt?: string;
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'SAVE_ACK';
+      requestId: string;
+      ok: boolean;
+      message?: string;
     })
   | (OfficeHostBaseMessage & {
       type: 'SET_READONLY';

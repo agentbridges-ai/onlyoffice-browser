@@ -23,6 +23,10 @@ function flush(): Promise<void> {
   return Promise.resolve().then(() => undefined);
 }
 
+function waitForMessage(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 type CapturedDocEditorConfig = {
   document: {
     permissions: {
@@ -59,6 +63,16 @@ type CapturedDocEditorConfig = {
   events: {
     onAppReady: () => void;
     onDocumentReady: () => void;
+    onSave?: (event: {
+      data: {
+        data: {
+          data: Uint8Array;
+        };
+        option: {
+          outputformat: number;
+        };
+      };
+    }) => void;
     onDocumentStateChange?: (event: boolean | { data?: boolean }) => void;
   };
 };
@@ -262,16 +276,90 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
-  it('tracks dirty state changes and clears dirty after manual save', async () => {
+  it('falls back to native OOXML bytes when x2t rejects an already zipped save payload', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
+    const onSave = vi.fn();
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.xlsx'),
+      fileName: 'alpha.xlsx',
+      mode: 'edit',
+      onSave,
+    });
+    await flush();
+
+    const zipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3]);
+    docEditorInstances[0].asc_nativeGetFile3.mockReturnValueOnce({ data: zipBytes });
+    mocks.convertBinToDocument.mockRejectedValueOnce(new Error('Conversion failed with code: 88'));
+
+    const savedFile = await instance.save('XLSX');
+
+    expect(savedFile).toMatchObject({
+      name: 'alpha.xlsx',
+      size: zipBytes.byteLength,
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    expect(onSave).toHaveBeenCalledWith(savedFile, instance);
+
+    await instance.destroy();
+  });
+
+  it('saves native built-in save events without an external save request', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onSave = vi.fn();
     const onDirtyChange = vi.fn();
 
     const instance = await createOfficeEditor(container, {
       file: new File(['hello'], 'alpha.xlsx'),
       fileName: 'alpha.xlsx',
       mode: 'edit',
+      onSave,
       onDirtyChange,
+    });
+    await flush();
+
+    docEditorConfigs[0].events.onDocumentStateChange?.({ data: true });
+    expect(instance.getState().dirty).toBe(true);
+
+    docEditorConfigs[0].events.onSave?.({
+      data: {
+        data: {
+          data: new Uint8Array([4, 5, 6]),
+        },
+        option: {
+          outputformat: 257,
+        },
+      },
+    });
+    await waitForMessage();
+
+    expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.xlsx', 'XLSX');
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0][0]).toMatchObject({
+      name: 'alpha.xlsx',
+      size: 3,
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    expect(instance.getState().dirty).toBe(false);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false, instance);
+
+    await instance.destroy();
+  });
+
+  it('tracks dirty state changes and clears dirty after manual save', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onDirtyChange = vi.fn();
+    const onSave = vi.fn();
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.xlsx'),
+      fileName: 'alpha.xlsx',
+      mode: 'edit',
+      onDirtyChange,
+      onSave,
     });
     await flush();
 

@@ -4,7 +4,9 @@ import {
   type OfficeHostChildMessage,
   type OfficeHostInitOptions,
   type OfficeHostParentMessage,
+  type OfficeHostSaveBehavior,
   type OfficeHostSource,
+  type OfficeHostSourceKind,
   type OfficeHostState,
   type OfficeHostWindowMessage,
 } from './office-host-protocol';
@@ -22,6 +24,9 @@ type OfficeEmptyType = (typeof SUPPORTED_EMPTY_TYPES)[number];
 type OfficeEditorStatus = 'opening' | 'ready' | 'destroyed' | 'error';
 export type OfficeEditorMode = 'edit' | 'readonly' | 'preview';
 export type OfficeEditorInput = Blob | ArrayBuffer | Uint8Array;
+export type OfficeEditorSourceKind = OfficeHostSourceKind;
+export type OfficeSaveBehavior = OfficeHostSaveBehavior;
+export type OfficeSaveCallbackResult = void | boolean;
 export type OfficeHostUrlContext = {
   sessionId: string;
   fileName: string;
@@ -45,7 +50,8 @@ export interface CreateOfficeEditorOptions {
   hardResetOnLastDestroy?: boolean;
   destroyTimeoutMs?: number;
   onReady?: (instance: OfficeEditorInstance) => void;
-  onSave?: (file: File, instance: OfficeEditorInstance) => void | Promise<void>;
+  saveBehavior?: OfficeSaveBehavior;
+  onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
 }
@@ -57,6 +63,7 @@ export interface OfficeEditorState {
   mode: OfficeEditorMode;
   readonly: boolean;
   dirty: boolean;
+  sourceKind: OfficeEditorSourceKind;
   status: OfficeEditorStatus;
   destroyed: boolean;
 }
@@ -119,6 +126,18 @@ function getSavedFileMimeType(fileName: string): string {
     pdf: 'application/pdf',
   };
   return mimeMap[extension] || 'application/octet-stream';
+}
+
+function downloadFile(file: File): void {
+  const objectUrl = URL.createObjectURL(file);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = file.name || 'document';
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 function readFileNameFromResponse(url: string, response: Response, fallback = 'document.docx'): string {
@@ -211,6 +230,7 @@ async function prepareHostInit(
   let source: OfficeHostSource;
   let fileName = options.fileName || 'document.docx';
   let fileType = getFileExtension(fileName);
+  let sourceKind: OfficeEditorSourceKind = 'buffer';
   const transfer: Transferable[] = [];
 
   if (options.emptyType) {
@@ -220,6 +240,7 @@ async function prepareHostInit(
     }
     fileName = options.fileName || getDefaultFileName(emptyType);
     fileType = emptyType;
+    sourceKind = 'new-document';
     source = { kind: 'empty', emptyType };
   } else if (options.url) {
     const response = await fetch(options.url, options.fetchOptions);
@@ -231,11 +252,13 @@ async function prepareHostInit(
     const blob = await response.blob();
     const buffer = await blob.arrayBuffer();
     transfer.push(buffer);
+    sourceKind = 'url';
     source = {
       kind: 'buffer',
       buffer,
       fileName,
       mimeType: blob.type || getSavedFileMimeType(fileName),
+      sourceKind,
     };
   } else {
     const input = options.file || options.buffer;
@@ -246,11 +269,13 @@ async function prepareHostInit(
     fileType = getFileExtension(fileName);
     const buffer = await toTransferableBuffer(input);
     transfer.push(buffer);
+    sourceKind = options.file ? 'local-file' : 'buffer';
     source = {
       kind: 'buffer',
       buffer,
       fileName,
       mimeType: input instanceof Blob ? input.type || getSavedFileMimeType(fileName) : getSavedFileMimeType(fileName),
+      sourceKind,
     };
   }
 
@@ -264,6 +289,7 @@ async function prepareHostInit(
       readonly: options.readonly,
       spellcheck: options.spellcheck ?? false,
       lang: options.lang,
+      saveBehavior: options.saveBehavior,
       source,
     },
     transfer,
@@ -274,6 +300,7 @@ async function prepareHostInit(
       mode: initialMode,
       readonly: initialReadonly,
       dirty: false,
+      sourceKind,
       status: 'opening',
       destroyed: false,
     },
@@ -288,6 +315,7 @@ function toPublicState(state: OfficeHostState | OfficeEditorState): OfficeEditor
     mode: state.mode,
     readonly: state.readonly,
     dirty: state.dirty,
+    sourceKind: state.sourceKind || 'buffer',
     status: state.status,
     destroyed: state.destroyed,
   };
@@ -486,24 +514,67 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     });
   }
 
-  private async handleSaveResult(message: Extract<OfficeHostChildMessage, { type: 'SAVE_RESULT' }>): Promise<void> {
-    if (!message.requestId) return;
+  private getSaveBehavior(): OfficeSaveBehavior {
+    return this.options.saveBehavior || 'auto';
+  }
 
+  private async invokeSaveCallback(file: File): Promise<boolean> {
+    const behavior = this.getSaveBehavior();
+    const shouldCallCallback =
+      behavior === 'callback' || (behavior === 'auto' && (this.state.sourceKind !== 'new-document' || Boolean(this.options.onSave)));
+
+    if (!shouldCallCallback) return false;
+    if (!this.options.onSave) {
+      throw new Error('A save callback is required for this document source. Provide onSave or use saveBehavior: "download".');
+    }
+
+    const handled = await this.options.onSave(file, this);
+    return handled === true;
+  }
+
+  private async persistSavedFile(file: File): Promise<void> {
+    const behavior = this.getSaveBehavior();
+    const handledByCallback = await this.invokeSaveCallback(file);
+
+    if (behavior === 'download' || (behavior === 'auto' && this.state.sourceKind === 'new-document' && !handledByCallback)) {
+      downloadFile(file);
+    }
+  }
+
+  private postSaveAck(requestId: string, ok: boolean, message?: string): void {
+    this.postToHost({
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'SAVE_ACK',
+      sessionId: this.id,
+      requestId,
+      ok,
+      message,
+    });
+  }
+
+  private async handleSaveResult(message: Extract<OfficeHostChildMessage, { type: 'SAVE_RESULT' }>): Promise<void> {
     const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
-    let request: PendingRequest | undefined;
-    request = this.pendingRequests.get(message.requestId);
-    if (!request) return;
-    this.pendingRequests.delete(message.requestId);
+    const requestId = message.requestId;
+    const request = requestId ? this.pendingRequests.get(requestId) : undefined;
+    if (requestId && request) {
+      this.pendingRequests.delete(requestId);
+    }
 
     try {
-      await this.options.onSave?.(file, this);
+      await this.persistSavedFile(file);
       this.setDirty(false);
       request?.resolve(file);
+      if (requestId) {
+        this.postSaveAck(requestId, true);
+      }
     } catch (error) {
       const normalized = toError(error);
       this.setDirty(true);
       request?.reject(normalized);
       this.options.onError?.(normalized, this);
+      if (requestId) {
+        this.postSaveAck(requestId, false, normalized.message);
+      }
     }
   }
 

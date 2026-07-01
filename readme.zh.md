@@ -51,14 +51,17 @@ const editor = await createOfficeEditor(document.querySelector('#editor') as HTM
   fileName: file.name,
   mode: 'edit',
   lang: 'zh',
+  saveBehavior: 'callback',
   onSave(savedFile) {
-    console.log(savedFile.name, savedFile.size);
+    console.log('把这个文件写入你的最终存储', savedFile.name, savedFile.size);
   },
   onDirtyChange(dirty) {
-    saveButton.disabled = !dirty;
+    console.log('dirty', dirty);
   },
 });
 
+// 程序化保存仍可用于自动化。面向用户的 UI 应使用编辑器工具栏里的
+// OnlyOffice 原生保存按钮。
 const saved = await editor.save('DOCX');
 editor.setReadonly(true);
 editor.setReadonly(false);
@@ -73,7 +76,7 @@ editor.destroy();
 
 拼写检查默认关闭。只有宿主应用确实需要默认打开拼写检查时，才传入 `spellcheck: true`。
 Word 和演示文稿在编辑器运行态中默认使用适合宽度缩放，让页面/幻灯片优先占满可用预览区域。
-autosave 和 forcesave 默认关闭；宿主应用应提供自己的保存按钮，并用 dirty 状态控制启用后调用 `editor.save()`。
+autosave 和 forcesave 默认关闭；面向用户的保存应走编辑器工具栏里的 OnlyOffice 原生保存按钮，`editor.save()` 仅作为程序化集成和测试 API 保留。
 
 多文档同时打开时，宿主为每个文档创建一个容器和一个组件实例即可。推荐使用 wildcard DNS/TLS 给每个实例分配独立 host origin，例如 `https://<session>.office-host.example.com/office-host.html`；这样逐个关闭文档时，对应子框架任务可以独立退出。开发环境下，`.localhost` host 会自动派生为 `host-<session>.localhost`。
 
@@ -128,7 +131,7 @@ npm run assets:build
 - 正常打开、编辑、保存不会上传用户文档。
 - 不依赖 `/doc/.../c`、websocket、long-poll、CommandService、ConvertService。
 - Blob URL 只在当前标签页生命周期内有效。
-- 协同编辑、服务端历史、原位写回不在本轮范围内。
+- 协同编辑、服务端历史、包内部直接写文件不在本轮范围内；宿主应用通过 `onSave` 负责最终持久化。
 
 ## 字体
 
