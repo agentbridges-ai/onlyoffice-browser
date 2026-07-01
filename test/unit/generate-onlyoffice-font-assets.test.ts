@@ -186,6 +186,11 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(script).toContain('wingdings.ttf');
     expect(script).toContain('mtextra.ttf');
     expect(script).toContain('seguisym.ttf');
+    expect(script).toContain('ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY');
+    expect(script).toContain('EXTRA_DIR="$EXTRA"');
+    expect(script).toContain('extra_source_path');
+    expect(script).toContain('exact_source_index_for_family');
+    expect(script).toContain('source_index = exact_source_index');
     expect(script).toContain('info[0] in zh_core_hidden_font_families');
     expect(script).toContain('visible_family_names = {info[0] for info in web_infos');
     expect(script).toContain('"visibleFamilies": sorted(visible_family_names)');

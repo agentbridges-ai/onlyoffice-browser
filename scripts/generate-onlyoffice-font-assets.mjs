@@ -89,6 +89,19 @@ const ZH_CORE_SOURCE_FILE_NAMES = [
   'wingdings 3.ttf',
   'wingdings.ttf',
 ];
+const ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY = {
+  'Bookshelf Symbol 7': ['bookshelf symbol 7.ttf'],
+  Marlett: ['marlett.ttf'],
+  'Monotype Sorts': ['monotypesorts.ttf'],
+  'MS Reference Specialty': ['ms reference specialty.ttf'],
+  'MT Extra': ['mtextra.ttf'],
+  'Segoe UI Symbol': ['seguisym.ttf'],
+  Symbol: ['symbol.ttf'],
+  Webdings: ['webdings.ttf'],
+  Wingdings: ['wingdings.ttf'],
+  'Wingdings 2': ['wingdings 2.ttf'],
+  'Wingdings 3': ['wingdings 3.ttf'],
+};
 const LATIN_FALLBACK_FONT_FAMILIES = ['Calibri', 'Arial', 'Carlito', 'Liberation Sans', 'DejaVu Sans', 'Open Sans'];
 const CJK_FALLBACK_FONT_FAMILIES = [
   'Microsoft YaHei',
@@ -346,17 +359,19 @@ if [ -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" ]; then
   cp -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" "$OUT/server/FileConverter/bin/AllFonts.js"
 fi
 
-  OUT_DIR="$OUT" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_HIDDEN_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreHiddenFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
+  OUT_DIR="$OUT" EXTRA_DIR="$EXTRA" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_HIDDEN_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreHiddenFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY=${JSON.stringify(JSON.stringify(ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
 import json
 import os
 import re
 import shutil
 
 out = os.environ["OUT_DIR"]
+extra_dir = os.environ["EXTRA_DIR"]
 font_set = os.environ["FONT_SET"]
 zh_core_font_families = set(json.loads(os.environ["ZH_CORE_FONT_FAMILIES"]))
 zh_core_hidden_font_families = set(json.loads(os.environ["ZH_CORE_HIDDEN_FONT_FAMILIES"]))
 zh_core_source_file_names = set(json.loads(os.environ["ZH_CORE_SOURCE_FILE_NAMES"]))
+zh_core_exact_source_file_names_by_family = json.loads(os.environ["ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY"])
 latin_fallback_font_families = json.loads(os.environ["LATIN_FALLBACK_FONT_FAMILIES"])
 cjk_fallback_font_families = json.loads(os.environ["CJK_FALLBACK_FONT_FAMILIES"])
 keep_font_families = set(json.loads(os.environ["KEEP_FONT_FAMILIES"]))
@@ -424,6 +439,37 @@ def source_file_name(source_index):
         return ""
     return os.path.basename(source_files[source_index]).lower()
 
+def source_index_by_file_name():
+    result = {}
+    for index, source_file in enumerate(source_files):
+        result.setdefault(os.path.basename(source_file).lower(), index)
+    return result
+
+def extra_source_path(file_name):
+    exact_path = os.path.join(extra_dir, file_name)
+    if os.path.isfile(exact_path):
+        return exact_path
+    lowered = file_name.lower()
+    for entry in os.listdir(extra_dir):
+        if entry.lower() == lowered:
+            candidate = os.path.join(extra_dir, entry)
+            if os.path.isfile(candidate):
+                return candidate
+    return ""
+
+def exact_source_index_for_family(family_name):
+    for file_name in zh_core_exact_source_file_names_by_family.get(family_name, []):
+        source_index = source_file_name_to_index.get(file_name.lower())
+        if source_index is not None:
+            return source_index
+        source_path = extra_source_path(file_name)
+        if source_path:
+            source_index = len(source_files)
+            source_files.append(source_path)
+            source_file_name_to_index[file_name.lower()] = source_index
+            return source_index
+    return -1
+
 def allowed_same_family_source_index(info, slot_index):
     if info[0] in keep_font_families:
         return info[slot_index]
@@ -445,6 +491,7 @@ web_source = read_source(web_allfonts)
 source_files = parse_js_array(server_source, "__fonts_files")
 web_infos = parse_js_array(web_source, "__fonts_infos")
 web_ranges = parse_js_array(web_source, "__fonts_ranges")
+source_file_name_to_index = source_index_by_file_name()
 
 latin_fallback_family_name, latin_fallback_source_index = first_available_source(*latin_fallback_font_families)
 cjk_fallback_family_name, cjk_fallback_source_index = first_available_source(*cjk_fallback_font_families)
@@ -474,10 +521,15 @@ new_infos = []
 for original_info in web_infos:
     info = list(original_info)
     keep_actual_font = font_set == "full" or info[0] in kept_family_names
+    exact_source_index = exact_source_index_for_family(info[0]) if font_set == "zh-core" and keep_actual_font else -1
     for slot_index in range(1, len(info), 2):
         source_index = info[slot_index]
         if source_index < 0:
             continue
+        if exact_source_index >= 0 and info[0] in zh_core_hidden_font_families:
+            source_index = exact_source_index
+            info[slot_index] = source_index
+            info[slot_index + 1] = 0
         if font_set == "zh-core" and keep_actual_font and info[0] not in keep_font_families:
             if source_file_name(source_index) not in zh_core_source_file_names:
                 same_family_source_index = allowed_same_family_source_index(info, slot_index)
