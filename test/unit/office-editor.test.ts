@@ -9,6 +9,10 @@ function flush(): Promise<void> {
   return Promise.resolve().then(() => undefined);
 }
 
+function waitForMessage(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function getSessionId(iframe: HTMLIFrameElement): string {
   return new URL(iframe.src).searchParams.get('sessionId') || '';
 }
@@ -265,6 +269,39 @@ describe('office-editor parent proxy', () => {
 
     await expect(instance.save('DOCX')).resolves.toMatchObject({ name: 'alpha.docx', size: 3 });
     expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards toolbar save results without a request id to onSave', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onSave = vi.fn();
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      onSave,
+    });
+    const { childPort, iframe } = await connectHost(container);
+    const instance = await promise;
+    const buffer = new Uint8Array([4, 5, 6]).buffer;
+
+    childPort.postMessage(
+      {
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'SAVE_RESULT',
+        sessionId: getSessionId(iframe),
+        buffer,
+        fileName: 'alpha.docx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      },
+      [buffer],
+    );
+    await waitForMessage();
+
+    expect(instance.getState().status).toBe('ready');
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0][0]).toMatchObject({ name: 'alpha.docx', size: 3 });
   });
 
   it('destroys idempotently and force-removes the host iframe without an ack', async () => {

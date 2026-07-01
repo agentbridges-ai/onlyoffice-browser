@@ -451,7 +451,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
         this.maybeNotifyReady();
         return;
       case 'SAVE_RESULT':
-        this.resolveSaveRequest(message);
+        this.handleSaveResult(message);
         return;
       case 'ERROR':
         this.handleHostError(message);
@@ -463,13 +463,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
   }
 
-  private resolveSaveRequest(message: Extract<OfficeHostChildMessage, { type: 'SAVE_RESULT' }>): void {
-    if (!message.requestId) return;
-    const request = this.pendingRequests.get(message.requestId);
-    if (!request) return;
-    this.pendingRequests.delete(message.requestId);
+  private handleSaveResult(message: Extract<OfficeHostChildMessage, { type: 'SAVE_RESULT' }>): void {
     const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
-    request.resolve(file);
+    if (message.requestId) {
+      const request = this.pendingRequests.get(message.requestId);
+      if (!request) return;
+      this.pendingRequests.delete(message.requestId);
+      request.resolve(file);
+    }
     void Promise.resolve(this.options.onSave?.(file, this)).catch((error) => {
       this.options.onError?.(toError(error), this);
     });

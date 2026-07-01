@@ -129,7 +129,24 @@ await fetch('/api/files/123', {
 });
 ```
 
-`save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests.
+`save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests. The package does not persist the file by itself: the host application must write this `File` to its own storage target, such as a backend upload endpoint or a File System Access `createWritable()` handle.
+
+The same rule applies to toolbar saves inside OnlyOffice. Pass `onSave(file)` when the edited bytes should be persisted automatically:
+
+```ts
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  file,
+  fileName: file.name,
+  onSave: async (savedFile) => {
+    const writable = await fileHandle.createWritable();
+    await writable.write(savedFile);
+    await writable.close();
+  },
+});
+```
+
+In upstream ONLYOFFICE DocumentServer deployments this persistence role is normally implemented by the storage service behind `callbackUrl`: the editor reports save status, the storage service downloads the edited file URL, writes it to the final path, and returns `{ "error": 0 }`. In this browser-only package there is no server callback endpoint, so the integrator must provide that final write step. Use [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/), [ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/), [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer), [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor), [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm), and [ranuts/document v9](https://github.com/ranuts/document) as the integration references. `ranuts/document` uses the same browser-only split: the iframe edits, while the parent application handles auth, upload, and saved-file persistence.
 
 ## Readonly and Cleanup
 

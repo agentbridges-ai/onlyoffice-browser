@@ -20,6 +20,7 @@ const HOST_RESET_PATH = '/reset.html';
 let port: MessagePort | null = null;
 let editor: OfficeEditorInstance | null = null;
 let destroyed = false;
+let activeSaveRequestId: string | undefined;
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -67,6 +68,22 @@ function postError(
     phase,
     message: toError(error).message,
   });
+}
+
+async function postSavedFile(file: File, requestId?: string): Promise<void> {
+  const buffer = await file.arrayBuffer();
+  postPortMessage(
+    {
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'SAVE_RESULT',
+      sessionId,
+      requestId,
+      buffer,
+      fileName: file.name,
+      mimeType: file.type,
+    },
+    [buffer],
+  );
 }
 
 function postState(type: 'READY' | 'STATE', state: OfficeHostState): void {
@@ -359,6 +376,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       onError: (error) => {
         postError('runtime', error);
       },
+      onSave: (file) => postSavedFile(file, activeSaveRequestId),
     };
 
     if (source.kind === 'empty') {
@@ -380,22 +398,12 @@ async function handleSave(message: Extract<OfficeHostParentMessage, { type: 'SAV
     if (!editor) {
       throw new Error('Editor is not open');
     }
-    const file = await editor.save(message.targetExt);
-    const buffer = await file.arrayBuffer();
-    postPortMessage(
-      {
-        protocol: OFFICE_HOST_PROTOCOL,
-        type: 'SAVE_RESULT',
-        sessionId,
-        requestId: message.requestId,
-        buffer,
-        fileName: file.name,
-        mimeType: file.type,
-      },
-      [buffer],
-    );
+    activeSaveRequestId = message.requestId;
+    await editor.save(message.targetExt);
   } catch (error) {
     postError('save', error, message.requestId);
+  } finally {
+    if (activeSaveRequestId === message.requestId) activeSaveRequestId = undefined;
   }
 }
 
