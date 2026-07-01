@@ -583,6 +583,9 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           onSave: (event: SaveEvent) => {
             void this.handleSaveDocument(event);
           },
+          onSaveDocument: (event: { data?: ArrayBuffer | Uint8Array }) => {
+            void this.handleSaveDocumentBinary(event);
+          },
           onDownloadAs: (event: { data?: { url?: string; fileType?: string | number } }) => {
             void this.handleDownloadAs(event);
           },
@@ -727,6 +730,21 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       this.rejectSaveRequest(normalized);
       this.options.onError?.(normalized, this);
       this.sendOnlyOfficeCommand('asc_onSaveCallback', { err_code: 1 });
+    }
+  }
+
+  private async handleSaveDocumentBinary(event: { data?: ArrayBuffer | Uint8Array }): Promise<void> {
+    try {
+      const payload = event.data;
+      if (!payload) {
+        throw new Error('Save document event did not include document data');
+      }
+      const file = new File([toUint8Array(payload) as BlobPart], this.fileName, { type: getSavedFileMimeType(this.fileName) });
+      await this.emitSavedFile(file);
+    } catch (error) {
+      const normalized = toError(error);
+      this.rejectSaveRequest(normalized);
+      this.options.onError?.(normalized, this);
     }
   }
 

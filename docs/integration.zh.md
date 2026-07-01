@@ -131,7 +131,7 @@ await fetch('/api/files/123', {
 
 `save(targetExt?)` 返回浏览器内生成的 `File`。常用 `targetExt` 为 `DOCX`、`XLSX`、`PPTX`、`CSV`。只读实例会拒绝保存。本包不会自行持久化文件：宿主应用必须把这个 `File` 写入自己的最终存储位置，例如后端上传接口，或 File System Access 的 `createWritable()` 文件句柄。
 
-OnlyOffice iframe 内部工具栏保存也遵循同一个规则。需要自动持久化编辑结果时，传入 `onSave(file)`：
+OnlyOffice iframe 内部工具栏保存也遵循同一个规则。原生的“所有更改已保存”只表示编辑器已经把变更写入浏览器内的文档服务；只有 `onSave(file)` 完成后，集成方的最终存储才算真正持久化。需要自动持久化编辑结果时，传入 `onSave(file)`：
 
 ```ts
 await createOfficeEditor(container, {

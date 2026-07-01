@@ -69,11 +69,16 @@ interface DocEditorConfig {
     onAppReady: () => void;
     onDocumentReady: () => void;
     onSave: (event: SaveEvent) => void;
+    onSaveDocument?: (event: SaveDocumentEvent) => void;
     onDownloadAs?: (event: DownloadAsEvent) => void;
     writeFile: (event: WriteFileEvent) => void;
     /** Handle external messages from plugins */
     onExternalPluginMessage?: (event: { type: string; data: any; pluginName?: string }) => void;
   };
+}
+
+interface SaveDocumentEvent {
+  data: ArrayBuffer | Uint8Array;
 }
 
 interface SaveEvent {

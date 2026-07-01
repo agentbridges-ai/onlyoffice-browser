@@ -131,7 +131,7 @@ await fetch('/api/files/123', {
 
 `save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests. The package does not persist the file by itself: the host application must write this `File` to its own storage target, such as a backend upload endpoint or a File System Access `createWritable()` handle.
 
-The same rule applies to toolbar saves inside OnlyOffice. Pass `onSave(file)` when the edited bytes should be persisted automatically:
+The same rule applies to toolbar saves inside OnlyOffice. The native "All changes saved" status only means the editor flushed changes into its in-browser document service; the integration is persisted only after `onSave(file)` completes. Pass `onSave(file)` when the edited bytes should be persisted automatically:
 
 ```ts
 await createOfficeEditor(container, {

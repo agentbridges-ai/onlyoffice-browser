@@ -53,6 +53,7 @@ type CapturedDocEditorConfig = {
   events: {
     onAppReady: () => void;
     onDocumentReady: () => void;
+    onSaveDocument?: (event: { data: ArrayBuffer | Uint8Array }) => void;
   };
 };
 
@@ -203,6 +204,32 @@ describe('office editor runtime', () => {
     expect(docEditorConfigs[0].editorConfig.customization.anonymous).toEqual({
       request: false,
       label: 'Local Browser User',
+    });
+
+    await instance.destroy();
+  });
+
+  it('forwards native OnlyOffice save-document binary data to onSave', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onSave = vi.fn();
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.xlsx'),
+      fileName: 'alpha.xlsx',
+      mode: 'edit',
+      onSave,
+    });
+    await flush();
+
+    docEditorConfigs[0].events.onSaveDocument?.({ data: new Uint8Array([9, 8, 7]).buffer });
+    await flush();
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0][0]).toMatchObject({
+      name: 'alpha.xlsx',
+      size: 3,
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
 
     await instance.destroy();
