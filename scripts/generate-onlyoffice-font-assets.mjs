@@ -33,6 +33,21 @@ const ZH_CORE_FONT_FAMILIES = [
   'SimSun-ExtB',
   'Times New Roman',
 ];
+const ZH_CORE_HIDDEN_FONT_FAMILIES = [
+  'Bookshelf Symbol 7',
+  'Marlett',
+  'Monotype Sorts',
+  'MS Reference Specialty',
+  'MT Extra',
+  'OpenSymbol',
+  'Segoe UI Symbol',
+  'Symbol',
+  'Symbola',
+  'Webdings',
+  'Wingdings',
+  'Wingdings 2',
+  'Wingdings 3',
+];
 const ZH_CORE_SOURCE_FILE_NAMES = [
   'Aptos-Bold-Italic.ttf',
   'Aptos-Bold.ttf',
@@ -55,13 +70,24 @@ const ZH_CORE_SOURCE_FILE_NAMES = [
   'arialbd.ttf',
   'arialbi.ttf',
   'ariali.ttf',
+  'bookshelf symbol 7.ttf',
+  'marlett.ttf',
   'msyh.ttc',
   'msyhbd.ttc',
+  'monotypesorts.ttf',
+  'ms reference specialty.ttf',
+  'mtextra.ttf',
+  'seguisym.ttf',
   'simsunb.ttf',
+  'symbol.ttf',
   'times.ttf',
   'timesbd.ttf',
   'timesbi.ttf',
   'timesi.ttf',
+  'webdings.ttf',
+  'wingdings 2.ttf',
+  'wingdings 3.ttf',
+  'wingdings.ttf',
 ];
 const LATIN_FALLBACK_FONT_FAMILIES = ['Calibri', 'Arial', 'Carlito', 'Liberation Sans', 'DejaVu Sans', 'Open Sans'];
 const CJK_FALLBACK_FONT_FAMILIES = [
@@ -286,6 +312,7 @@ function hostUserEnv() {
 
 export function dockerGenerationScript(options) {
   const zhCoreFontFamilies = Array.from(new Set(ZH_CORE_FONT_FAMILIES)).sort();
+  const zhCoreHiddenFontFamilies = Array.from(new Set(ZH_CORE_HIDDEN_FONT_FAMILIES)).sort();
   const zhCoreSourceFileNames = Array.from(
     new Set(ZH_CORE_SOURCE_FILE_NAMES.map((fileName) => fileName.toLowerCase())),
   ).sort();
@@ -319,7 +346,7 @@ if [ -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" ]; then
   cp -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" "$OUT/server/FileConverter/bin/AllFonts.js"
 fi
 
-OUT_DIR="$OUT" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
+  OUT_DIR="$OUT" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_HIDDEN_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreHiddenFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
 import json
 import os
 import re
@@ -328,6 +355,7 @@ import shutil
 out = os.environ["OUT_DIR"]
 font_set = os.environ["FONT_SET"]
 zh_core_font_families = set(json.loads(os.environ["ZH_CORE_FONT_FAMILIES"]))
+zh_core_hidden_font_families = set(json.loads(os.environ["ZH_CORE_HIDDEN_FONT_FAMILIES"]))
 zh_core_source_file_names = set(json.loads(os.environ["ZH_CORE_SOURCE_FILE_NAMES"]))
 latin_fallback_font_families = json.loads(os.environ["LATIN_FALLBACK_FONT_FAMILIES"])
 cjk_fallback_font_families = json.loads(os.environ["CJK_FALLBACK_FONT_FAMILIES"])
@@ -430,12 +458,15 @@ if latin_fallback_source_index < 0 or cjk_fallback_source_index < 0:
     )
 
 if font_set == "zh-core":
-    kept_family_names = {info[0] for info in web_infos if info and (info[0] in zh_core_font_families or info[0] in keep_font_families)}
+    kept_family_names = {info[0] for info in web_infos if info and (info[0] in zh_core_font_families or info[0] in zh_core_hidden_font_families or info[0] in keep_font_families)}
+    visible_family_names = {info[0] for info in web_infos if info and (info[0] in zh_core_font_families or info[0] in keep_font_families)}
     kept_family_names.update(name for name in [latin_fallback_family_name, cjk_fallback_family_name] if name)
+    visible_family_names.update(name for name in [latin_fallback_family_name, cjk_fallback_family_name] if name)
     if not kept_family_names:
         raise SystemExit("zh-core font set did not match any generated font families")
 else:
     kept_family_names = {info[0] for info in web_infos if info}
+    visible_family_names = kept_family_names
 
 used_source_indexes = []
 used_source_index_set = set()
@@ -486,7 +517,7 @@ web_source = replace_js_array(web_source, "__fonts_files", web_files)
 web_source = replace_js_array(web_source, "__fonts_infos", new_infos)
 web_source = replace_js_array(web_source, "__fonts_ranges", web_ranges)
 if font_set == "zh-core":
-    web_source = upsert_js_array(web_source, "__fonts_visible_names", sorted(kept_family_names))
+    web_source = upsert_js_array(web_source, "__fonts_visible_names", sorted(visible_family_names))
 
 with open(web_allfonts, "w", encoding="utf-8") as handle:
     handle.write(web_source)
@@ -495,6 +526,7 @@ with open(os.path.join(out, "onlyoffice-browser-font-source-map.json"), "w", enc
     json.dump({
         "fontSet": font_set,
         "keptFamilies": sorted(kept_family_names),
+        "visibleFamilies": sorted(visible_family_names),
         "listedFamilies": [info[0] for info in new_infos],
         "fonts": source_map,
     }, handle, ensure_ascii=False, indent=2)

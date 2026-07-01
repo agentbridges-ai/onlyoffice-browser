@@ -26,7 +26,7 @@ npx onlyoffice-browser-generate-font-assets \
   --output .onlyoffice-font-assets
 ```
 
-脚本默认导出精简的 `zh-core` 字体集，集中在简体中文 Office 文档和经典英文字体。可见字体注册表只保留微软雅黑、Microsoft YaHei UI、宋体、新宋体、SimSun-ExtB、黑体、楷体、仿宋、等线、Aptos、Calibri、Arial、Times New Roman、Consolas、Cambria 和 Cambria Math。默认只保留这些字体源文件：微软雅黑 regular/bold、宋体/新宋体、SimSun-ExtB、黑体、楷体、仿宋、等线 regular/bold、Aptos regular/italic/bold/bold-italic、Calibri regular/italic/bold/bold-italic、Arial regular/italic/bold/bold-italic、Times New Roman regular/italic/bold/bold-italic、Consolas regular/bold、Cambria/Cambria Math regular。繁体中文和其他语言专属字体默认不导出，以减少首屏字体加载。
+脚本默认导出精简的 `zh-core` 字体集，集中在简体中文 Office 文档和经典英文字体。可见字体注册表只保留微软雅黑、Microsoft YaHei UI、宋体、新宋体、SimSun-ExtB、黑体、楷体、仿宋、等线、Aptos、Calibri、Arial、Times New Roman、Consolas、Cambria 和 Cambria Math。默认只保留这些字体源文件：微软雅黑 regular/bold、宋体/新宋体、SimSun-ExtB、黑体、楷体、仿宋、等线 regular/bold、Aptos regular/italic/bold/bold-italic、Calibri regular/italic/bold/bold-italic、Arial regular/italic/bold/bold-italic、Times New Roman regular/italic/bold/bold-italic、Consolas regular/bold、Cambria/Cambria Math regular，以及 Symbol、Wingdings、Webdings、Marlett、Bookshelf Symbol 7、MT Extra、Monotype Sorts、MS Reference Specialty、Segoe UI Symbol 等常见 Office 符号字体。符号字体用于列表项目符号、公式、插入符号和文档字形解析，默认不显示在字体下拉中，除非通过 `--keep-font` 显式加入。繁体中文和其他语言专属字体默认不导出，以减少首屏字体加载。
 
 确实需要广泛语言覆盖时，可以导出完整官方生成集：
 

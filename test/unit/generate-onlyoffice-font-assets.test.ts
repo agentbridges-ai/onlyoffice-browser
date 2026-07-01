@@ -174,6 +174,23 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(script).not.toContain('first_source_index(find_font_info("Microsoft YaHei")) or');
   });
 
+  it('keeps Office symbol fonts in zh-core without exposing them in the font picker', () => {
+    const script = dockerGenerationScript({ fontSet: 'zh-core', keepFonts: [] });
+
+    expect(script).toContain('ZH_CORE_HIDDEN_FONT_FAMILIES');
+    expect(script).toContain('Wingdings');
+    expect(script).toContain('Symbol');
+    expect(script).toContain('MT Extra');
+    expect(script).toContain('Segoe UI Symbol');
+    expect(script).toContain('symbol.ttf');
+    expect(script).toContain('wingdings.ttf');
+    expect(script).toContain('mtextra.ttf');
+    expect(script).toContain('seguisym.ttf');
+    expect(script).toContain('info[0] in zh_core_hidden_font_families');
+    expect(script).toContain('visible_family_names = {info[0] for info in web_infos');
+    expect(script).toContain('"visibleFamilies": sorted(visible_family_names)');
+  });
+
   it('stages input fonts before cleaning the output directory', () => {
     const source = generateOnlyOfficeFontAssets.toString();
 
