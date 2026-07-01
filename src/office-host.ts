@@ -32,6 +32,10 @@ type PendingSaveAck = {
 
 const pendingSaveAcks = new Map<string, PendingSaveAck>();
 
+type PrintTitleHostWindow = typeof window & {
+  __onlyOfficeBrowserSetPrintTitle?: (title: string, durationMs?: number) => void;
+};
+
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -382,6 +386,7 @@ async function destroyRuntime(): Promise<void> {
   resources.cleanup();
   await clearHostWorkersAndCaches();
   root.replaceChildren();
+  delete (window as PrintTitleHostWindow).__onlyOfficeBrowserSetPrintTitle;
   delete window.APP;
 }
 
@@ -402,6 +407,16 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
   if (destroyed) return;
 
   try {
+    (window as PrintTitleHostWindow).__onlyOfficeBrowserSetPrintTitle = (title, durationMs = 45_000) => {
+      postPortMessage({
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'PRINT_TITLE',
+        sessionId,
+        title,
+        durationMs,
+      });
+    };
+
     const { source } = message.options;
     const runtimeOptions: RuntimeOptions = {
       fileName: message.options.fileName,

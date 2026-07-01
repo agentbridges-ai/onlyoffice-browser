@@ -1,10 +1,14 @@
 import { g_sEmpty_bin } from './empty_bin';
 import { c_oAscFileType2, oAscFileType } from './file-types';
-import { convertBinToDocument, convertDocument, initX2T } from './converter';
+import { convertBinToDocument, convertDocument, convertPrintDataToPdf, initX2T } from './converter';
 import { getDocumentType, getMimeTypeFromExtension, BASE_PATH } from './document-utils';
 import { getOnlyOfficeLang, t } from './i18n';
-import { createOnlyOfficeMockServer, LOCAL_ONLYOFFICE_USER_ID, LOCAL_ONLYOFFICE_USER_NAME } from './onlyoffice-mock-server';
-import type { BinConversionResult, SaveEvent } from './document-types';
+import {
+  createOnlyOfficeMockServer,
+  LOCAL_ONLYOFFICE_USER_ID,
+  LOCAL_ONLYOFFICE_USER_NAME,
+} from './onlyoffice-mock-server';
+import type { BinConversionResult, DocumentMediaMap, SaveEvent } from './document-types';
 import { assertGeneratedFontAssetsAvailable } from './font-assets';
 
 const ONLYOFFICE_BROWSER_BUILD_VERSION = '9.3.0';
@@ -12,7 +16,12 @@ const ONLYOFFICE_BROWSER_BUILD_NUMBER = 140;
 const ONLYOFFICE_ZOOM_FIT_TO_WIDTH = -2;
 const SAVE_TIMEOUT_MS = 60_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
-const PRINT_OBJECT_URL_REVOKE_MS = 5 * 60_000;
+const PRINT_RESOURCE_REVOKE_MS = 5 * 60_000;
+const PRINT_PDF_CACHE_NAME = 'onlyoffice-browser-print-pdfs';
+const PRINT_PDF_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
+const PRINT_SERVICE_WORKER_URL = '/document_editor_service_worker.js';
+const PRINT_SERVICE_WORKER_READY_TIMEOUT_MS = 3_000;
+const PRINT_TITLE_RESTORE_MS = 45_000;
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
 
 type OfficeEmptyType = (typeof SUPPORTED_EMPTY_TYPES)[number];
@@ -82,10 +91,24 @@ type SaveRequest = {
   settled: boolean;
 };
 
-type NativeSaveData = Uint8Array | ArrayBuffer | ArrayBufferView | {
-  data?: unknown;
-  header?: string;
-};
+type NativeSaveData =
+  | Uint8Array
+  | ArrayBuffer
+  | ArrayBufferView
+  | {
+      data?: unknown;
+      header?: string;
+    }
+  | string;
+type NativePrintPdfData =
+  | Uint8Array
+  | ArrayBuffer
+  | ArrayBufferView
+  | {
+      data?: unknown;
+    }
+  | null
+  | undefined;
 type PrintPdfDataContainer = {
   data?: unknown;
   part?: unknown;
@@ -93,10 +116,17 @@ type PrintPdfDataContainer = {
 };
 type PrintPdfCallback = (result: { type: 'save'; status: 'ok'; data: string; filetype: number } | null) => void;
 type DocumentStateChangeEvent = boolean | { data?: boolean };
+type DownloadAsEvent = { data?: { url?: string; fileType?: string | number; title?: string } };
+type OnlyOfficeNativeBridge = {
+  Save_End?: (header: string, length: number) => unknown;
+  [key: string]: unknown;
+};
 
 type RuntimeWindow = typeof window & {
   DocsAPI?: DocsAPI;
   __fonts_visible_names?: unknown;
+  __onlyOfficeBrowserSetPrintTitle?: (title: string, durationMs?: number) => void;
+  native?: OnlyOfficeNativeBridge;
   APP?: {
     getImageURL?: (name: string, callback: (url: string) => void) => void;
     printPdf?: (dataContainer: PrintPdfDataContainer, callback: PrintPdfCallback) => void;
@@ -114,12 +144,15 @@ type OnlyOfficeFrameWindow = Window & {
     };
   };
   __fonts_visible_names?: unknown;
+  __onlyOfficeBrowserPrintOpenGuard?: boolean;
 };
 
 let editorApiPromise: Promise<void> | null = null;
 let nextEditorId = 1;
 const activeInstances = new Map<string, BrowserOfficeEditor>();
 const mediaRegistry = new Map<string, Record<string, string>>();
+let temporaryDocumentTitleOriginal: string | null = null;
+let temporaryDocumentTitleTimeout: number | null = null;
 
 function createObjectUrl(blob: Blob): string {
   return URL.createObjectURL(blob);
@@ -137,8 +170,53 @@ function downloadFile(file: File): void {
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
-function schedulePrintObjectUrlRevoke(objectUrl: string): void {
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), PRINT_OBJECT_URL_REVOKE_MS);
+function schedulePrintResourceCleanup(url: string): void {
+  window.setTimeout(() => {
+    if (url.startsWith('blob:')) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    void deleteCachedPrintPdf(url);
+  }, PRINT_RESOURCE_REVOKE_MS);
+}
+
+function restoreTemporaryDocumentTitle(): void {
+  if (temporaryDocumentTitleTimeout !== null) {
+    window.clearTimeout(temporaryDocumentTitleTimeout);
+    temporaryDocumentTitleTimeout = null;
+  }
+  if (temporaryDocumentTitleOriginal !== null) {
+    document.title = temporaryDocumentTitleOriginal;
+    temporaryDocumentTitleOriginal = null;
+  }
+  window.removeEventListener('afterprint', restoreTemporaryDocumentTitle);
+}
+
+function setTemporaryDocumentTitle(title: string, durationMs = PRINT_TITLE_RESTORE_MS): void {
+  const normalizedTitle = title.trim();
+  if (!normalizedTitle) return;
+
+  if (temporaryDocumentTitleOriginal === null) {
+    temporaryDocumentTitleOriginal = document.title;
+  }
+  document.title = normalizedTitle;
+
+  if (temporaryDocumentTitleTimeout !== null) {
+    window.clearTimeout(temporaryDocumentTitleTimeout);
+  }
+  window.removeEventListener('afterprint', restoreTemporaryDocumentTitle);
+  window.addEventListener('afterprint', restoreTemporaryDocumentTitle, { once: true });
+  temporaryDocumentTitleTimeout = window.setTimeout(restoreTemporaryDocumentTitle, Math.max(1_000, durationMs));
+}
+
+function preparePrintDocumentTitle(fileName: string): void {
+  const title = fileName.replace(/\.pdf$/i, '').trim() || fileName;
+  const setter = (window as RuntimeWindow).__onlyOfficeBrowserSetPrintTitle;
+  if (setter) {
+    setter(title, PRINT_TITLE_RESTORE_MS);
+    return;
+  }
+  setTemporaryDocumentTitle(title, PRINT_TITLE_RESTORE_MS);
 }
 
 function toError(error: unknown): Error {
@@ -184,6 +262,64 @@ function replaceFileExtension(fileName: string, extension: string): string {
   return fileName.includes('.') ? fileName.replace(/\.[^/.]+$/, `.${normalized}`) : `${fileName}.${normalized}`;
 }
 
+function getExtensionFromUrl(url: string | undefined): string {
+  if (!url) return '';
+  try {
+    const pathname = new URL(url, window.location.href).pathname;
+    return getFileExtension(pathname);
+  } catch {
+    return '';
+  }
+}
+
+function normalizeDownloadTargetExtension(value: string): string {
+  const normalized = value.replace(/^\./, '').trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    file_document_doc: 'doc',
+    file_document_docx: 'docx',
+    file_document_dotx: 'dotx',
+    file_document_epub: 'epub',
+    file_document_fb2: 'fb2',
+    file_document_html: 'html',
+    file_document_md: 'md',
+    file_document_odt: 'odt',
+    file_document_ott: 'ott',
+    file_document_rtf: 'rtf',
+    file_document_txt: 'txt',
+    file_crossplatform_pdf: 'pdf',
+    file_crossplatform_pdfa: 'pdfa',
+    jpeg: 'jpg',
+    pdf_a: 'pdfa',
+    'pdf/a': 'pdfa',
+  };
+  return aliases[normalized] || normalized;
+}
+
+function getDownloadTargetExtension(
+  fileType: string | number | undefined,
+  url: string | undefined,
+  fallback: string,
+): string {
+  if (typeof fileType === 'number' && Number.isFinite(fileType)) {
+    const mapped = c_oAscFileType2[fileType];
+    if (mapped) return normalizeDownloadTargetExtension(mapped);
+  }
+  if (typeof fileType === 'string' && fileType.trim()) {
+    const numeric = Number(fileType);
+    if (Number.isFinite(numeric)) {
+      const mapped = c_oAscFileType2[numeric];
+      if (mapped) return normalizeDownloadTargetExtension(mapped);
+    }
+    return normalizeDownloadTargetExtension(fileType);
+  }
+  return getExtensionFromUrl(url) || fallback;
+}
+
+function getDownloadFileName(sourceFileName: string, targetExt: string): string {
+  const outputExtension = targetExt === 'pdfa' ? 'pdf' : targetExt === 'jpeg' ? 'jpg' : targetExt;
+  return replaceFileExtension(sourceFileName, outputExtension);
+}
+
 function getDefaultFileName(emptyType: OfficeEmptyType): string {
   return `New_Document.${emptyType}`;
 }
@@ -193,12 +329,24 @@ function getSavedFileMimeType(fileName: string): string {
   const mimeMap: Record<string, string> = {
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     doc: 'application/msword',
+    dotx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+    epub: 'application/epub+zip',
+    fb2: 'application/x-fictionbook+xml',
+    html: 'text/html',
+    md: 'text/markdown',
+    odt: 'application/vnd.oasis.opendocument.text',
+    ott: 'application/vnd.oasis.opendocument.text-template',
+    rtf: 'application/rtf',
+    txt: 'text/plain',
     xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     xls: 'application/vnd.ms-excel',
     csv: 'text/csv',
     pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     ppt: 'application/vnd.ms-powerpoint',
     pdf: 'application/pdf',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
   };
   return mimeMap[extension] || 'application/octet-stream';
 }
@@ -222,7 +370,7 @@ function toUint8Array(data: unknown): Uint8Array {
     if (/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
       try {
         const decoded = window.atob(trimmed);
-        if (/^(DOCY|XLSY|PPTY|PK)/.test(decoded)) {
+        if (/^(DOCY|XLSY|PPTY|PK|%PDF)/.test(decoded)) {
           return Uint8Array.from(decoded, (char) => char.charCodeAt(0) & 0xff);
         }
       } catch {
@@ -250,8 +398,25 @@ function toUint8Array(data: unknown): Uint8Array {
   throw new Error('Unsupported binary data type');
 }
 
+function toNativeSaveUint8Array(data: unknown): Uint8Array {
+  if (typeof data === 'string') {
+    return Uint8Array.from(data, (char) => char.charCodeAt(0) & 0xff);
+  }
+  if (data && typeof data === 'object') {
+    const record = data as { data?: unknown };
+    if (record.data && record.data !== data) {
+      return toNativeSaveUint8Array(record.data);
+    }
+  }
+  return toUint8Array(data);
+}
+
 function looksLikeZipPackage(data: Uint8Array): boolean {
   return data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b;
+}
+
+function looksLikePdfDocument(data: Uint8Array): boolean {
+  return data.length >= 4 && data[0] === 0x25 && data[1] === 0x50 && data[2] === 0x44 && data[3] === 0x46;
 }
 
 function makeFileFromInput(input: OfficeEditorInput | Blob, fileName: string): File {
@@ -316,6 +481,159 @@ function getActivePrintEditor(): BrowserOfficeEditor | undefined {
   return Array.from(activeInstances.values()).find((instance) => !instance.getState().destroyed);
 }
 
+function getPrintResourceUrl(fileName: string): string {
+  const randomId =
+    typeof window.crypto?.randomUUID === 'function'
+      ? window.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const safeFileName = fileName.replace(/[\\/:*?"<>|]+/g, '_') || 'document.pdf';
+  const pdfFileName = safeFileName.toLowerCase().endsWith('.pdf')
+    ? safeFileName
+    : replaceFileExtension(safeFileName, 'pdf');
+  const url = new URL(`${PRINT_PDF_ROUTE_PREFIX}${randomId}/${encodeURIComponent(pdfFileName)}`, window.location.origin);
+  url.searchParams.set('filename', pdfFileName);
+  return url.href;
+}
+
+async function ensurePrintPdfServiceWorker(): Promise<void> {
+  if (!('serviceWorker' in navigator)) {
+    throw new Error('OnlyOffice print requires Service Worker support for same-origin PDF delivery');
+  }
+
+  await navigator.serviceWorker.register(PRINT_SERVICE_WORKER_URL, { scope: '/' });
+  await navigator.serviceWorker.ready;
+
+  if (navigator.serviceWorker.controller) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+      reject(new Error('OnlyOffice print service worker did not take control of the page'));
+    }, PRINT_SERVICE_WORKER_READY_TIMEOUT_MS);
+
+    const onControllerChange = () => {
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange, { once: true });
+  });
+}
+
+function escapeHeaderQuotedString(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/[\r\n]+/g, ' ');
+}
+
+function encodeRfc5987Value(value: string): string {
+  return encodeURIComponent(value)
+    .replace(/['()]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/\*/g, '%2A');
+}
+
+function getAsciiHeaderFileNameFallback(fileName: string): string {
+  const fallback = fileName
+    .replace(/[^\x20-\x7e]+/g, '_')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .trim();
+  return fallback || 'document.pdf';
+}
+
+function getPdfTitleFromFileName(fileName: string): string {
+  const safeFileName = fileName.toLowerCase().endsWith('.pdf') ? fileName : replaceFileExtension(fileName, 'pdf');
+  return safeFileName.replace(/\.pdf$/i, '').trim() || 'document';
+}
+
+function bytesToBinaryString(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let output = '';
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    output += String.fromCharCode(...bytes.slice(index, index + chunkSize));
+  }
+  return output;
+}
+
+function asciiBytes(value: string): Uint8Array {
+  return Uint8Array.from(value, (char) => char.charCodeAt(0) & 0xff);
+}
+
+function encodePdfUtf16BeHex(value: string): string {
+  const bytes = [0xfe, 0xff];
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    bytes.push((code >> 8) & 0xff, code & 0xff);
+  }
+  return bytes.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join('');
+}
+
+function appendPrintPdfTitleMetadata(bytes: Uint8Array, fileName: string): Uint8Array {
+  const source = bytesToBinaryString(bytes);
+  const startxrefMatches = Array.from(source.matchAll(/startxref\s+(\d+)\s+%%EOF/g));
+  const startxrefMatch = startxrefMatches.at(-1);
+  const previousXrefOffset = startxrefMatch ? Number(startxrefMatch[1]) : NaN;
+  const rootMatch = source.match(/\/Root\s+(\d+)\s+(\d+)\s+R/);
+  const sizeMatches = Array.from(source.matchAll(/\/Size\s+(\d+)/g));
+  const sizeMatch = sizeMatches.at(-1);
+
+  if (!Number.isFinite(previousXrefOffset) || !rootMatch || !sizeMatch) {
+    return bytes;
+  }
+
+  const objectNumber = Number(sizeMatch[1]);
+  const titleHex = encodePdfUtf16BeHex(getPdfTitleFromFileName(fileName));
+  const objectOffset = bytes.byteLength;
+  const object = `\n${objectNumber} 0 obj\n<< /Title <${titleHex}> >>\nendobj\n`;
+  const xrefOffset = objectOffset + asciiBytes(object).byteLength;
+  const xref = `xref\n${objectNumber} 1\n${String(objectOffset).padStart(10, '0')} 00000 n \n`;
+  const trailer =
+    `trailer\n<< /Size ${objectNumber + 1} /Root ${rootMatch[1]} ${rootMatch[2]} R ` +
+    `/Info ${objectNumber} 0 R /Prev ${previousXrefOffset} >>\n` +
+    `startxref\n${xrefOffset}\n%%EOF\n`;
+  const append = asciiBytes(`${object}${xref}${trailer}`);
+  const output = new Uint8Array(bytes.byteLength + append.byteLength);
+  output.set(bytes, 0);
+  output.set(append, bytes.byteLength);
+  return output;
+}
+
+async function putCachedPrintPdf(url: string, bytes: Uint8Array, fileName: string): Promise<void> {
+  if (!('caches' in window)) {
+    throw new Error('OnlyOffice print requires Cache API support for same-origin PDF delivery');
+  }
+
+  await ensurePrintPdfServiceWorker();
+  const safeFileName = fileName.toLowerCase().endsWith('.pdf') ? fileName : replaceFileExtension(fileName, 'pdf');
+  const asciiFileName = getAsciiHeaderFileNameFallback(safeFileName);
+  const encodedFileName = encodeRfc5987Value(safeFileName);
+  const titledBytes = appendPrintPdfTitleMetadata(bytes, safeFileName);
+  const cache = await window.caches.open(PRINT_PDF_CACHE_NAME);
+  await cache.put(
+    url,
+    new Response(titledBytes as BodyInit, {
+      headers: {
+        'accept-ranges': 'bytes',
+        'cache-control': 'no-store',
+        'content-disposition': `inline; filename="${escapeHeaderQuotedString(
+          asciiFileName,
+        )}"; filename*=UTF-8''${encodedFileName}`,
+        'content-length': String(titledBytes.byteLength),
+        'content-type': 'application/pdf',
+        'x-content-type-options': 'nosniff',
+      },
+    }),
+  );
+}
+
+async function deleteCachedPrintPdf(url: string): Promise<void> {
+  if (!('caches' in window)) return;
+  await window.caches
+    .open(PRINT_PDF_CACHE_NAME)
+    .then((cache) => cache.delete(url))
+    .catch(() => undefined);
+}
+
 async function createPrintPdfUrl(dataContainer?: PrintPdfDataContainer): Promise<string> {
   const activeEditor = getActivePrintEditor();
   const data = dataContainer?.data || dataContainer?.part;
@@ -324,12 +642,32 @@ async function createPrintPdfUrl(dataContainer?: PrintPdfDataContainer): Promise
   }
 
   const sourceFileName = activeEditor?.getState().fileName || 'document.docx';
-  const result = await convertBinToDocument(toUint8Array(data), sourceFileName, 'PDF');
-  const bytes = toUint8Array(result.data);
-  const objectUrl = createObjectUrl(new Blob([bytes as BlobPart], { type: 'application/pdf' }));
-  activeEditor?.trackPrintObjectUrl(objectUrl);
-  schedulePrintObjectUrlRevoke(objectUrl);
-  return objectUrl;
+  const media = activeEditor?.getMedia();
+  const sourceBytes = toUint8Array(data);
+  let bytes: Uint8Array;
+  let printFileName: string;
+  const nativePrintBytes = activeEditor?.getNativePrintData();
+  if (nativePrintBytes && looksLikePdfDocument(nativePrintBytes)) {
+    bytes = nativePrintBytes;
+    printFileName = replaceFileExtension(sourceFileName, 'pdf');
+  } else if (nativePrintBytes) {
+    const result = await convertPrintDataToPdf(nativePrintBytes, sourceFileName, media);
+    bytes = toUint8Array(result.data);
+    printFileName = result.fileName || replaceFileExtension(sourceFileName, 'pdf');
+  } else if (looksLikePdfDocument(sourceBytes)) {
+    bytes = sourceBytes;
+    printFileName = replaceFileExtension(sourceFileName, 'pdf');
+  } else {
+    const result = await convertBinToDocument(sourceBytes, sourceFileName, 'PDF', media);
+    bytes = toUint8Array(result.data);
+    printFileName = result.fileName || replaceFileExtension(sourceFileName, 'pdf');
+  }
+  const pdfUrl = getPrintResourceUrl(printFileName);
+  preparePrintDocumentTitle(printFileName);
+  await putCachedPrintPdf(pdfUrl, bytes, printFileName);
+  activeEditor?.trackPrintResourceUrl(pdfUrl);
+  schedulePrintResourceCleanup(pdfUrl);
+  return pdfUrl;
 }
 
 function installOnlyOfficeParentApp(): void {
@@ -340,13 +678,8 @@ function installOnlyOfficeParentApp(): void {
   };
   runtimeWindow.APP.printPdf = (dataContainer, callback) => {
     void createPrintPdfUrl(dataContainer)
-      .then((objectUrl) => {
-        callback({
-          type: 'save',
-          status: 'ok',
-          data: objectUrl,
-          filetype: oAscFileType.PDF,
-        });
+      .then((printUrl) => {
+        callback({ type: 'save', status: 'ok', data: printUrl, filetype: oAscFileType.PDF });
       })
       .catch((error) => {
         console.error('OnlyOffice print PDF export failed:', error);
@@ -388,6 +721,40 @@ function applyOnlyOfficeFrameDefaults(iframe: HTMLIFrameElement): void {
   applyFillContainerDefaults(iframe);
   iframe.style.display ||= 'block';
   iframe.style.border ||= '0';
+}
+
+function isPrintPdfUrl(value: unknown, baseUrl: string): boolean {
+  if (!value) return false;
+  try {
+    return new URL(String(value), baseUrl).pathname.startsWith(PRINT_PDF_ROUTE_PREFIX);
+  } catch {
+    return false;
+  }
+}
+
+function installOnlyOfficePrintOpenGuard(iframe: HTMLIFrameElement): void {
+  const patchWindowOpen = () => {
+    try {
+      const frameWindow = iframe.contentWindow as OnlyOfficeFrameWindow | null;
+      if (!frameWindow || frameWindow.__onlyOfficeBrowserPrintOpenGuard) return;
+
+      const originalOpen = frameWindow.open.bind(frameWindow);
+      frameWindow.open = ((url?: string | URL, target?: string, features?: string) => {
+        if (isPrintPdfUrl(url, frameWindow.location.href)) {
+          console.warn('Suppressed OnlyOffice print fallback popup:', String(url));
+          return null;
+        }
+        return originalOpen(url as string | undefined, target, features);
+      }) as typeof frameWindow.open;
+      frameWindow.__onlyOfficeBrowserPrintOpenGuard = true;
+    } catch {
+      // The editor frame is expected to be same-origin. If it is not ready yet,
+      // the load listener below will retry after navigation completes.
+    }
+  };
+
+  patchWindowOpen();
+  iframe.addEventListener('load', patchWindowOpen);
 }
 
 function getFontNameForFilter(font: unknown): string {
@@ -532,7 +899,7 @@ async function prepareDocument(options: CreateOfficeEditorOptions): Promise<Prep
     const sourceObjectUrl = createObjectUrl(file);
     const converted = await convertDocument(file);
     return {
-      fileName: converted.fileName || fileName,
+      fileName,
       fileType: getFileExtension(fileName),
       binData: converted.bin,
       media: converted.media,
@@ -552,7 +919,7 @@ async function prepareDocument(options: CreateOfficeEditorOptions): Promise<Prep
   const sourceObjectUrl = createObjectUrl(file);
   const converted = await convertDocument(file);
   return {
-    fileName: converted.fileName || fileName,
+    fileName,
     fileType: getFileExtension(fileName),
     binData: converted.bin,
     media: converted.media,
@@ -571,7 +938,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private editorBinUrl: string | null = null;
   private media: Record<string, string> = {};
   private saveRequest: SaveRequest | null = null;
-  private printObjectUrls = new Set<string>();
+  private printResourceUrls = new Set<string>();
   private sourceObjectUrl: string | null = null;
   private status: OfficeEditorStatus = 'opening';
   private dirty = false;
@@ -716,7 +1083,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           onDocumentStateChange: (event: DocumentStateChangeEvent) => {
             this.handleDocumentStateChange(event);
           },
-          onDownloadAs: (event: { data?: { url?: string; fileType?: string | number } }) => {
+          onDownloadAs: (event: DownloadAsEvent) => {
             void this.handleDownloadAs(event);
           },
           writeFile: (event: any) => {
@@ -743,7 +1110,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
               console.warn('OnlyOffice auth requested an unexpected document URL');
             }
           },
-          onSaveRequest: () => this.saveNativeBinary(this.fileName.toLowerCase().endsWith('.csv') ? 'CSV' : getFileExtension(this.fileName).toUpperCase()),
+          onSaveRequest: () =>
+            this.saveNativeBinary(
+              this.fileName.toLowerCase().endsWith('.csv') ? 'CSV' : getFileExtension(this.fileName).toUpperCase(),
+            ),
           onCorruptionWarning: (duplicateId) => {
             console.warn('OnlyOffice corruption warning:', duplicateId);
           },
@@ -760,7 +1130,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
 
   private applyNestedEditorFrameDefaults(): void {
     const frame = this.placeholder.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
-    if (frame) applyOnlyOfficeFrameDefaults(frame);
+    if (frame) {
+      applyOnlyOfficeFrameDefaults(frame);
+      installOnlyOfficePrintOpenGuard(frame);
+    }
   }
 
   private attachDestroyCleanup(editor: DocEditor): void {
@@ -833,7 +1206,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private async convertSavedBin(data: Uint8Array | ArrayBuffer, targetFormat: string): Promise<File> {
     const sourceBytes = toUint8Array(data);
     try {
-      const result: BinConversionResult = await convertBinToDocument(sourceBytes, this.fileName, targetFormat);
+      const result: BinConversionResult = await convertBinToDocument(
+        sourceBytes,
+        this.fileName,
+        targetFormat,
+        this.media,
+      );
       const bytes = toUint8Array(result.data);
       return new File([bytes as BlobPart], result.fileName, { type: getSavedFileMimeType(result.fileName) });
     } catch (error) {
@@ -855,11 +1233,14 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private async invokeSaveCallback(file: File): Promise<boolean> {
     const behavior = this.getSaveBehavior();
     const shouldCallCallback =
-      behavior === 'callback' || (behavior === 'auto' && (this.sourceKind !== 'new-document' || Boolean(this.options.onSave)));
+      behavior === 'callback' ||
+      (behavior === 'auto' && (this.sourceKind !== 'new-document' || Boolean(this.options.onSave)));
 
     if (!shouldCallCallback) return false;
     if (!this.options.onSave) {
-      throw new Error('A save callback is required for this document source. Provide onSave or use saveBehavior: "download".');
+      throw new Error(
+        'A save callback is required for this document source. Provide onSave or use saveBehavior: "download".',
+      );
     }
 
     const handled = await this.options.onSave(file, this);
@@ -884,10 +1265,11 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private async handleSaveDocument(event: SaveEvent): Promise<void> {
     try {
       const payload = event.data?.data?.data;
-      const nativeData = payload ? toUint8Array(payload) : this.getNativeSaveData();
+      const nativeData = payload ? toNativeSaveUint8Array(payload) : this.getNativeSaveData();
       const outputFormat = event.data?.option?.outputformat;
       const optionFormat =
-        (typeof outputFormat === 'number' ? c_oAscFileType2[outputFormat] : undefined) || getFileExtension(this.fileName).toUpperCase();
+        (typeof outputFormat === 'number' ? c_oAscFileType2[outputFormat] : undefined) ||
+        getFileExtension(this.fileName).toUpperCase();
       const targetFormat = this.fileName.toLowerCase().endsWith('.csv')
         ? 'CSV'
         : this.saveRequest?.targetExt || optionFormat;
@@ -915,23 +1297,24 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.setDirty(dirty);
   }
 
-  private async handleDownloadAs(event: { data?: { url?: string; fileType?: string | number } }): Promise<void> {
+  private async handleDownloadAs(event: DownloadAsEvent): Promise<void> {
     try {
       const url = event.data?.url;
+      const targetExt = getDownloadTargetExtension(event.data?.fileType, url, getFileExtension(this.fileName));
       if (!url) {
-        throw new Error('Download URL is empty');
+        const file = await this.convertSavedBin(this.getNativeSaveData(), targetExt.toUpperCase());
+        downloadFile(file);
+        return;
       }
       const response = await fetch(url);
       if (!response.ok) {
-        throw new Error(`Failed to fetch exported file: ${response.status} ${response.statusText}`);
+        const file = await this.convertSavedBin(this.getNativeSaveData(), targetExt.toUpperCase());
+        downloadFile(file);
+        return;
       }
 
       const blob = await response.blob();
-      const baseName = this.fileName.replace(/\.[^/.]+$/, '');
-      const ext = String(
-        this.saveRequest?.targetExt || event.data?.fileType || getFileExtension(this.fileName),
-      ).toLowerCase();
-      const fileName = `${baseName}.${ext}`;
+      const fileName = event.data?.title || getDownloadFileName(this.fileName, targetExt);
       downloadFile(new File([blob], fileName, { type: blob.type || getSavedFileMimeType(fileName) }));
     } catch (error) {
       const normalized = toError(error);
@@ -982,11 +1365,59 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     if (!data) {
       throw new Error('Native binary export did not include document data');
     }
-    return toUint8Array(data);
+    return toNativeSaveUint8Array(data);
   }
 
-  trackPrintObjectUrl(objectUrl: string): void {
-    this.printObjectUrls.add(objectUrl);
+  getNativePrintData(): Uint8Array | null {
+    if (!this.editor || typeof this.editor.asc_nativeGetPDF !== 'function') return null;
+
+    const runtimeWindow =
+      (this.editor.getEditorWindow?.() as RuntimeWindow | null | undefined) || (window as RuntimeWindow);
+    const hadNative = Object.prototype.hasOwnProperty.call(runtimeWindow, 'native');
+    const nativeBridge = runtimeWindow.native || {};
+    const hadSaveEnd = Object.prototype.hasOwnProperty.call(nativeBridge, 'Save_End');
+    const originalSaveEnd = nativeBridge.Save_End;
+    let nativeLength: number | undefined;
+
+    runtimeWindow.native = nativeBridge;
+    nativeBridge.Save_End = (header, length) => {
+      if (Number.isFinite(length)) {
+        nativeLength = Math.max(0, Math.floor(length));
+      }
+      return originalSaveEnd?.call(nativeBridge, header, length);
+    };
+
+    try {
+      const payload: NativePrintPdfData = this.editor.asc_nativeGetPDF({ isPrint: true });
+      const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
+      if (!data) return null;
+
+      let bytes = toUint8Array(data);
+      if (nativeLength !== undefined && nativeLength > 0 && nativeLength <= bytes.byteLength) {
+        bytes = bytes.slice(0, nativeLength);
+      }
+      return bytes.byteLength > 0 ? bytes : null;
+    } catch (error) {
+      console.warn('OnlyOffice native PDF print export failed:', error);
+      return null;
+    } finally {
+      if (hadSaveEnd) {
+        nativeBridge.Save_End = originalSaveEnd;
+      } else {
+        delete nativeBridge.Save_End;
+      }
+      if (!hadNative) {
+        delete runtimeWindow.native;
+      }
+    }
+  }
+
+  getMedia(): DocumentMediaMap {
+    return this.media;
+  }
+
+  trackPrintResourceUrl(url: string): void {
+    this.printResourceUrls.add(url);
   }
 
   private async saveNativeBinary(targetFormat: string): Promise<void> {
@@ -1085,10 +1516,14 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       URL.revokeObjectURL(this.sourceObjectUrl);
       this.sourceObjectUrl = null;
     }
-    for (const url of this.printObjectUrls) {
-      URL.revokeObjectURL(url);
+    for (const url of this.printResourceUrls) {
+      if (url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      } else {
+        void deleteCachedPrintPdf(url);
+      }
     }
-    this.printObjectUrls.clear();
+    this.printResourceUrls.clear();
 
     for (const url of Object.values(this.media)) {
       if (url.startsWith('blob:')) {

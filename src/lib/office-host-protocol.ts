@@ -94,6 +94,11 @@ export type OfficeHostChildMessage =
       mimeType: string;
     })
   | (OfficeHostBaseMessage & {
+      type: 'PRINT_TITLE';
+      title: string;
+      durationMs: number;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'ERROR';
       phase: 'handshake' | 'init' | 'save' | 'setReadonly' | 'destroy' | 'runtime';
       message: string;

@@ -6,7 +6,7 @@
 
 A browser-only Office preview/edit component powered by OnlyOffice 9.3 and `onlyoffice-x2t-wasm`.
 
-The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided DOM container. Conversion, editing, saving, and export happen in an independent-origin sandboxed editor host iframe. It does not require OnlyOffice DocumentServer, backend sessions, document uploads, or user accounts.
+The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided DOM container. Conversion, editing, saving, and export happen in an independent-origin editor host iframe. The independent origin is the isolation boundary; do not add an outer `sandbox` attribute, because OnlyOffice native PDF printing needs same-origin script access to its nested print iframe. It does not require OnlyOffice DocumentServer, backend sessions, document uploads, or user accounts.
 
 ## What This Provides
 

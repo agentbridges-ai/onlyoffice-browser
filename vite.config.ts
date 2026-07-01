@@ -7,6 +7,7 @@ import type { Plugin } from 'vite';
 
 export const FONT_ASSETS_DIR_ENV = 'ONLYOFFICE_BROWSER_FONT_ASSETS_DIR';
 export const GENERATED_FONT_ASSETS_MANIFEST = 'onlyoffice-browser-font-assets.json';
+export const GENERATED_FONT_SOURCE_MAP = 'onlyoffice-browser-font-source-map.json';
 
 type NextFunction = (error?: unknown) => void;
 
@@ -48,6 +49,10 @@ export function resolveGeneratedFontAssetPath(fontAssetsRoot: string, requestUrl
 
   if (normalizedPathname === `/${GENERATED_FONT_ASSETS_MANIFEST}`) {
     return safeResolve(fontAssetsRoot, GENERATED_FONT_ASSETS_MANIFEST);
+  }
+
+  if (normalizedPathname === `/${GENERATED_FONT_SOURCE_MAP}`) {
+    return safeResolve(fontAssetsRoot, GENERATED_FONT_SOURCE_MAP);
   }
 
   if (normalizedPathname === '/sdkjs/common/AllFonts.js') {

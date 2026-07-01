@@ -111,6 +111,7 @@ interface DownloadAsEvent {
   data?: {
     url?: string;
     fileType?: string | number;
+    title?: string;
   };
 }
 
@@ -160,10 +161,19 @@ interface DocEditor {
   }) => void;
   openDocument?: (data: Uint8Array) => void;
   downloadAs?: (data?: string) => void;
+  getEditorWindow?: () => Window | null;
   asc_nativeGetFile3?: () => {
     data?: Uint8Array | ArrayBuffer | ArrayBufferView;
     header?: string;
   } | Uint8Array | ArrayBuffer | ArrayBufferView;
+  asc_nativeGetPDF?: (options?: Record<string, unknown>) =>
+    | {
+        data?: Uint8Array | ArrayBuffer | ArrayBufferView;
+      }
+    | Uint8Array
+    | ArrayBuffer
+    | ArrayBufferView
+    | null;
   zoomFitToWidth?: () => void;
   processRightsChange?: (enabled: boolean, message?: string) => void;
   connectMockServer?: (server: OnlyOfficeMockServer) => void;

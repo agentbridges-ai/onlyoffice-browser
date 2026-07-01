@@ -109,13 +109,27 @@ async function findPrintSettingsConfirmButton(page: Page): Promise<ElementHandle
   return null;
 }
 
-async function getPrintFrameInfo(page: Page): Promise<{ src: string; frameUrl: string } | null> {
+async function getPrintFrameInfo(
+  page: Page,
+): Promise<{ id: string; src: string; frameUrl: string; href: string; canPrint: boolean; accessError: string } | null> {
   for (const frame of page.frames()) {
     const info = await frame
       .evaluate(() => {
         const iframe = document.querySelector<HTMLIFrameElement>('#id-print-frame');
         const src = iframe?.src || '';
-        return src ? { src, frameUrl: window.location.href } : null;
+        if (!src) return null;
+
+        let href = '';
+        let canPrint = false;
+        let accessError = '';
+        try {
+          href = iframe?.contentWindow?.location.href || '';
+          canPrint = typeof iframe?.contentWindow?.print === 'function';
+        } catch (error) {
+          accessError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        }
+
+        return { id: iframe?.id || '', src, frameUrl: window.location.href, href, canPrint, accessError };
       })
       .catch(() => null);
     if (info) return info;
@@ -125,6 +139,11 @@ async function getPrintFrameInfo(page: Page): Promise<{ src: string; frameUrl: s
 
 async function runNativePrintScenario(page: Page, type: PrintTargetType): Promise<void> {
   const failures = collectPageFailures(page);
+  const popups: string[] = [];
+  page.on('popup', async (popup) => {
+    popups.push(popup.url());
+    await popup.close().catch(() => undefined);
+  });
 
   await page.goto(`/save-e2e.html?scenario=local-file&type=${type}`);
   await waitForReady(page);
@@ -149,26 +168,64 @@ async function runNativePrintScenario(page: Page, type: PrintTargetType): Promis
     }
   }
 
-  await expect.poll(() => getPrintFrameInfo(page).then((info) => info?.src || ''), { timeout: 45_000 }).toMatch(/^blob:/);
+  await expect
+    .poll(() => getPrintFrameInfo(page).then((info) => info?.src || ''), { timeout: 45_000 })
+    .toContain('/__onlyoffice-browser-print__/');
   const printFrameInfo = await getPrintFrameInfo(page);
   expect(printFrameInfo).not.toBeNull();
+  expect(printFrameInfo!.src).not.toMatch(/^blob:/);
+  expect(printFrameInfo!.src).toMatch(/\.pdf$/);
 
   const pdfInfo = await frame!.evaluate(async (url) => {
+    const headResponse = await fetch(url, { method: 'HEAD' });
+    const rangeResponse = await fetch(url, { headers: { Range: 'bytes=0-3' } });
+    const rangeBytes = new Uint8Array(await rangeResponse.arrayBuffer());
     const response = await fetch(url);
     const bytes = new Uint8Array(await response.arrayBuffer());
     const header = Array.from(bytes.slice(0, 4), (byte) => String.fromCharCode(byte)).join('');
+    const rangeHeader = Array.from(rangeBytes, (byte) => String.fromCharCode(byte)).join('');
+    const decoder = new TextDecoder('latin1');
+    const source = decoder.decode(bytes);
+    const explicitZeroPageTree = (source.match(/\d+\s+\d+\s+obj[\s\S]*?endobj/g) || []).some(
+      (objectSource) =>
+        /\/Type\s*\/Pages\b/.test(objectSource) &&
+        /\/Count\s+0\b/.test(objectSource) &&
+        /\/Kids\s*\[\s*\]/.test(objectSource),
+    );
     return {
       ok: response.ok,
+      acceptRanges: response.headers.get('accept-ranges') || '',
+      contentDisposition: response.headers.get('content-disposition') || '',
       contentType: response.headers.get('content-type') || '',
       byteLength: bytes.byteLength,
       header,
+      explicitZeroPageTree,
+      headOk: headResponse.ok,
+      headAcceptRanges: headResponse.headers.get('accept-ranges') || '',
+      headContentLength: headResponse.headers.get('content-length') || '',
+      rangeOk: rangeResponse.ok,
+      rangeStatus: rangeResponse.status,
+      rangeContentRange: rangeResponse.headers.get('content-range') || '',
+      rangeHeader,
     };
   }, printFrameInfo!.src);
 
   expect(pdfInfo.ok).toBe(true);
+  expect(pdfInfo.acceptRanges).toBe('bytes');
+  expect(pdfInfo.contentDisposition).toContain('inline;');
   expect(pdfInfo.contentType).toContain('application/pdf');
   expect(pdfInfo.byteLength).toBeGreaterThan(0);
   expect(pdfInfo.header).toBe('%PDF');
+  expect(pdfInfo.explicitZeroPageTree).toBe(false);
+  expect(pdfInfo.headOk).toBe(true);
+  expect(pdfInfo.headAcceptRanges).toBe('bytes');
+  expect(Number(pdfInfo.headContentLength)).toBeGreaterThan(0);
+  expect(pdfInfo.rangeOk).toBe(true);
+  expect(pdfInfo.rangeStatus).toBe(206);
+  expect(pdfInfo.rangeContentRange).toMatch(/^bytes 0-3\/\d+$/);
+  expect(pdfInfo.rangeHeader).toBe('%PDF');
+  expect(printFrameInfo!.id).toBe('id-print-frame');
+  expect(popups).toEqual([]);
   expect(failures).toEqual([]);
 }
 

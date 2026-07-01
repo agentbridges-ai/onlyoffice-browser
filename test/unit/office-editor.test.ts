@@ -175,7 +175,7 @@ describe('office-editor parent proxy', () => {
     await instance.destroy();
   });
 
-  it('creates a sandboxed host iframe and transfers document bytes over the port', async () => {
+  it('creates an isolated-origin host iframe and transfers document bytes over the port', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const onReady = vi.fn();
@@ -189,9 +189,7 @@ describe('office-editor parent proxy', () => {
     const { iframe, messages } = await connectHost(container);
     const instance = await promise;
 
-    expect(iframe.getAttribute('sandbox')).toBe(
-      'allow-scripts allow-same-origin allow-forms allow-modals allow-downloads allow-popups',
-    );
+    expect(iframe.getAttribute('sandbox')).toBeNull();
     expect(iframe.getAttribute('allow')).toBe('clipboard-read; clipboard-write; fullscreen');
     expect(iframe.getAttribute('referrerpolicy')).toBe('no-referrer');
     expect(messages[0]).toMatchObject({
@@ -209,6 +207,26 @@ describe('office-editor parent proxy', () => {
     });
     expect(instance.getState()).toMatchObject({ fileName: 'alpha.docx', fileType: 'docx', status: 'ready' });
     expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes sandbox if an integration mutates the host iframe after mount', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      destroyTimeoutMs: 1,
+    });
+    const { iframe } = await connectHost(container);
+    const instance = await promise;
+
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-modals');
+    await waitForMessage();
+
+    expect(iframe.getAttribute('sandbox')).toBeNull();
+    await instance.destroy();
   });
 
   it('ignores spoofed host-ready messages from the wrong origin', async () => {

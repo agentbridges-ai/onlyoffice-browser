@@ -271,12 +271,22 @@
       const app = this.getIframe()?.contentWindow?.__onlyOfficeBrowserApplication;
       return app?.getController?.('Main')?.api;
     }
+    getEditorWindow() {
+      return this.getIframe()?.contentWindow || null;
+    }
     asc_nativeGetFile3(...args) {
       const api = this.getEditorApi();
       if (!api || typeof api.asc_nativeGetFile3 !== 'function') {
         throw new Error('OnlyOffice native file API is not ready');
       }
       return api.asc_nativeGetFile3(...args);
+    }
+    asc_nativeGetPDF(...args) {
+      const api = this.getEditorApi();
+      if (!api || typeof api.asc_nativeGetPDF !== 'function') {
+        throw new Error('OnlyOffice native PDF API is not ready');
+      }
+      return api.asc_nativeGetPDF(...args);
     }
     attachMouseEvents(...args) {
       return this.origEditor.attachMouseEvents(...args);

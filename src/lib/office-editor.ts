@@ -17,8 +17,8 @@ const RESET_NAVIGATION_TIMEOUT_MS = 750;
 const HOST_READY_TIMEOUT_MS = 30_000;
 const HOST_SELF_RESET_PATH = '/reset.html?stay=1&officeHostReset=1';
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
-const OUTER_IFRAME_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-modals allow-downloads allow-popups';
 const OUTER_IFRAME_ALLOW = 'clipboard-read; clipboard-write; fullscreen';
+const PRINT_TITLE_RESTORE_MS = 45_000;
 
 type OfficeEmptyType = (typeof SUPPORTED_EMPTY_TYPES)[number];
 type OfficeEditorStatus = 'opening' | 'ready' | 'destroyed' | 'error';
@@ -94,6 +94,8 @@ const debugStats = {
   hostResetDoneCount: 0,
   hostResetTimeoutCount: 0,
 };
+let temporaryDocumentTitleOriginal: string | null = null;
+let temporaryDocumentTitleTimeout: number | null = null;
 
 (window as typeof window & { __officeHostDebug?: typeof debugStats }).__officeHostDebug = debugStats;
 
@@ -138,6 +140,35 @@ function downloadFile(file: File): void {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+function restoreTemporaryDocumentTitle(): void {
+  if (temporaryDocumentTitleTimeout !== null) {
+    window.clearTimeout(temporaryDocumentTitleTimeout);
+    temporaryDocumentTitleTimeout = null;
+  }
+  if (temporaryDocumentTitleOriginal !== null) {
+    document.title = temporaryDocumentTitleOriginal;
+    temporaryDocumentTitleOriginal = null;
+  }
+  window.removeEventListener('afterprint', restoreTemporaryDocumentTitle);
+}
+
+function setTemporaryDocumentTitle(title: string, durationMs = PRINT_TITLE_RESTORE_MS): void {
+  const normalizedTitle = title.trim();
+  if (!normalizedTitle) return;
+
+  if (temporaryDocumentTitleOriginal === null) {
+    temporaryDocumentTitleOriginal = document.title;
+  }
+  document.title = normalizedTitle;
+
+  if (temporaryDocumentTitleTimeout !== null) {
+    window.clearTimeout(temporaryDocumentTitleTimeout);
+  }
+  window.removeEventListener('afterprint', restoreTemporaryDocumentTitle);
+  window.addEventListener('afterprint', restoreTemporaryDocumentTitle, { once: true });
+  temporaryDocumentTitleTimeout = window.setTimeout(restoreTemporaryDocumentTitle, Math.max(1_000, durationMs));
 }
 
 function readFileNameFromResponse(url: string, response: Response, fallback = 'document.docx'): string {
@@ -343,6 +374,27 @@ function applyHostFrameDefaults(iframe: HTMLIFrameElement): void {
   iframe.style.border ||= '0';
 }
 
+function enforceUnsandboxedHostFrame(iframe: HTMLIFrameElement): () => void {
+  const removeSandbox = () => {
+    if (!iframe.hasAttribute('sandbox')) return;
+    iframe.removeAttribute('sandbox');
+    console.warn(
+      'OnlyOffice browser removed sandbox from the editor host iframe. The isolated host origin is the security boundary; sandbox breaks native PDF printing in Chrome.',
+    );
+  };
+
+  removeSandbox();
+  if (typeof MutationObserver === 'undefined') return () => {};
+
+  const observer = new MutationObserver((mutations) => {
+    if (mutations.some((mutation) => mutation.attributeName === 'sandbox')) {
+      removeSandbox();
+    }
+  });
+  observer.observe(iframe, { attributes: true, attributeFilter: ['sandbox'] });
+  return () => observer.disconnect();
+}
+
 class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   readonly id: string;
   private readonly container: HTMLElement;
@@ -363,6 +415,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private readyNotified = false;
   private destroyed = false;
   private destroyPromise: Promise<void> | null = null;
+  private unsandboxedHostFrameCleanup: (() => void) | null = null;
   private state: OfficeEditorState;
 
   private constructor(container: HTMLElement, options: CreateOfficeEditorOptions, prepared: PreparedHostInit) {
@@ -390,10 +443,13 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     const iframe = document.createElement('iframe');
     iframe.className = 'office-editor-host-frame';
     iframe.title = this.prepared.options.fileName || 'Office editor';
-    iframe.setAttribute('sandbox', OUTER_IFRAME_SANDBOX);
+    // Do not sandbox: native PDF printing needs same-origin script access inside
+    // the independent editor host's nested print iframe.
+    iframe.removeAttribute('sandbox');
     iframe.setAttribute('allow', OUTER_IFRAME_ALLOW);
     iframe.setAttribute('referrerpolicy', 'no-referrer');
     applyHostFrameDefaults(iframe);
+    this.unsandboxedHostFrameCleanup = enforceUnsandboxedHostFrame(iframe);
 
     this.iframe = iframe;
     this.hostWindow = iframe.contentWindow;
@@ -484,6 +540,9 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
         return;
       case 'SAVE_RESULT':
         void this.handleSaveResult(message);
+        return;
+      case 'PRINT_TITLE':
+        setTemporaryDocumentTitle(message.title, message.durationMs);
         return;
       case 'ERROR':
         this.handleHostError(message);
@@ -756,6 +815,8 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private async forceRemoveIframe(hostResetDone = false): Promise<void> {
     const iframe = this.iframe;
     this.iframe = null;
+    this.unsandboxedHostFrameCleanup?.();
+    this.unsandboxedHostFrameCleanup = null;
     if (!iframe) return;
 
     if (iframe.isConnected) {

@@ -1,6 +1,16 @@
 import { BASE_PATH } from './document-utils';
 
 export const GENERATED_FONT_ASSETS_MANIFEST = 'onlyoffice-browser-font-assets.json';
+export const GENERATED_FONT_SOURCE_MAP = 'onlyoffice-browser-font-source-map.json';
+
+export interface GeneratedFontSourceMapEntry {
+  source: string;
+  file: string;
+}
+
+export interface GeneratedFontSourceMap {
+  fonts: GeneratedFontSourceMapEntry[];
+}
 
 export interface GeneratedFontAssetsManifest {
   version: number;
@@ -12,6 +22,7 @@ export interface GeneratedFontAssetsManifest {
   fontSelection: string;
   fontThumbnails: string[];
   fonts: string[];
+  fontSourceMap?: string;
 }
 
 const FONT_ASSETS_SETUP_HINT =
@@ -92,6 +103,36 @@ export async function fetchGeneratedFontAssetsManifest(): Promise<GeneratedFontA
   }
 }
 
+export async function fetchGeneratedFontSourceMap(assetPath?: string): Promise<GeneratedFontSourceMap | null> {
+  if (!assetPath) return null;
+
+  const response = await fetch(getRuntimeAssetUrl(assetPath), { cache: 'no-cache' }).catch(() => null);
+  if (!response || response.status === 404) return null;
+  if (!response.ok) {
+    throw createMissingFontAssetsError(`${assetPath} returned ${response.status}`);
+  }
+
+  let value: Partial<GeneratedFontSourceMap>;
+  try {
+    value = (await response.json()) as Partial<GeneratedFontSourceMap>;
+  } catch {
+    return null;
+  }
+
+  if (!value || !Array.isArray(value.fonts)) return null;
+  return {
+    fonts: value.fonts.filter(
+      (font): font is GeneratedFontSourceMapEntry =>
+        Boolean(
+          font &&
+            typeof font === 'object' &&
+            typeof (font as GeneratedFontSourceMapEntry).source === 'string' &&
+            typeof (font as GeneratedFontSourceMapEntry).file === 'string',
+        ),
+    ),
+  };
+}
+
 async function assertRuntimeAssetReachable(assetPath: string): Promise<void> {
   const assetUrl = getRuntimeAssetUrl(assetPath);
   let response: Response;
@@ -118,6 +159,7 @@ export async function assertGeneratedFontAssetsAvailable(): Promise<GeneratedFon
   await Promise.all([
     assertRuntimeAssetReachable(manifest.allFonts),
     assertRuntimeAssetReachable(manifest.fontSelection),
+    ...(manifest.fontSourceMap ? [assertRuntimeAssetReachable(manifest.fontSourceMap)] : []),
     assertRuntimeAssetReachable(manifest.fontThumbnails[0]),
     assertRuntimeAssetReachable(manifest.fonts[0]),
   ]);

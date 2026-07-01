@@ -1,6 +1,6 @@
 # Browser Office Editor 集成指南
 
-Browser Office Editor 是一个纯浏览器端 Office 预览/编辑组件。宿主应用提供容器 DOM，组件在容器内创建一个轻量 sandbox iframe，指向独立 origin 的 editor host；文档转换、编辑、导出都在这个隔离 host iframe 内完成。
+Browser Office Editor 是一个纯浏览器端 Office 预览/编辑组件。宿主应用提供容器 DOM，组件在容器内创建一个轻量 iframe，指向独立 origin 的 editor host；文档转换、编辑、导出都在这个隔离 host iframe 内完成。独立 origin 是隔离边界。不要给外层 iframe 添加 `sandbox` 属性：原生 PDF 打印链路需要 editor host 对内部打印 iframe 保持同源脚本访问；如果集成层又把 `sandbox` 加回 host iframe，运行时会立即移除。
 
 ## 部署静态资源
 
@@ -154,6 +154,8 @@ await fetch('/api/files/123', {
 
 本包会调用浏览器运行时的 native bin 导出，再用内置 x2t WASM 把 bin 转成目标 Office 文件。用于 callback 本地持久化的保存链路不会调用 `downloadAs()`，因此不会弹出浏览器下载流程。
 
+文档资源必须和 native bin 一起进入转换器。上游 DocumentServer 在运行 FileConverter 前，会把整棵文档 storage 目录下载到 converter 的 `source` 目录，因此 `Editor.bin`、changes，以及 `media/...` 这类侧车文件会一起交给 x2t。本浏览器包没有服务端 storage 目录，所以会保留打开/插入过程中形成的 media object URL 映射，并在保存、打印、下载为转换前重新 materialize 到 x2t 的 `/working/media`。不要把导出链路改回“只传 native bin”；否则可能生成关系仍引用图片、但 `word/media/*`、`xl/media/*` 或 `ppt/media/*` 实际缺失的 OOXML 包。
+
 `saveBehavior` 决定 native 导出后的分流：
 
 - `auto`（默认）：已有 `file`/`buffer`/`url` 来源走 `onSave`；缺少 `onSave` 则保存失败。`emptyType` 新建文档默认下载，除非 `onSave` 返回 `true` 表示已处理。
@@ -175,11 +177,26 @@ await createOfficeEditor(container, {
 });
 ```
 
-OnlyOffice 原生“所有更改已保存”不是本浏览器集成里的最终持久化信号。在上游 ONLYOFFICE DocumentServer 部署里，这个角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)、[cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 和 [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 为集成参考。
+OnlyOffice 原生“所有更改已保存”不是本浏览器集成里的最终持久化信号。在上游 ONLYOFFICE DocumentServer 部署里，这个角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/DocumentServer](https://github.com/ONLYOFFICE/DocumentServer)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)、[cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 和 [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 为集成参考。
 
 ## 打印
 
-使用 OnlyOffice 原生打印按钮。浏览器运行时会提供编辑器期望的父页面 `APP.printPdf` bridge，通过内置 x2t WASM 把打印 payload 转成 PDF Blob URL，再返回给 OnlyOffice，由编辑器创建 print iframe 并继续进入浏览器打印流程。
+使用 OnlyOffice 原生打印按钮。上游 DocumentServer 的打印链路是在编辑器 iframe 内调用 `asc_Print()`，生成服务端 PDF URL，把该 URL 加载到隐藏的 `#id-print-frame`，再调用 `iframe.contentWindow.print()`。官方服务端实现中的 URL 是同源 `/printfile/:docid/:filename` 响应，响应头包含 `Content-Type: application/pdf` 和 `Content-Disposition: inline`；文件名会同时放在 URL path 和 disposition 中，因为 Chrome 保存打印结果时会参考资源名。
+
+本浏览器运行时没有服务端 `printfile` endpoint，因此用等价链路模拟：提供编辑器期望的父页面 `APP.printPdf` bridge，从 editor iframe 取得 OnlyOffice native print renderer stream，再通过 x2t `bin2pdf` 以原始非 base64 流方式转换（`m_bIsNoBase64=true`），把生成的 PDF 写入 editor host origin 下的 Cache API，并返回同一个 editor host origin 上 `/__onlyoffice-browser-print__/.../<file>.pdf?filename=<file>.pdf` 形式的临时 PDF URL。editor host service worker 会用接近官方形态的 PDF 响应头把该 PDF 提供给 OnlyOffice 内置隐藏 `#id-print-frame`。URL resource name、`Content-Disposition` 文件名和 PDF 文档 metadata title 必须保持一致；Chrome 的打印/PDF viewer 路径可能从 PDF Title metadata 生成“另存为 PDF”的默认名，所以 runtime 会在缓存生成的 PDF 前追加一段增量 PDF info dictionary，写入 UTF-16BE `/Title`。
+
+这符合隔离 host 下的浏览器约束：`window.print()` 打印当前已加载文档，iframe 的 `contentWindow` 访问受同源策略限制，现代 `blob:` URL 还会受到 storage partitioning / navigation 限制。不要给外层 iframe 加 sandbox，即使带上 `allow-same-origin` 和 `allow-modals` 也不可靠；Chrome 仍可能把嵌套 PDF 打印 iframe 判为不可访问。打包后的 OnlyOffice runtime 会在构建时 patch：保留隐藏打印 iframe，在 PDF document 变得可脚本访问前短暂重试 `contentWindow.print()`，并禁止 `window.open()` / `downloadAs()` fallback。打印不要通过图片、Canvas 或 PDF.js 栅格化绕路。
+
+参考文档：
+
+- [MDN `Window.print()`](https://developer.mozilla.org/en-US/docs/Web/API/Window/print)
+- [MDN `HTMLIFrameElement.contentWindow`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLIFrameElement/contentWindow)
+- [MDN same-origin policy](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Same-origin_policy)
+- [MDN `blob:` URLs and storage partitioning](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Schemes/blob)
+- [MDN service workers](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers)
+- [Chrome sandboxed modal dialogs sample](https://googlechrome.github.io/samples/block-modal-dialogs-sandboxed-iframe/index.html)
+- [ONLYOFFICE/web-apps document print controller](https://github.com/ONLYOFFICE/web-apps/blob/master/apps/documenteditor/main/app/controller/Main.js)
+- [ONLYOFFICE/web-apps print settings controller](https://github.com/ONLYOFFICE/web-apps/blob/master/apps/documenteditor/main/app/controller/Print.js)
 
 打印和保存链路相互独立：不会调用 `downloadAs()`，不会触发 `onSave` 写回，也不会改变 dirty 状态。打印 E2E 矩阵覆盖 `xlsx`、`xls`、`docx`、`doc`、`pptx`、`ppt`。
 

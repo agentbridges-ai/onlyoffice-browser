@@ -22,7 +22,7 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      'ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-font-assets ./node_modules/.bin/vite build && ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-font-assets ./node_modules/.bin/vite preview --host 127.0.0.1 --port 4173',
+      'ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-font-assets pnpm run build && ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-font-assets ./node_modules/.bin/vite preview --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

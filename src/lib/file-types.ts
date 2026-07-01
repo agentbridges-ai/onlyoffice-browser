@@ -23,6 +23,7 @@ export const oAscFileType = {
   DOC_FLAT: 80,
   DOCX_FLAT: 81,
   HTML_IN_CONTAINER: 82,
+  MD: 83,
   DOCX_PACKAGE: 84,
   OFORM: 85,
   DOCXF: 86,

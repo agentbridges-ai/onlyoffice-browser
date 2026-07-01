@@ -298,11 +298,18 @@ export function verifyOnlyOfficeFontAssets(input) {
   if (typeof manifest.fontSelection !== 'string' || manifest.fontSelection.length === 0) {
     throw new Error('Generated font asset manifest has invalid fontSelection');
   }
+  if (
+    manifest.fontSourceMap !== undefined &&
+    (typeof manifest.fontSourceMap !== 'string' || manifest.fontSourceMap.length === 0)
+  ) {
+    throw new Error('Generated font asset manifest has invalid fontSourceMap');
+  }
   assertStringArray(manifest.fontThumbnails, 'fontThumbnails');
   assertStringArray(manifest.fonts, 'fonts');
 
   assertFile(root, manifest.allFonts);
   assertFile(root, manifest.fontSelection);
+  if (manifest.fontSourceMap) assertFile(root, manifest.fontSourceMap);
   for (const thumbnail of manifest.fontThumbnails) assertFile(root, thumbnail);
   for (const font of manifest.fonts) assertFile(root, font);
   verifyAllFonts(root, manifest.allFonts, manifest.fontThumbnails);
