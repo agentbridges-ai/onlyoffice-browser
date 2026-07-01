@@ -28,6 +28,48 @@ npx onlyoffice-browser-generate-font-assets \
 
 脚本默认导出精简的 `zh-core` 字体集，集中在简体中文 Office 文档和经典英文字体。可见字体注册表只保留微软雅黑、Microsoft YaHei UI、宋体、新宋体、SimSun-ExtB、黑体、楷体、仿宋、等线、Aptos、Calibri、Arial、Times New Roman、Consolas、Cambria 和 Cambria Math。默认只保留这些字体源文件：微软雅黑 regular/bold、宋体/新宋体、SimSun-ExtB、黑体、楷体、仿宋、等线 regular/bold、Aptos regular/italic/bold/bold-italic、Calibri regular/italic/bold/bold-italic、Arial regular/italic/bold/bold-italic、Times New Roman regular/italic/bold/bold-italic、Consolas regular/bold、Cambria/Cambria Math regular，以及 Symbol、Wingdings、Webdings、Marlett、Bookshelf Symbol 7、MT Extra、Monotype Sorts、MS Reference Specialty、Segoe UI Symbol 等常见 Office 符号字体。符号字体用于列表项目符号、公式、插入符号和文档字形解析，默认不显示在字体下拉中，除非通过 `--keep-font` 显式加入。繁体中文和其他语言专属字体默认不导出，以减少首屏字体加载。
 
+## `zh-core` 固化配置
+
+`zh-core` 的目标是让所有集成方生成同一类 Office 文档基础字体资产，同时避免把字体原文件随 npm 包分发。生成器会从调用方提供的字体目录中取字体文件，输出可部署的静态字体资产；本 npm 包只发布生成脚本、运行时代码和文档。
+
+可见字体清单默认固定为：
+
+- `Aptos`
+- `Calibri`
+- `Arial`
+- `Times New Roman`
+- `Cambria`
+- `Microsoft YaHei`
+- `SimSun`
+- `DengXian`
+- `SimHei`
+- `KaiTi`
+
+如果上层产品希望字体下拉只展示更窄的主字体集合，可以在 host 侧基于生成出的 `__fonts_visible_names` 再过滤；不要删除隐藏符号字体的注册项。
+
+这些隐藏字体必须保留注册，但不应出现在字体下拉中：
+
+- `Symbol`
+- `Wingdings`
+- `Wingdings 2`
+- `Wingdings 3`
+- `Webdings`
+- `Bookshelf Symbol 7`
+- `Marlett`
+- `Monotype Sorts`
+- `MS Reference Specialty`
+- `MT Extra`
+- `Segoe UI Symbol`
+- `OpenSymbol`
+- `Symbola`
+- `Cambria Math`
+
+已踩过的坑：
+
+- 如果只保留中英文字体而删除 Symbol/Wingdings/Webdings 一类符号字体，Word 列表项目符号、公式符号或插入符号可能显示成问号方块。
+- 如果 `AllFonts.js` 里保留了 `Symbol`、`Wingdings`、`Webdings` 等 family 名称，但它们实际被映射到 Calibri/Arial fallback，项目符号不会丢失，但圆点大小和官方 DocumentServer 明显不一致。
+- 官方 `documentserver-generate-allfonts.sh` 可能不会把某些 Office 符号字体列入 `server/FileConverter/bin/AllFonts.js` 的 `__fonts_files`。本生成器会按 family 到源文件名的固定映射补入这些字体，例如 `Symbol -> symbol.ttf`、`Webdings -> webdings.ttf`、`Wingdings -> Wingdings.ttf`。
+
 确实需要广泛语言覆盖时，可以导出完整官方生成集：
 
 ```bash
@@ -96,4 +138,4 @@ dev 和 preview server 会把生成目录按生产同款路径暴露出来。本
 
 生成器可以接收开源字体、内部授权字体、厂商提供字体或系统字体副本。是否有权使用和部署这些字体文件，由使用者自行负责。
 
-除非字体许可证明确允许再分发，否则不要把生成出的第三方字体资产提交到本仓库。
+除非字体许可证明确允许再分发，否则不要把生成出的第三方字体资产提交到本仓库，也不要把它们放进 npm 包。本包的 `package.json#files` 不包含 `fonts/`、`.onlyoffice-font-assets/` 或任何原始字体目录。

@@ -28,6 +28,48 @@ npx onlyoffice-browser-generate-font-assets \
 
 By default the script exports a compact `zh-core` set focused on Simplified Chinese Office documents and classic English fonts. The visible font registry is limited to Microsoft YaHei, Microsoft YaHei UI, SimSun, NSimSun, SimSun-ExtB, SimHei, KaiTi, FangSong, DengXian, Aptos, Calibri, Arial, Times New Roman, Consolas, Cambria, and Cambria Math. It keeps these source files only: Microsoft YaHei regular/bold, SimSun/NSimSun, SimSun-ExtB, SimHei, KaiTi, FangSong, DengXian regular/bold, Aptos regular/italic/bold/bold-italic, Calibri regular/italic/bold/bold-italic, Arial regular/italic/bold/bold-italic, Times New Roman regular/italic/bold/bold-italic, Consolas regular/bold, Cambria/Cambria Math regular, and common Office symbol fonts such as Symbol, Wingdings, Webdings, Marlett, Bookshelf Symbol 7, MT Extra, Monotype Sorts, MS Reference Specialty, and Segoe UI Symbol. Symbol fonts are retained for list bullets, equations, inserted symbols, and document glyph resolution but are hidden from the font picker unless explicitly added through `--keep-font`. Traditional Chinese and other language-specific fonts are omitted by default to keep first paint fast.
 
+## Fixed `zh-core` Configuration
+
+`zh-core` is meant to let hosts generate the same baseline Office font asset profile without redistributing raw font files through this npm package. The generator reads font files from the host-provided input directory and writes deployable static font assets. The npm package ships only runtime code, generation scripts, and documentation.
+
+The default visible font list is fixed to:
+
+- `Aptos`
+- `Calibri`
+- `Arial`
+- `Times New Roman`
+- `Cambria`
+- `Microsoft YaHei`
+- `SimSun`
+- `DengXian`
+- `SimHei`
+- `KaiTi`
+
+Hosts that need an even narrower font picker may filter the generated `__fonts_visible_names` at the application layer. Do not remove hidden symbol font registrations.
+
+These hidden fonts must remain registered but should stay out of the font picker:
+
+- `Symbol`
+- `Wingdings`
+- `Wingdings 2`
+- `Wingdings 3`
+- `Webdings`
+- `Bookshelf Symbol 7`
+- `Marlett`
+- `Monotype Sorts`
+- `MS Reference Specialty`
+- `MT Extra`
+- `Segoe UI Symbol`
+- `OpenSymbol`
+- `Symbola`
+- `Cambria Math`
+
+Known pitfalls:
+
+- If Symbol/Wingdings/Webdings-style fonts are removed while keeping only Chinese and Latin text fonts, Word bullets, equation symbols, or inserted symbols can render as question-mark boxes.
+- If `AllFonts.js` keeps family names such as `Symbol`, `Wingdings`, and `Webdings` but maps them to a Calibri/Arial fallback, bullets no longer disappear, but their size differs visibly from official DocumentServer output.
+- The official `documentserver-generate-allfonts.sh` may omit some Office symbol fonts from `server/FileConverter/bin/AllFonts.js` `__fonts_files`. This generator patches those families back to exact source file names, for example `Symbol -> symbol.ttf`, `Webdings -> webdings.ttf`, and `Wingdings -> Wingdings.ttf`.
+
 Use the full official generated set only when you need broad language coverage:
 
 ```bash
@@ -96,4 +138,4 @@ For production, deploy the generated directory on the same editor host path layo
 
 The generator accepts open-source fonts, internally licensed fonts, vendor-provided fonts, or system font copies. You are responsible for ensuring that you have the right to use and deploy those files.
 
-Do not commit generated third-party font assets to this repository unless their license explicitly allows redistribution.
+Do not commit generated third-party font assets to this repository unless their license explicitly allows redistribution, and do not include them in the npm package. This package's `package.json#files` intentionally excludes `fonts/`, `.onlyoffice-font-assets/`, and any raw font source directory.
