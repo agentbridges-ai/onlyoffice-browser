@@ -4,7 +4,14 @@ import { g_sEmpty_bin } from './lib/empty_bin';
 import './styles/base.css';
 
 type SaveScenario = 'local-file' | 'new-document';
-type OfficeTestType = 'xlsx' | 'docx' | 'pptx';
+type OfficeTestType = 'xlsx' | 'xls' | 'docx' | 'doc' | 'pptx' | 'ppt';
+
+type SaveE2EResult = {
+  fileName: string;
+  size: number;
+  hash: string;
+  firstBytes: number[];
+};
 
 type SaveE2EStatus = {
   scenario: SaveScenario;
@@ -25,6 +32,7 @@ type SaveE2EController = {
   ready: Promise<void>;
   getStatus: () => SaveE2EStatus;
   getState: () => OfficeEditorState | null;
+  save: (targetExt?: string) => Promise<SaveE2EResult>;
   destroy: () => Promise<void>;
 };
 
@@ -34,7 +42,7 @@ declare global {
   }
 }
 
-const supportedTypes: OfficeTestType[] = ['xlsx', 'docx', 'pptx'];
+const supportedTypes: OfficeTestType[] = ['xlsx', 'xls', 'docx', 'doc', 'pptx', 'ppt'];
 const rootElement = document.querySelector<HTMLElement>('#save-e2e-root');
 const statusElement = document.querySelector<HTMLElement>('#save-e2e-status');
 const editorElement = document.querySelector<HTMLElement>('#save-e2e-editor');
@@ -106,8 +114,17 @@ function getDefaultOfficeHostUrl(): string {
 
 function mimeTypeForType(fileType: OfficeTestType): string {
   if (fileType === 'docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (fileType === 'doc') return 'application/msword';
   if (fileType === 'pptx') return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  if (fileType === 'ppt') return 'application/vnd.ms-powerpoint';
+  if (fileType === 'xls') return 'application/vnd.ms-excel';
   return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+}
+
+function templateTypeForType(fileType: OfficeTestType): 'xlsx' | 'docx' | 'pptx' {
+  if (fileType === 'doc' || fileType === 'docx') return 'docx';
+  if (fileType === 'ppt' || fileType === 'pptx') return 'pptx';
+  return 'xlsx';
 }
 
 async function hashFile(file: File): Promise<string> {
@@ -162,10 +179,31 @@ class MemoryFileHandle {
 }
 
 async function seedExistingOfficeFile(fileType: OfficeTestType): Promise<MemoryFileHandle> {
+  const fixturePath =
+    fileType === 'xls' || fileType === 'doc' || fileType === 'ppt'
+      ? `/fixtures/legacy/legacy.${fileType}`
+      : `/fixtures/office/local.${fileType}`;
+  const response = await fetch(fixturePath, { cache: 'no-cache' });
+  if (response.ok) {
+    const fixtureName = fixturePath.split('/').pop() || `local.${fileType}`;
+    const fixtureFile = new File([await response.blob()], fixtureName, {
+      type: mimeTypeForType(fileType),
+    });
+    const handle = new MemoryFileHandle(fixtureFile);
+    initialSize = fixtureFile.size;
+    initialHash = await hashFile(fixtureFile);
+    lastSize = initialSize;
+    lastHash = initialHash;
+    savedFileName = fixtureFile.name;
+    handle.resetWriteCount();
+    return handle;
+  }
+
   await initX2T();
-  const template = g_sEmpty_bin[`.${fileType}`];
+  const templateType = templateTypeForType(fileType);
+  const template = g_sEmpty_bin[`.${templateType}`];
   if (!template) {
-    throw new Error(`Missing empty document template: ${fileType}`);
+    throw new Error(`Missing empty document template: ${templateType}`);
   }
   const bin = new Uint8Array(await new Blob([template], { type: 'application/octet-stream' }).arrayBuffer());
   const converted = await convertBinToDocument(bin, `local-save.${fileType}`, fileType.toUpperCase());
@@ -218,7 +256,7 @@ async function openNewDocumentScenario(): Promise<void> {
   setStatus('opening new document');
   editor = await createOfficeEditor(editorEl, {
     hostUrl: getDefaultOfficeHostUrl(),
-    emptyType: type,
+    emptyType: templateTypeForType(type),
     fileName: `New_Document.${type}`,
     mode: 'edit',
     saveBehavior: 'download',
@@ -254,6 +292,17 @@ window.__ONLYOFFICE_SAVE_E2E__ = {
     state,
   }),
   getState: () => state,
+  save: async (targetExt?: string) => {
+    if (!editor) throw new Error('Editor is not ready');
+    const file = await editor.save(targetExt);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return {
+      fileName: file.name,
+      size: file.size,
+      hash: await hashFile(file),
+      firstBytes: Array.from(bytes.slice(0, 8)),
+    };
+  },
   destroy: async () => {
     await editor?.destroy();
     editor = null;

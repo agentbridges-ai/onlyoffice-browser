@@ -348,6 +348,35 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
+  it('exports print payloads to PDF object URLs through the OnlyOffice parent app bridge', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+    });
+    await flush();
+
+    const callback = vi.fn();
+    const printPdf = (window.APP as { printPdf?: (data: unknown, callback: (result: unknown) => void) => void }).printPdf;
+    expect(printPdf).toEqual(expect.any(Function));
+
+    printPdf?.({ data: new Uint8Array([1, 2, 3]) }, callback);
+    await waitForMessage();
+
+    expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.docx', 'PDF');
+    expect(callback).toHaveBeenCalledWith({
+      type: 'save',
+      status: 'ok',
+      data: expect.stringMatching(/^blob:/),
+      filetype: 513,
+    });
+
+    await instance.destroy();
+  });
+
   it('tracks dirty state changes and clears dirty after manual save', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);

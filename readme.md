@@ -87,12 +87,14 @@ pnpm install
 pnpm run dev
 pnpm run lint
 pnpm run test
+pnpm run test:e2e:save
+pnpm run test:e2e:print
 pnpm run build:lib
 pnpm run pack:dry
 pnpm run build
 ```
 
-`pnpm run test:real-load` runs the real-file same-page stress test. See the integration guide for Chrome CDP flags and file arguments.
+`pnpm run test:e2e:save` verifies manual native-save routing for existing local files, new documents, and legacy `.doc`/`.xls`/`.ppt` to OOXML output. `pnpm run test:e2e:print` verifies the native print flow for modern and legacy Word/Excel/PowerPoint files. `pnpm run test:real-load` runs the real-file same-page stress test. See the integration guide for Chrome CDP flags and file arguments.
 
 ## Build
 

@@ -19,6 +19,13 @@ type SaveE2EStatus = {
   error: string;
 };
 
+type SaveE2EResult = {
+  fileName: string;
+  size: number;
+  hash: string;
+  firstBytes: number[];
+};
+
 test.describe.configure({ mode: 'serial', timeout: 120_000 });
 
 function collectPageFailures(page: Page): string[] {
@@ -203,3 +210,45 @@ test('new xlsx saves through browser download without callback writes', async ({
   expect(downloads).toHaveLength(1);
   expect(failures).toEqual([]);
 });
+
+const legacySaveOutputs = {
+  doc: 'docx',
+  ppt: 'pptx',
+  xls: 'xlsx',
+} as const;
+
+for (const [type, outputType] of Object.entries(legacySaveOutputs) as Array<
+  [keyof typeof legacySaveOutputs, (typeof legacySaveOutputs)[keyof typeof legacySaveOutputs]]
+>) {
+  test(`local ${type} saves through callback as ${outputType} without downloads`, async ({ page }) => {
+    const failures = collectPageFailures(page);
+    const downloads: string[] = [];
+    page.on('download', (download) => downloads.push(download.suggestedFilename()));
+
+    await page.goto(`/save-e2e.html?scenario=local-file&type=${type}`);
+    await waitForReady(page);
+
+    const result = await page.evaluate(
+      async (targetExt): Promise<SaveE2EResult> => {
+        const api = (
+          window as Window & {
+            __ONLYOFFICE_SAVE_E2E__?: {
+              save: (targetExt?: string) => Promise<SaveE2EResult>;
+            };
+          }
+        ).__ONLYOFFICE_SAVE_E2E__;
+        if (!api) throw new Error('Save E2E controller is not installed');
+        return api.save(targetExt);
+      },
+      type.toUpperCase(),
+    );
+
+    expect(result.fileName).toMatch(new RegExp(`\\.${outputType}$`, 'i'));
+    expect(result.size).toBeGreaterThan(0);
+    expect(result.hash).toBeTruthy();
+    expect(result.firstBytes.slice(0, 4)).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    expect((await getStatus(page)).writeCount).toBe(1);
+    expect(downloads).toEqual([]);
+    expect(failures).toEqual([]);
+  });
+}

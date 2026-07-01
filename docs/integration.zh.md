@@ -133,7 +133,7 @@ await createOfficeEditor(container, {
 });
 ```
 
-支持 DOCX、XLSX、PPTX、CSV，也兼容常见旧格式 DOC/XLS/PPT 的打开转换。
+支持 DOCX、XLSX、PPTX、CSV，也兼容常见旧格式 DOC/XLS/PPT 的打开转换。旧格式应视为兼容输入：可编辑输出会统一规范化为 OOXML（`.docx`、`.xlsx`、`.pptx`），不再尝试把编辑结果回写成旧二进制 Office 格式。
 
 ## 保存和上传
 
@@ -147,6 +147,8 @@ await fetch('/api/files/123', {
 ```
 
 `save(targetExt?)` 返回浏览器内生成的 `File`。常用 `targetExt` 为 `DOCX`、`XLSX`、`PPTX`、`CSV`。只读实例会拒绝保存。这个 API 继续保留给程序化集成和测试使用。面向用户的 UI 应使用编辑器工具栏里的 OnlyOffice 原生保存按钮，不要在宿主页面再放一个外置保存按钮。
+
+如果请求保存为旧格式 `DOC`、`XLS` 或 `PPT`，结果会转换成对应 OOXML 文件（`DOCX`、`XLSX`、`PPTX`）。宿主应用打开本地旧格式文件后，应以返回的 `File.name` 为准更新存储路径或元数据，不要把 OOXML 字节直接写回 `.doc`、`.xls` 或 `.ppt` 路径。
 
 嵌入的 OnlyOffice 配置会关闭 autosave 和 forcesave，并强制使用 `strict` 协同模式，避免上游 fast mode 自动把 autosave 打开。只有用户手动点击原生保存时，才应持久化或下载编辑内容。
 
@@ -174,6 +176,12 @@ await createOfficeEditor(container, {
 ```
 
 OnlyOffice 原生“所有更改已保存”不是本浏览器集成里的最终持久化信号。在上游 ONLYOFFICE DocumentServer 部署里，这个角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)、[cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 和 [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 为集成参考。
+
+## 打印
+
+使用 OnlyOffice 原生打印按钮。浏览器运行时会提供编辑器期望的父页面 `APP.printPdf` bridge，通过内置 x2t WASM 把打印 payload 转成 PDF Blob URL，再返回给 OnlyOffice，由编辑器创建 print iframe 并继续进入浏览器打印流程。
+
+打印和保存链路相互独立：不会调用 `downloadAs()`，不会触发 `onSave` 写回，也不会改变 dirty 状态。打印 E2E 矩阵覆盖 `xlsx`、`xls`、`docx`、`doc`、`pptx`、`ppt`。
 
 ## 只读和关闭
 

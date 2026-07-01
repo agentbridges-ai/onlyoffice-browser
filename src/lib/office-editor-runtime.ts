@@ -1,5 +1,5 @@
 import { g_sEmpty_bin } from './empty_bin';
-import { c_oAscFileType2 } from './file-types';
+import { c_oAscFileType2, oAscFileType } from './file-types';
 import { convertBinToDocument, convertDocument, initX2T } from './converter';
 import { getDocumentType, getMimeTypeFromExtension, BASE_PATH } from './document-utils';
 import { getOnlyOfficeLang, t } from './i18n';
@@ -12,6 +12,7 @@ const ONLYOFFICE_BROWSER_BUILD_NUMBER = 140;
 const ONLYOFFICE_ZOOM_FIT_TO_WIDTH = -2;
 const SAVE_TIMEOUT_MS = 60_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
+const PRINT_OBJECT_URL_REVOKE_MS = 5 * 60_000;
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
 
 type OfficeEmptyType = (typeof SUPPORTED_EMPTY_TYPES)[number];
@@ -85,6 +86,12 @@ type NativeSaveData = Uint8Array | ArrayBuffer | ArrayBufferView | {
   data?: unknown;
   header?: string;
 };
+type PrintPdfDataContainer = {
+  data?: unknown;
+  part?: unknown;
+  [key: string]: unknown;
+};
+type PrintPdfCallback = (result: { type: 'save'; status: 'ok'; data: string; filetype: number } | null) => void;
 type DocumentStateChangeEvent = boolean | { data?: boolean };
 
 type RuntimeWindow = typeof window & {
@@ -92,6 +99,7 @@ type RuntimeWindow = typeof window & {
   __fonts_visible_names?: unknown;
   APP?: {
     getImageURL?: (name: string, callback: (url: string) => void) => void;
+    printPdf?: (dataContainer: PrintPdfDataContainer, callback: PrintPdfCallback) => void;
     [key: string]: unknown;
   };
 };
@@ -127,6 +135,10 @@ function downloadFile(file: File): void {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
+
+function schedulePrintObjectUrlRevoke(objectUrl: string): void {
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), PRINT_OBJECT_URL_REVOKE_MS);
 }
 
 function toError(error: unknown): Error {
@@ -300,11 +312,46 @@ function resolveMediaFromRegistry(name: string): string {
   return '';
 }
 
+function getActivePrintEditor(): BrowserOfficeEditor | undefined {
+  return Array.from(activeInstances.values()).find((instance) => !instance.getState().destroyed);
+}
+
+async function createPrintPdfUrl(dataContainer?: PrintPdfDataContainer): Promise<string> {
+  const activeEditor = getActivePrintEditor();
+  const data = dataContainer?.data || dataContainer?.part;
+  if (!data) {
+    throw new Error('Print request did not include document data');
+  }
+
+  const sourceFileName = activeEditor?.getState().fileName || 'document.docx';
+  const result = await convertBinToDocument(toUint8Array(data), sourceFileName, 'PDF');
+  const bytes = toUint8Array(result.data);
+  const objectUrl = createObjectUrl(new Blob([bytes as BlobPart], { type: 'application/pdf' }));
+  activeEditor?.trackPrintObjectUrl(objectUrl);
+  schedulePrintObjectUrlRevoke(objectUrl);
+  return objectUrl;
+}
+
 function installOnlyOfficeParentApp(): void {
   const runtimeWindow = window as RuntimeWindow;
   runtimeWindow.APP = runtimeWindow.APP || {};
   runtimeWindow.APP.getImageURL = (name, callback) => {
     callback(resolveMediaFromRegistry(name));
+  };
+  runtimeWindow.APP.printPdf = (dataContainer, callback) => {
+    void createPrintPdfUrl(dataContainer)
+      .then((objectUrl) => {
+        callback({
+          type: 'save',
+          status: 'ok',
+          data: objectUrl,
+          filetype: oAscFileType.PDF,
+        });
+      })
+      .catch((error) => {
+        console.error('OnlyOffice print PDF export failed:', error);
+        callback(null);
+      });
   };
 }
 
@@ -524,6 +571,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private editorBinUrl: string | null = null;
   private media: Record<string, string> = {};
   private saveRequest: SaveRequest | null = null;
+  private printObjectUrls = new Set<string>();
   private sourceObjectUrl: string | null = null;
   private status: OfficeEditorStatus = 'opening';
   private dirty = false;
@@ -937,6 +985,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     return toUint8Array(data);
   }
 
+  trackPrintObjectUrl(objectUrl: string): void {
+    this.printObjectUrls.add(objectUrl);
+  }
+
   private async saveNativeBinary(targetFormat: string): Promise<void> {
     try {
       const file = await this.convertSavedBin(this.getNativeSaveData(), targetFormat);
@@ -1033,6 +1085,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       URL.revokeObjectURL(this.sourceObjectUrl);
       this.sourceObjectUrl = null;
     }
+    for (const url of this.printObjectUrls) {
+      URL.revokeObjectURL(url);
+    }
+    this.printObjectUrls.clear();
 
     for (const url of Object.values(this.media)) {
       if (url.startsWith('blob:')) {

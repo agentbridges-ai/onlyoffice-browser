@@ -50,6 +50,24 @@ const X2T_SOURCE_FORMAT_BY_EXTENSION: Record<string, number> = {
   xlsx: oAscFileType.XLSX,
 };
 
+const X2T_TARGET_FORMAT_BY_EXTENSION: Record<string, number> = {
+  ...X2T_SOURCE_FORMAT_BY_EXTENSION,
+  pdf: oAscFileType.PDF,
+  pdfa: oAscFileType.PDFA,
+};
+
+const LEGACY_TARGET_INTERMEDIATE_EXTENSION: Record<string, string> = {
+  doc: 'docx',
+  ppt: 'pptx',
+  xls: 'xlsx',
+};
+
+const X2T_NATIVE_FORMAT_BY_SIGNATURE: Record<string, number> = {
+  DOCY: oAscFileType.CANVAS_WORD,
+  XLSY: oAscFileType.CANVAS_SPREADSHEET,
+  PPTY: oAscFileType.CANVAS_PRESENTATION,
+};
+
 const X2T_CANVAS_FORMAT_BY_DOCUMENT_TYPE: Record<DocumentType, number> = {
   cell: oAscFileType.CANVAS_SPREADSHEET,
   slide: oAscFileType.CANVAS_PRESENTATION,
@@ -333,6 +351,28 @@ export class X2TConverter {
     return this.createConversionParams(fromPath, toPath, formatParams);
   }
 
+  private detectNativeBinFormat(bin: Uint8Array): number | undefined {
+    if (bin.length < 4) return undefined;
+    const signature = String.fromCharCode(bin[0], bin[1], bin[2], bin[3]);
+    return X2T_NATIVE_FORMAT_BY_SIGNATURE[signature];
+  }
+
+  private createBinToDocumentParams(fromPath: string, toPath: string, bin: Uint8Array, targetExt: string): string {
+    const sourceFormat = this.detectNativeBinFormat(bin);
+    const targetFormat = X2T_TARGET_FORMAT_BY_EXTENSION[targetExt.toLowerCase()];
+    const formatParams = [
+      sourceFormat ? `<m_nFormatFrom>${sourceFormat}</m_nFormatFrom>` : '',
+      targetFormat ? `<m_nFormatTo>${targetFormat}</m_nFormatTo>` : '',
+      sourceFormat || targetFormat === oAscFileType.PDF || targetFormat === oAscFileType.PDFA
+        ? '<m_sFontDir>/working/fonts/</m_sFontDir>'
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n  ');
+
+    return this.createConversionParams(fromPath, toPath, formatParams);
+  }
+
   /**
    * Read media files
    */
@@ -603,19 +643,26 @@ export class X2TConverter {
   ): Promise<BinConversionResult> {
     await this.initialize();
 
+    const requestedTargetExt = targetExt.toLowerCase();
+    const normalizedTargetExt = LEGACY_TARGET_INTERMEDIATE_EXTENSION[requestedTargetExt] || requestedTargetExt;
     const sanitizedBase = this.sanitizeFileName(originalFileName).replace(/\.[^/.]+$/, '');
     const binFileName = `${sanitizedBase}.bin`;
-    const outputFileName = `${sanitizedBase}.${targetExt.toLowerCase()}`;
+    const outputFileName = `${sanitizedBase}.${normalizedTargetExt}`;
 
     this.clearConversionWorkspace();
     try {
       // Handle CSV files specially - need to convert bin -> XLSX -> CSV
-      if (targetExt.toUpperCase() === 'CSV') {
+      if (requestedTargetExt === 'csv') {
         // First convert bin to XLSX
         const xlsxFileName = `${sanitizedBase}.xlsx`;
         this.x2tModule!.FS.writeFile(`/working/${binFileName}`, bin);
 
-        const params = this.createConversionParams(`/working/${binFileName}`, `/working/${xlsxFileName}`, '');
+        const params = this.createBinToDocumentParams(
+          `/working/${binFileName}`,
+          `/working/${xlsxFileName}`,
+          bin,
+          'xlsx',
+        );
 
         this.x2tModule!.FS.writeFile('/working/params.xml', params);
         this.executeConversion('/working/params.xml');
@@ -652,16 +699,11 @@ export class X2TConverter {
       // Write bin file
       this.x2tModule!.FS.writeFile(`/working/${binFileName}`, bin);
 
-      // Create conversion parameters
-      let additionalParams = '';
-      if (targetExt === 'PDF') {
-        additionalParams = '<m_sFontDir>/working/fonts/</m_sFontDir>';
-      }
-
-      const params = this.createConversionParams(
+      const params = this.createBinToDocumentParams(
         `/working/${binFileName}`,
         `/working/${outputFileName}`,
-        additionalParams,
+        bin,
+        normalizedTargetExt,
       );
 
       this.x2tModule!.FS.writeFile('/working/params.xml', params);

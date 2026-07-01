@@ -133,7 +133,7 @@ await createOfficeEditor(container, {
 });
 ```
 
-DOCX, XLSX, PPTX, and CSV are the primary targets. Common legacy DOC/XLS/PPT files can be opened through conversion.
+DOCX, XLSX, PPTX, and CSV are the primary targets. Common legacy DOC/XLS/PPT files can be opened through conversion. Treat those legacy formats as compatibility inputs: editable output is normalized to OOXML (`.docx`, `.xlsx`, `.pptx`) instead of trying to write the old binary Office format back in place.
 
 ## Saving
 
@@ -147,6 +147,8 @@ await fetch('/api/files/123', {
 ```
 
 `save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests. This API remains available for programmatic integrations and tests. User-facing UI should use the native OnlyOffice Save button in the editor toolbar, not a duplicate host-side Save button.
+
+Requests to save legacy `DOC`, `XLS`, or `PPT` are converted to the matching OOXML result (`DOCX`, `XLSX`, `PPTX`). Host apps that open a local legacy file should treat the returned `File.name` as authoritative and update their storage path or metadata accordingly, rather than writing OOXML bytes into a `.doc`, `.xls`, or `.ppt` path.
 
 Autosave and force-save are disabled in the embedded OnlyOffice config, and co-editing is forced to `strict` mode so upstream fast-mode autosave cannot turn itself back on. Only a manual native Save should persist or download edited content.
 
@@ -174,6 +176,12 @@ await createOfficeEditor(container, {
 ```
 
 The native OnlyOffice "All changes saved" status is not a host persistence signal in this browser-only integration. In upstream ONLYOFFICE DocumentServer deployments that role is normally implemented by the storage service behind `callbackUrl`: the editor reports save status, the storage service downloads the edited file URL, writes it to the final path, and returns `{ "error": 0 }`. This package has no server callback endpoint, so the integrator must provide the final write step. Use [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/), [ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/), [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer), [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor), and [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) as the integration references.
+
+## Printing
+
+Use the native OnlyOffice Print button. The browser runtime provides the parent `APP.printPdf` bridge expected by the editor, converts the print payload to a PDF Blob URL through the bundled x2t WASM converter, and returns that URL to OnlyOffice so the editor can create its print iframe and continue into the browser print flow.
+
+Printing is intentionally independent from saving: it does not call `downloadAs()`, does not write through `onSave`, and does not change dirty state. The print E2E matrix covers `xlsx`, `xls`, `docx`, `doc`, `pptx`, and `ppt`.
 
 ## Readonly and Cleanup
 
