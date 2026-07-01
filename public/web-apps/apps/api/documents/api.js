@@ -267,6 +267,17 @@
     downloadAs(...args) {
       return this.origEditor.downloadAs(...args);
     }
+    getEditorApi() {
+      const app = this.getIframe()?.contentWindow?.__onlyOfficeBrowserApplication;
+      return app?.getController?.('Main')?.api;
+    }
+    asc_nativeGetFile3(...args) {
+      const api = this.getEditorApi();
+      if (!api || typeof api.asc_nativeGetFile3 !== 'function') {
+        throw new Error('OnlyOffice native file API is not ready');
+      }
+      return api.asc_nativeGetFile3(...args);
+    }
     attachMouseEvents(...args) {
       return this.origEditor.attachMouseEvents(...args);
     }

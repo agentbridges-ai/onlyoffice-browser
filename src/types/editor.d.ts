@@ -24,6 +24,10 @@ interface DocEditorConfig {
   editorConfig: {
     lang: string;
     mode?: 'edit' | 'view';
+    coEditing?: {
+      mode?: 'fast' | 'strict';
+      change?: boolean;
+    };
     user?: {
       id: string;
       name: string;
@@ -46,6 +50,10 @@ interface DocEditorConfig {
       zoom?: number;
       /** Whether spell checking is enabled by default. */
       spellcheck?: boolean;
+      /** Whether the native OnlyOffice autosave option is enabled. */
+      autosave?: boolean;
+      /** Whether the native force-save-on-user-save option is enabled. */
+      forcesave?: boolean;
       /** Enable/disable plugins. Set to false to disable plugins */
       plugins?: boolean;
       features: {
@@ -69,16 +77,12 @@ interface DocEditorConfig {
     onAppReady: () => void;
     onDocumentReady: () => void;
     onSave: (event: SaveEvent) => void;
-    onSaveDocument?: (event: SaveDocumentEvent) => void;
+    onDocumentStateChange?: (event: DocumentStateChangeEvent) => void;
     onDownloadAs?: (event: DownloadAsEvent) => void;
     writeFile: (event: WriteFileEvent) => void;
     /** Handle external messages from plugins */
     onExternalPluginMessage?: (event: { type: string; data: any; pluginName?: string }) => void;
   };
-}
-
-interface SaveDocumentEvent {
-  data: ArrayBuffer | Uint8Array;
 }
 
 interface SaveEvent {
@@ -108,6 +112,10 @@ interface DownloadAsEvent {
     url?: string;
     fileType?: string | number;
   };
+}
+
+type DocumentStateChangeEvent = boolean | {
+  data?: boolean;
 }
 
 interface OnlyOfficeMockServer {
@@ -152,6 +160,10 @@ interface DocEditor {
   }) => void;
   openDocument?: (data: Uint8Array) => void;
   downloadAs?: (data?: string) => void;
+  asc_nativeGetFile3?: () => {
+    data?: Uint8Array | ArrayBuffer | ArrayBufferView;
+    header?: string;
+  } | Uint8Array | ArrayBuffer | ArrayBufferView;
   zoomFitToWidth?: () => void;
   processRightsChange?: (enabled: boolean, message?: string) => void;
   connectMockServer?: (server: OnlyOfficeMockServer) => void;

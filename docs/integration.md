@@ -57,6 +57,9 @@ const editor = await createOfficeEditor(container, {
   onSave(file) {
     console.log('saved', file.name, file.size);
   },
+  onDirtyChange(dirty) {
+    saveButton.disabled = !dirty;
+  },
   onError(error) {
     console.error(error);
   },
@@ -131,7 +134,11 @@ await fetch('/api/files/123', {
 
 `save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests. The package does not persist the file by itself: the host application must write this `File` to its own storage target, such as a backend upload endpoint or a File System Access `createWritable()` handle.
 
-The same rule applies to toolbar saves inside OnlyOffice. The native "All changes saved" status only means the editor flushed changes into its in-browser document service; the integration is persisted only after `onSave(file)` completes. Pass `onSave(file)` when the edited bytes should be persisted automatically:
+Autosave and force-save are disabled in the embedded OnlyOffice config, and co-editing is forced to `strict` mode so upstream fast-mode autosave cannot turn itself back on. The supported persistence entry point is an external Save command in your host UI that calls `editor.save()`. Use `onDirtyChange(dirty)` or `editor.getState().dirty` to enable that Save command only when the document has unsaved edits.
+
+The package exports edited bytes by calling the browser runtime's native bin export and converting that bin with the bundled x2t WASM converter. It does not call `downloadAs()` for local persistence, so host-side saves do not open a browser download dialog.
+
+`onSave(file)` is called during `editor.save()` and is awaited before the save promise resolves. If `onSave` rejects, `editor.save()` rejects and the proxy keeps the document dirty:
 
 ```ts
 await createOfficeEditor(container, {
@@ -146,7 +153,7 @@ await createOfficeEditor(container, {
 });
 ```
 
-In upstream ONLYOFFICE DocumentServer deployments this persistence role is normally implemented by the storage service behind `callbackUrl`: the editor reports save status, the storage service downloads the edited file URL, writes it to the final path, and returns `{ "error": 0 }`. In this browser-only package there is no server callback endpoint, so the integrator must provide that final write step. Use [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/), [ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/), [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer), [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor), and [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) as the integration references.
+The native OnlyOffice "All changes saved" status is not a host persistence signal in this browser-only integration. In upstream ONLYOFFICE DocumentServer deployments that role is normally implemented by the storage service behind `callbackUrl`: the editor reports save status, the storage service downloads the edited file URL, writes it to the final path, and returns `{ "error": 0 }`. This package has no server callback endpoint, so the integrator must provide the final write step. Use [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/), [ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/), [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer), [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor), and [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) as the integration references.
 
 ## Readonly and Cleanup
 

@@ -106,7 +106,7 @@ function refreshPanelActions(record: DemoRecord): void {
   const isPreview = state.mode === 'preview';
   record.readonlyButton.disabled = isPreview;
   record.readonlyButton.textContent = state.readonly ? 'Edit' : 'Readonly';
-  record.saveButton.disabled = state.readonly;
+  record.saveButton.disabled = state.readonly || !state.dirty;
 }
 
 async function removeRecord(record: DemoRecord): Promise<void> {
@@ -162,6 +162,11 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
     },
     onSave: (file) => {
       status.textContent = `saved ${file.name} (${file.size} bytes)`;
+      refreshPanelActions(record);
+    },
+    onDirtyChange: (dirty) => {
+      status.textContent = dirty ? 'modified' : 'clean';
+      refreshPanelActions(record);
     },
     onError: (error) => {
       status.textContent = `error: ${error.message}`;
@@ -178,6 +183,7 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
     try {
       setStatus(record, 'saving');
       await instance.save();
+      refreshPanelActions(record);
     } catch (error) {
       setStatus(record, `save failed: ${error instanceof Error ? error.message : String(error)}`);
     }

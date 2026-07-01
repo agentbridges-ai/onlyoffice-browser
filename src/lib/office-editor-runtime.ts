@@ -34,6 +34,7 @@ export interface CreateOfficeEditorOptions {
   hardResetOnLastDestroy?: boolean;
   onReady?: (instance: OfficeEditorInstance) => void;
   onSave?: (file: File, instance: OfficeEditorInstance) => void | Promise<void>;
+  onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
 }
 
@@ -43,6 +44,7 @@ export interface OfficeEditorState {
   fileType: string;
   mode: OfficeEditorMode;
   readonly: boolean;
+  dirty: boolean;
   status: OfficeEditorStatus;
   destroyed: boolean;
 }
@@ -71,6 +73,12 @@ type SaveRequest = {
   timeoutId: number;
   settled: boolean;
 };
+
+type NativeSaveData = Uint8Array | ArrayBuffer | ArrayBufferView | {
+  data?: Uint8Array | ArrayBuffer | ArrayBufferView;
+  header?: string;
+};
+type DocumentStateChangeEvent = boolean | { data?: boolean };
 
 type RuntimeWindow = typeof window & {
   DocsAPI?: DocsAPI;
@@ -453,6 +461,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private saveRequest: SaveRequest | null = null;
   private sourceObjectUrl: string | null = null;
   private status: OfficeEditorStatus = 'opening';
+  private dirty = false;
   private destroyed = false;
   private readonly fileName: string;
   private readonly fileType: string;
@@ -537,6 +546,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         editorConfig: {
           lang: this.editorLang,
           mode: this.previewMode ? 'view' : 'edit',
+          coEditing: {
+            mode: 'strict',
+            change: false,
+          },
           user: {
             id: LOCAL_ONLYOFFICE_USER_ID,
             name: LOCAL_ONLYOFFICE_USER_NAME,
@@ -554,6 +567,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             compactToolbar: true,
             zoom: defaultZoom,
             spellcheck: this.options.spellcheck ?? false,
+            autosave: false,
+            forcesave: false,
             plugins: false,
             features: {
               featuresTips: false,
@@ -583,8 +598,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           onSave: (event: SaveEvent) => {
             void this.handleSaveDocument(event);
           },
-          onSaveDocument: (event: { data?: ArrayBuffer | Uint8Array }) => {
-            void this.handleSaveDocumentBinary(event);
+          onDocumentStateChange: (event: DocumentStateChangeEvent) => {
+            this.handleDocumentStateChange(event);
           },
           onDownloadAs: (event: { data?: { url?: string; fileType?: string | number } }) => {
             void this.handleDownloadAs(event);
@@ -706,11 +721,17 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   private async emitSavedFile(file: File): Promise<void> {
-    this.resolveSaveRequest(file);
     await this.options.onSave?.(file, this);
+    this.setDirty(false);
+    this.resolveSaveRequest(file);
   }
 
   private async handleSaveDocument(event: SaveEvent): Promise<void> {
+    if (!this.saveRequest) {
+      this.sendOnlyOfficeCommand('asc_onSaveCallback', { err_code: 1 });
+      return;
+    }
+
     try {
       const payload = event.data?.data?.data;
       if (!payload) {
@@ -733,19 +754,17 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     }
   }
 
-  private async handleSaveDocumentBinary(event: { data?: ArrayBuffer | Uint8Array }): Promise<void> {
-    try {
-      const payload = event.data;
-      if (!payload) {
-        throw new Error('Save document event did not include document data');
-      }
-      const file = new File([toUint8Array(payload) as BlobPart], this.fileName, { type: getSavedFileMimeType(this.fileName) });
-      await this.emitSavedFile(file);
-    } catch (error) {
-      const normalized = toError(error);
-      this.rejectSaveRequest(normalized);
-      this.options.onError?.(normalized, this);
-    }
+  private setDirty(dirty: boolean): void {
+    if (this.destroyed || this.dirty === dirty) return;
+    this.dirty = dirty;
+    void Promise.resolve(this.options.onDirtyChange?.(dirty, this)).catch((error) => {
+      this.options.onError?.(toError(error), this);
+    });
+  }
+
+  private handleDocumentStateChange(event: DocumentStateChangeEvent): void {
+    const dirty = typeof event === 'boolean' ? event : Boolean(event?.data);
+    this.setDirty(dirty);
   }
 
   private async handleDownloadAs(event: { data?: { url?: string; fileType?: string | number } }): Promise<void> {
@@ -805,6 +824,30 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     }
   }
 
+  private getNativeSaveData(): Uint8Array {
+    if (!this.editor || typeof this.editor.asc_nativeGetFile3 !== 'function') {
+      throw new Error('The current editor does not support native binary export');
+    }
+
+    const payload: NativeSaveData | undefined = this.editor.asc_nativeGetFile3();
+    const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload;
+    if (!data) {
+      throw new Error('Native binary export did not include document data');
+    }
+    return toUint8Array(data);
+  }
+
+  private async saveNativeBinary(targetFormat: string): Promise<void> {
+    try {
+      const file = await this.convertSavedBin(this.getNativeSaveData(), targetFormat);
+      await this.emitSavedFile(file);
+    } catch (error) {
+      const normalized = toError(error);
+      this.rejectSaveRequest(normalized);
+      this.options.onError?.(normalized, this);
+    }
+  }
+
   save(targetExt?: string): Promise<File> {
     if (this.destroyed || !this.editor) {
       return Promise.reject(new Error('Editor is not open'));
@@ -815,8 +858,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     if (this.saveRequest) {
       return Promise.reject(new Error('A save request is already in progress for this editor'));
     }
-    if (typeof this.editor.downloadAs !== 'function') {
-      return Promise.reject(new Error('The current editor does not support downloadAs export'));
+    if (typeof this.editor.asc_nativeGetFile3 !== 'function') {
+      return Promise.reject(new Error('The current editor does not support native binary export'));
     }
 
     const normalizedTargetExt = (targetExt || getFileExtension(this.fileName) || 'docx').toUpperCase();
@@ -833,7 +876,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         settled: false,
       };
 
-      this.editor?.downloadAs?.(normalizedTargetExt);
+      void this.saveNativeBinary(normalizedTargetExt);
     });
   }
 
@@ -853,6 +896,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       fileType: this.fileType,
       mode,
       readonly: this.readonlyMode.value,
+      dirty: this.dirty,
       status: this.status,
       destroyed: this.destroyed,
     };

@@ -445,6 +445,57 @@ var checkLocalStorage=function(){try{localStorage.setItem("test",1);localStorage
     </script>
     <script src="../../../vendor/requirejs/require.js"></script>
     <script>
+        (function () {
+            if (window.__onlyOfficeBrowserApplicationHookInstalled) return;
+            window.__onlyOfficeBrowserApplicationHookInstalled = true;
+
+            function wrapApplication(Application) {
+                if (!Application || Application.__onlyOfficeBrowserWrapped) return Application;
+                var WrappedApplication = function () {
+                    var app = new (Function.prototype.bind.apply(Application, [null].concat(Array.prototype.slice.call(arguments))))();
+                    window.__onlyOfficeBrowserApplication = app;
+                    return app;
+                };
+                WrappedApplication.prototype = Application.prototype;
+                for (var key in Application) {
+                    if (Object.prototype.hasOwnProperty.call(Application, key)) {
+                        WrappedApplication[key] = Application[key];
+                    }
+                }
+                WrappedApplication.__onlyOfficeBrowserWrapped = true;
+                return WrappedApplication;
+            }
+
+            function hookBackbone(Backbone) {
+                if (!Backbone || Backbone.__onlyOfficeBrowserApplicationHooked) return;
+                Backbone.__onlyOfficeBrowserApplicationHooked = true;
+                var currentApplication = Backbone.Application;
+                Object.defineProperty(Backbone, "Application", {
+                    configurable: true,
+                    get: function () {
+                        return currentApplication;
+                    },
+                    set: function (Application) {
+                        currentApplication = wrapApplication(Application);
+                    }
+                });
+                if (currentApplication) Backbone.Application = currentApplication;
+            }
+
+            var currentBackbone = window.Backbone;
+            Object.defineProperty(window, "Backbone", {
+                configurable: true,
+                get: function () {
+                    return currentBackbone;
+                },
+                set: function (Backbone) {
+                    currentBackbone = Backbone;
+                    hookBackbone(Backbone);
+                }
+            });
+            if (currentBackbone) hookBackbone(currentBackbone);
+        }());
+
         isIEBrowser === true ? require(['ie/app']) : require(['app']);
     </script>
 

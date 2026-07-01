@@ -54,6 +54,9 @@ const editor = await createOfficeEditor(document.querySelector('#editor') as HTM
   onSave(savedFile) {
     console.log(savedFile.name, savedFile.size);
   },
+  onDirtyChange(dirty) {
+    saveButton.disabled = !dirty;
+  },
 });
 
 const saved = await editor.save('DOCX');
@@ -70,6 +73,7 @@ Supported `mode` values:
 
 Spellcheck is disabled by default. Pass `spellcheck: true` only when the host app should open documents with spell checking enabled.
 Word and presentation documents opened in the editor runtime default to fit-to-width zoom so the page/slide uses the available preview area.
+Autosave and force-save are disabled; host applications should expose their own dirty-gated Save command that calls `editor.save()`.
 
 For multiple documents, create one container and one component instance per document. Prefer wildcard DNS/TLS so each instance gets its own host origin, such as `https://<session>.office-host.example.com/office-host.html`; this lets the corresponding subframe task exit when an individual document closes. In local development, `.localhost` hosts are automatically derived into `host-<session>.localhost`.
 
@@ -134,6 +138,7 @@ This project does not ship runtime font files. Generate and mount fonts before o
 
 - [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor)
 - [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm)
+- [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)
 - [ONLYOFFICE web-apps](https://github.com/ONLYOFFICE/web-apps)
 - [ONLYOFFICE sdkjs](https://github.com/ONLYOFFICE/sdkjs)
 - [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)

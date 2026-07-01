@@ -57,6 +57,9 @@ const editor = await createOfficeEditor(container, {
   onSave(file) {
     console.log('saved', file.name, file.size);
   },
+  onDirtyChange(dirty) {
+    saveButton.disabled = !dirty;
+  },
   onError(error) {
     console.error(error);
   },
@@ -131,7 +134,11 @@ await fetch('/api/files/123', {
 
 `save(targetExt?)` 返回浏览器内生成的 `File`。常用 `targetExt` 为 `DOCX`、`XLSX`、`PPTX`、`CSV`。只读实例会拒绝保存。本包不会自行持久化文件：宿主应用必须把这个 `File` 写入自己的最终存储位置，例如后端上传接口，或 File System Access 的 `createWritable()` 文件句柄。
 
-OnlyOffice iframe 内部工具栏保存也遵循同一个规则。原生的“所有更改已保存”只表示编辑器已经把变更写入浏览器内的文档服务；只有 `onSave(file)` 完成后，集成方的最终存储才算真正持久化。需要自动持久化编辑结果时，传入 `onSave(file)`：
+嵌入的 OnlyOffice 配置会关闭 autosave 和 forcesave，并强制使用 `strict` 协同模式，避免上游 fast mode 自动把 autosave 打开。受支持的持久化入口是宿主应用自己的保存按钮：按钮点击时调用 `editor.save()`。用 `onDirtyChange(dirty)` 或 `editor.getState().dirty` 控制保存按钮，只有文档存在未保存修改时才启用。
+
+本包会调用浏览器运行时的 native bin 导出，再用内置 x2t WASM 把 bin 转成目标 Office 文件。用于本地持久化的保存链路不会调用 `downloadAs()`，因此不会弹出浏览器下载流程。
+
+`onSave(file)` 会在 `editor.save()` 过程中被调用，并且保存 Promise 会等待它完成。若 `onSave` 抛错或 reject，`editor.save()` 也会 reject，代理层会保持文档 dirty：
 
 ```ts
 await createOfficeEditor(container, {
@@ -146,7 +153,7 @@ await createOfficeEditor(container, {
 });
 ```
 
-在上游 ONLYOFFICE DocumentServer 部署里，这个持久化角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)、[cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 和 [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 为集成参考。
+OnlyOffice 原生“所有更改已保存”不是本浏览器集成里的最终持久化信号。在上游 ONLYOFFICE DocumentServer 部署里，这个角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)、[cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 和 [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 为集成参考。
 
 ## 只读和关闭
 

@@ -27,6 +27,7 @@ export interface OfficeHostState {
   fileType: string;
   mode: 'edit' | 'readonly' | 'preview';
   readonly: boolean;
+  dirty: boolean;
   status: 'opening' | 'ready' | 'destroyed' | 'error';
   destroyed: boolean;
 }

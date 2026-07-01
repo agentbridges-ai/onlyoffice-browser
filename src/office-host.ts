@@ -373,6 +373,9 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       onReady: (instance) => {
         postState('STATE', instance.getState());
       },
+      onDirtyChange: (_dirty, instance) => {
+        postState('STATE', instance.getState());
+      },
       onError: (error) => {
         postError('runtime', error);
       },

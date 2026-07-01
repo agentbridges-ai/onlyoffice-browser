@@ -36,9 +36,15 @@ type CapturedDocEditorConfig = {
       id: string;
       name: string;
     };
+    coEditing?: {
+      mode?: 'fast' | 'strict';
+      change?: boolean;
+    };
     customization: {
       zoom?: number;
       spellcheck?: boolean;
+      autosave?: boolean;
+      forcesave?: boolean;
       features: {
         spellcheck: {
           change: boolean;
@@ -53,14 +59,16 @@ type CapturedDocEditorConfig = {
   events: {
     onAppReady: () => void;
     onDocumentReady: () => void;
-    onSaveDocument?: (event: { data: ArrayBuffer | Uint8Array }) => void;
+    onDocumentStateChange?: (event: boolean | { data?: boolean }) => void;
   };
 };
 
 type CapturedDocEditorInstance = {
   connectMockServer: ReturnType<typeof vi.fn>;
   destroyEditor: ReturnType<typeof vi.fn>;
+  downloadAs: ReturnType<typeof vi.fn>;
   processRightsChange: ReturnType<typeof vi.fn>;
+  asc_nativeGetFile3: ReturnType<typeof vi.fn>;
   zoomFitToWidth: ReturnType<typeof vi.fn>;
 };
 
@@ -82,11 +90,17 @@ describe('office editor runtime', () => {
       bin: new Uint8Array([1, 2, 3]),
       media: {},
     }));
+    mocks.convertBinToDocument.mockImplementation(async (bin: Uint8Array, fileName: string, targetExt = 'DOCX') => ({
+      fileName: fileName.replace(/\.[^/.]+$/, `.${targetExt.toLowerCase()}`),
+      data: bin,
+    }));
 
     class MockDocEditor {
       connectMockServer = vi.fn();
       destroyEditor = vi.fn();
+      downloadAs = vi.fn();
       processRightsChange = vi.fn();
+      asc_nativeGetFile3 = vi.fn(() => ({ data: new Uint8Array([9, 8, 7]) }));
       zoomFitToWidth = vi.fn();
 
       constructor(elementId: string, config: CapturedDocEditorConfig) {
@@ -107,7 +121,7 @@ describe('office editor runtime', () => {
     };
   });
 
-  it('disables OnlyOffice spellcheck by default and prevents turning it on from the UI', async () => {
+  it('disables autosave, forcesave, and spellcheck by default', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
 
@@ -119,7 +133,9 @@ describe('office editor runtime', () => {
 
     expect(docEditorConfigs).toHaveLength(1);
     expect(docEditorConfigs[0].editorConfig.customization).toMatchObject({
+      autosave: false,
       compactToolbar: true,
+      forcesave: false,
       spellcheck: false,
       features: {
         featuresTips: false,
@@ -127,6 +143,10 @@ describe('office editor runtime', () => {
           change: false,
         },
       },
+    });
+    expect(docEditorConfigs[0].editorConfig.coEditing).toEqual({
+      mode: 'strict',
+      change: false,
     });
 
     await instance.destroy();
@@ -209,7 +229,7 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
-  it('forwards native OnlyOffice save-document binary data to onSave', async () => {
+  it('saves manually from native editor bin without triggering downloadAs', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const onSave = vi.fn();
@@ -222,15 +242,48 @@ describe('office editor runtime', () => {
     });
     await flush();
 
-    docEditorConfigs[0].events.onSaveDocument?.({ data: new Uint8Array([9, 8, 7]).buffer });
-    await flush();
+    const savedFile = await instance.save('XLSX');
 
+    expect(docEditorInstances[0].asc_nativeGetFile3).toHaveBeenCalledTimes(1);
+    expect(docEditorInstances[0].downloadAs).not.toHaveBeenCalled();
+    expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.xlsx', 'XLSX');
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave.mock.calls[0][0]).toMatchObject({
       name: 'alpha.xlsx',
       size: 3,
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
+    expect(savedFile).toMatchObject({
+      name: 'alpha.xlsx',
+      size: 3,
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+
+    await instance.destroy();
+  });
+
+  it('tracks dirty state changes and clears dirty after manual save', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onDirtyChange = vi.fn();
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.xlsx'),
+      fileName: 'alpha.xlsx',
+      mode: 'edit',
+      onDirtyChange,
+    });
+    await flush();
+
+    docEditorConfigs[0].events.onDocumentStateChange?.({ data: true });
+
+    expect(instance.getState().dirty).toBe(true);
+    expect(onDirtyChange).toHaveBeenCalledWith(true, instance);
+
+    await instance.save('XLSX');
+
+    expect(instance.getState().dirty).toBe(false);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false, instance);
 
     await instance.destroy();
   });

@@ -46,6 +46,7 @@ export interface CreateOfficeEditorOptions {
   destroyTimeoutMs?: number;
   onReady?: (instance: OfficeEditorInstance) => void;
   onSave?: (file: File, instance: OfficeEditorInstance) => void | Promise<void>;
+  onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
 }
 
@@ -55,6 +56,7 @@ export interface OfficeEditorState {
   fileType: string;
   mode: OfficeEditorMode;
   readonly: boolean;
+  dirty: boolean;
   status: OfficeEditorStatus;
   destroyed: boolean;
 }
@@ -271,6 +273,7 @@ async function prepareHostInit(
       fileType,
       mode: initialMode,
       readonly: initialReadonly,
+      dirty: false,
       status: 'opening',
       destroyed: false,
     },
@@ -284,6 +287,7 @@ function toPublicState(state: OfficeHostState | OfficeEditorState): OfficeEditor
     fileType: state.fileType,
     mode: state.mode,
     readonly: state.readonly,
+    dirty: state.dirty,
     status: state.status,
     destroyed: state.destroyed,
   };
@@ -439,7 +443,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     const message = event.data;
     switch (message.type) {
       case 'READY':
-        this.state = toPublicState(message.state);
+        this.applyHostState(message.state);
         this.mounted = true;
         this.readyResolve?.(this);
         this.readyResolve = null;
@@ -447,11 +451,11 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
         this.maybeNotifyReady();
         return;
       case 'STATE':
-        this.state = toPublicState(message.state);
+        this.applyHostState(message.state);
         this.maybeNotifyReady();
         return;
       case 'SAVE_RESULT':
-        this.handleSaveResult(message);
+        void this.handleSaveResult(message);
         return;
       case 'ERROR':
         this.handleHostError(message);
@@ -463,17 +467,44 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
   }
 
-  private handleSaveResult(message: Extract<OfficeHostChildMessage, { type: 'SAVE_RESULT' }>): void {
-    const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
-    if (message.requestId) {
-      const request = this.pendingRequests.get(message.requestId);
-      if (!request) return;
-      this.pendingRequests.delete(message.requestId);
-      request.resolve(file);
+  private applyHostState(state: OfficeHostState | OfficeEditorState): void {
+    const nextState = toPublicState(state);
+    const dirtyChanged = nextState.dirty !== this.state.dirty;
+    this.state = nextState;
+    if (dirtyChanged) {
+      void Promise.resolve(this.options.onDirtyChange?.(nextState.dirty, this)).catch((error) => {
+        this.options.onError?.(toError(error), this);
+      });
     }
-    void Promise.resolve(this.options.onSave?.(file, this)).catch((error) => {
+  }
+
+  private setDirty(dirty: boolean): void {
+    if (this.state.dirty === dirty) return;
+    this.state = { ...this.state, dirty };
+    void Promise.resolve(this.options.onDirtyChange?.(dirty, this)).catch((error) => {
       this.options.onError?.(toError(error), this);
     });
+  }
+
+  private async handleSaveResult(message: Extract<OfficeHostChildMessage, { type: 'SAVE_RESULT' }>): Promise<void> {
+    if (!message.requestId) return;
+
+    const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
+    let request: PendingRequest | undefined;
+    request = this.pendingRequests.get(message.requestId);
+    if (!request) return;
+    this.pendingRequests.delete(message.requestId);
+
+    try {
+      await this.options.onSave?.(file, this);
+      this.setDirty(false);
+      request?.resolve(file);
+    } catch (error) {
+      const normalized = toError(error);
+      this.setDirty(true);
+      request?.reject(normalized);
+      this.options.onError?.(normalized, this);
+    }
   }
 
   private handleHostError(message: Extract<OfficeHostChildMessage, { type: 'ERROR' }>): void {

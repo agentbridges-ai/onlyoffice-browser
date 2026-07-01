@@ -54,6 +54,7 @@ async function connectHost(
             fileType: (event.data.options.fileName || 'document.docx').split('.').pop() || 'docx',
             mode: event.data.options.mode || (event.data.options.readonly ? 'readonly' : 'edit'),
             readonly: event.data.options.mode === 'preview' || Boolean(event.data.options.readonly),
+            dirty: false,
             status: 'ready',
             destroyed: false,
           },
@@ -271,7 +272,7 @@ describe('office-editor parent proxy', () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards toolbar save results without a request id to onSave', async () => {
+  it('ignores save results without a request id', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const onSave = vi.fn();
@@ -300,8 +301,96 @@ describe('office-editor parent proxy', () => {
     await waitForMessage();
 
     expect(instance.getState().status).toBe('ready');
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('reports dirty state changes from the host', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onDirtyChange = vi.fn();
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      onDirtyChange,
+    });
+    const { childPort, iframe } = await connectHost(container);
+    const instance = await promise;
+    const sessionId = getSessionId(iframe);
+
+    childPort.postMessage({
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'STATE',
+      sessionId,
+      state: {
+        id: sessionId,
+        fileName: 'alpha.docx',
+        fileType: 'docx',
+        mode: 'edit',
+        readonly: false,
+        dirty: true,
+        status: 'ready',
+        destroyed: false,
+      },
+    });
+    await waitForMessage();
+
+    expect(instance.getState().dirty).toBe(true);
+    expect(onDirtyChange).toHaveBeenCalledWith(true, instance);
+  });
+
+  it('rejects save requests when the outer onSave write fails and keeps the document dirty', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onSave = vi.fn(async () => {
+      throw new Error('write failed');
+    });
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      onSave,
+    });
+    const { childPort, iframe } = await connectHost(container, (message, port) => {
+      if (message.type !== 'SAVE') return;
+      const buffer = new Uint8Array([9, 8, 7]).buffer;
+      port.postMessage(
+        {
+          protocol: OFFICE_HOST_PROTOCOL,
+          type: 'SAVE_RESULT',
+          sessionId: message.sessionId,
+          requestId: message.requestId,
+          buffer,
+          fileName: 'alpha.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        },
+        [buffer],
+      );
+    });
+    const instance = await promise;
+    const sessionId = getSessionId(iframe);
+    childPort.postMessage({
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'STATE',
+      sessionId,
+      state: {
+        id: sessionId,
+        fileName: 'alpha.docx',
+        fileType: 'docx',
+        mode: 'edit',
+        readonly: false,
+        dirty: true,
+        status: 'ready',
+        destroyed: false,
+      },
+    });
+    await waitForMessage();
+
+    await expect(instance.save('DOCX')).rejects.toThrow('write failed');
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(onSave.mock.calls[0][0]).toMatchObject({ name: 'alpha.docx', size: 3 });
+    expect(instance.getState().dirty).toBe(true);
   });
 
   it('destroys idempotently and force-removes the host iframe without an ack', async () => {
