@@ -3,6 +3,12 @@ export const OFFICE_HOST_PROTOCOL = 'onlyoffice-browser-host/v1';
 export type OfficeHostSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
 export type OfficeHostSaveBehavior = 'auto' | 'callback' | 'download';
 
+export type OfficeSaveToNewFormatConfirmationOptions = {
+  title?: string;
+  message?: string;
+  dontshow?: boolean;
+};
+
 export type OfficeHostSource =
   | {
       kind: 'empty';
@@ -71,6 +77,11 @@ export type OfficeHostParentMessage =
       message?: string;
     })
   | (OfficeHostBaseMessage & {
+      type: 'CONFIRM_SAVE_TO_NEW_FORMAT';
+      requestId: string;
+      options?: OfficeSaveToNewFormatConfirmationOptions;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'SET_READONLY';
       readonly: boolean;
     })
@@ -94,13 +105,24 @@ export type OfficeHostChildMessage =
       mimeType: string;
     })
   | (OfficeHostBaseMessage & {
+      type: 'DOWNLOAD_RESULT';
+      buffer: ArrayBuffer;
+      fileName: string;
+      mimeType: string;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'PRINT_TITLE';
       title: string;
       durationMs: number;
     })
   | (OfficeHostBaseMessage & {
+      type: 'CONFIRM_SAVE_TO_NEW_FORMAT_RESULT';
+      requestId: string;
+      confirmed: boolean;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'ERROR';
-      phase: 'handshake' | 'init' | 'save' | 'setReadonly' | 'destroy' | 'runtime';
+      phase: 'handshake' | 'init' | 'save' | 'confirm' | 'setReadonly' | 'destroy' | 'runtime';
       message: string;
     })
   | (OfficeHostBaseMessage & {

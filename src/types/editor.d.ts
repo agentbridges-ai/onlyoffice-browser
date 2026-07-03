@@ -79,6 +79,7 @@ interface DocEditorConfig {
     onSave: (event: SaveEvent) => void;
     onDocumentStateChange?: (event: DocumentStateChangeEvent) => void;
     onDownloadAs?: (event: DownloadAsEvent) => void;
+    onRequestSaveAs?: (event: DownloadAsEvent) => void;
     writeFile: (event: WriteFileEvent) => void;
     /** Handle external messages from plugins */
     onExternalPluginMessage?: (event: { type: string; data: any; pluginName?: string }) => void;
@@ -161,20 +162,33 @@ interface DocEditor {
   }) => void;
   openDocument?: (data: Uint8Array) => void;
   downloadAs?: (data?: string) => void;
+  getEditorApi?: () => {
+    asc_DownloadAs?: (options?: unknown) => unknown;
+    _downloadAs?: (
+      actionType?: unknown,
+      options?: unknown,
+      additionalData?: Record<string, unknown>,
+      dataContainer?: Record<string, unknown>,
+      downloadType?: unknown,
+    ) => boolean | undefined;
+    [key: string]: unknown;
+  } | null;
   getEditorWindow?: () => Window | null;
   asc_nativeGetFile3?: () => {
     data?: Uint8Array | ArrayBuffer | ArrayBufferView;
     header?: string;
   } | Uint8Array | ArrayBuffer | ArrayBufferView;
-  asc_nativeGetPDF?: (options?: Record<string, unknown>) =>
-    | {
-        data?: Uint8Array | ArrayBuffer | ArrayBufferView;
-      }
-    | Uint8Array
-    | ArrayBuffer
-    | ArrayBufferView
-    | null;
-  zoomFitToWidth?: () => void;
+	  asc_nativeGetPDF?: (options?: Record<string, unknown>) =>
+	    | {
+	        data?: Uint8Array | ArrayBuffer | ArrayBufferView;
+	      }
+	    | Uint8Array
+	    | ArrayBuffer
+	    | ArrayBufferView
+	    | null;
+	  asc_nativeCalculateFile?: (options?: Record<string, unknown> | null) => unknown;
+	  asc_nativeGetHtml?: (options?: Record<string, unknown> | null) => string;
+	  zoomFitToWidth?: () => void;
   processRightsChange?: (enabled: boolean, message?: string) => void;
   connectMockServer?: (server: OnlyOfficeMockServer) => void;
   cryptPadMessageToOO?: (msg: any) => void;

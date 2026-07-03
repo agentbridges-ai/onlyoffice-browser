@@ -179,13 +179,16 @@ class MemoryFileHandle {
 }
 
 async function seedExistingOfficeFile(fileType: OfficeTestType): Promise<MemoryFileHandle> {
+  const configuredFixtureUrl = params.get('fixtureUrl');
+  const configuredFixtureName = params.get('fixtureName');
   const fixturePath =
-    fileType === 'xls' || fileType === 'doc' || fileType === 'ppt'
+    configuredFixtureUrl ||
+    (fileType === 'xls' || fileType === 'doc' || fileType === 'ppt'
       ? `/fixtures/legacy/legacy.${fileType}`
-      : `/fixtures/office/local.${fileType}`;
+      : `/fixtures/office/local.${fileType}`);
   const response = await fetch(fixturePath, { cache: 'no-cache' });
   if (response.ok) {
-    const fixtureName = fixturePath.split('/').pop() || `local.${fileType}`;
+    const fixtureName = configuredFixtureName || fixturePath.split('/').pop() || `local.${fileType}`;
     const fixtureFile = new File([await response.blob()], fixtureName, {
       type: mimeTypeForType(fileType),
     });

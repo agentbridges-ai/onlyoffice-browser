@@ -5,6 +5,7 @@ export {
   type CreateOfficeEditorOptions,
   type OfficeEditorInput,
   type OfficeEditorInstance,
+  type OfficeDownloadCallbackResult,
   type OfficeEditorMode,
   type OfficeEditorSourceKind,
   type OfficeEditorState,
@@ -12,4 +13,5 @@ export {
   type OfficeHostUrlResolver,
   type OfficeSaveBehavior,
   type OfficeSaveCallbackResult,
+  type OfficeSaveToNewFormatConfirmationOptions,
 } from './lib/office-editor';

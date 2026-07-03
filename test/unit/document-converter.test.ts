@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { X2TConverter } from '../../src/lib/document-converter';
+import { oAscFileType } from '../../src/lib/file-types';
 import type { EmscriptenModule } from '../../src/lib/document-types';
 
 type FakeX2TModule = EmscriptenModule & {
@@ -8,6 +9,7 @@ type FakeX2TModule = EmscriptenModule & {
   lastInputBytes: Uint8Array<ArrayBuffer> | null;
   lastMediaFiles: Map<string, Uint8Array<ArrayBuffer> | string>;
   lastParamsXml: string;
+  paramsXmls: string[];
 };
 
 function createFakeX2TModule(): FakeX2TModule {
@@ -19,6 +21,7 @@ function createFakeX2TModule(): FakeX2TModule {
     lastInputBytes: null,
     lastMediaFiles: new Map(),
     lastParamsXml: '',
+    paramsXmls: [],
     FS: {
       mkdir(path: string) {
         dirs.add(path);
@@ -52,6 +55,7 @@ function createFakeX2TModule(): FakeX2TModule {
         files.set(path, typeof data === 'string' ? data : new Uint8Array(Array.from(data)));
         if (path === '/working/params.xml' && typeof data === 'string') {
           module.lastParamsXml = data;
+          module.paramsXmls.push(data);
         }
       },
       unlink(path: string) {
@@ -135,7 +139,7 @@ describe('X2TConverter', () => {
     },
   );
 
-  it('lets x2t infer native save-bin formats when exporting to PDF', async () => {
+  it('passes explicit target format when exporting native save-bin to PDF', async () => {
     const converter = new X2TConverter();
     const x2tModule = createFakeX2TModule();
 
@@ -147,15 +151,15 @@ describe('X2TConverter', () => {
     await converter.convertBinToDocument(nativeBytes, 'local.docx', 'PDF');
     const params = x2tModule.lastParamsXml;
 
-    expect(params).not.toContain('<m_nFormatFrom>');
-    expect(params).not.toContain('<m_nFormatTo>');
+    expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>8193</m_nFormatFrom>'));
+    expect(params).toEqual(expect.stringContaining('<m_nFormatTo>513</m_nFormatTo>'));
     expect(params).toEqual(expect.stringContaining('<m_bIsNoBase64>true</m_bIsNoBase64>'));
     expect(params).toEqual(expect.stringContaining('<m_sFontDir>/working/fonts/</m_sFontDir>'));
     expect(Array.from(x2tModule.lastInputBytes || [])).toEqual(Array.from(nativeBytes));
     expect(x2tModule.ccall).toHaveBeenCalledWith('main1', 'number', ['string'], ['/working/params.xml']);
   });
 
-  it('passes native base64 save-bin payloads through for x2t inference', async () => {
+  it('passes native base64 save-bin payloads through for image/PDF targets while still setting target format', async () => {
     const converter = new X2TConverter();
     const x2tModule = createFakeX2TModule();
     const nativeBase64 = btoa('XLSY;v10;0;\x07\x06\x8b\x02');
@@ -167,14 +171,75 @@ describe('X2TConverter', () => {
     await converter.convertBinToDocument(nativeBase64Bytes, 'legacy.xls', 'PDF');
     const params = x2tModule.lastParamsXml;
 
-    expect(params).not.toContain('<m_nFormatFrom>');
-    expect(params).not.toContain('<m_nFormatTo>');
+    expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>8194</m_nFormatFrom>'));
+    expect(params).toEqual(expect.stringContaining('<m_nFormatTo>513</m_nFormatTo>'));
     expect(params).toEqual(expect.stringContaining('<m_bIsNoBase64>false</m_bIsNoBase64>'));
     expect(params).toEqual(expect.stringContaining('<m_sFontDir>/working/fonts/</m_sFontDir>'));
     expect(Array.from(x2tModule.lastInputBytes || [])).toEqual(Array.from(nativeBase64Bytes));
   });
 
-  it('decodes native base64 save-bin payloads for document exports', async () => {
+  it('routes native print PDFs to image exports through x2t with explicit PDF source format', async () => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const pdfBytes = Uint8Array.from('%PDF-1.7\n%%EOF\n', (char) => char.charCodeAt(0) & 0xff);
+
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+
+    const result = await converter.convertPdfToImage(pdfBytes, 'local.xlsx', 'PNG');
+    const params = x2tModule.lastParamsXml;
+
+    expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>513</m_nFormatFrom>'));
+    expect(params).toEqual(expect.stringContaining('<m_nFormatTo>1029</m_nFormatTo>'));
+    expect(params).toEqual(expect.stringContaining('<m_bIsNoBase64>true</m_bIsNoBase64>'));
+    expect(params).toEqual(expect.stringContaining('<m_sFontDir>/working/fonts/</m_sFontDir>'));
+    expect(params).toEqual(expect.stringContaining('<format>4</format>'));
+    expect(params).toEqual(expect.stringContaining('<first>true</first>'));
+    expect(params).toEqual(expect.stringContaining('<zip>false</zip>'));
+    expect(result.fileName).toBe('local.png');
+    expect(Array.from(x2tModule.lastInputBytes || [])).toEqual(Array.from(pdfBytes));
+  });
+
+	  it('passes upstream thumbnail options for multi-page PDF image export archives', async () => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const pdfBytes = Uint8Array.from('%PDF-1.7\n%%EOF\n', (char) => char.charCodeAt(0) & 0xff);
+
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+
+    await converter.convertPdfToImage(pdfBytes, 'local.xlsx', 'JPG', { allPages: true });
+    const params = x2tModule.lastParamsXml;
+
+    expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>513</m_nFormatFrom>'));
+    expect(params).toEqual(expect.stringContaining('<m_nFormatTo>1025</m_nFormatTo>'));
+    expect(params).toEqual(expect.stringContaining('<format>3</format>'));
+    expect(params).toEqual(expect.stringContaining('<first>false</first>'));
+	    expect(params).toEqual(expect.stringContaining('<zip>true</zip>'));
+	  });
+
+	  it('converts native editor HTML through x2t with explicit source and target formats', async () => {
+	    const converter = new X2TConverter();
+	    const x2tModule = createFakeX2TModule();
+	    const htmlBytes = Uint8Array.from('<!doctype html><html><body>alpha</body></html>', (char) =>
+	      char.charCodeAt(0) & 0xff,
+	    );
+
+	    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+	    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+
+	    const result = await converter.convertHtmlToDocument(htmlBytes, 'local.docx', 'MD');
+	    const params = x2tModule.lastParamsXml;
+
+	    expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>70</m_nFormatFrom>'));
+	    expect(params).toEqual(expect.stringContaining('<m_nFormatTo>92</m_nFormatTo>'));
+	    expect(params).toEqual(expect.stringContaining('<m_bIsNoBase64>true</m_bIsNoBase64>'));
+	    expect(params).toEqual(expect.stringContaining('<m_sFontDir>/working/fonts/</m_sFontDir>'));
+	    expect(result.fileName).toBe('local.md');
+	    expect(Array.from(x2tModule.lastInputBytes || [])).toEqual(Array.from(htmlBytes));
+	  });
+
+	  it('decodes native base64 save-bin payloads and passes explicit target format for document exports', async () => {
     const converter = new X2TConverter();
     const x2tModule = createFakeX2TModule();
     const nativeText = 'XLSY;v10;0;\x07\x06\x8b\x02';
@@ -187,13 +252,84 @@ describe('X2TConverter', () => {
     const result = await converter.convertBinToDocument(nativeBase64Bytes, 'legacy.xls', 'XLS');
     const params = x2tModule.lastParamsXml;
 
-    expect(params).not.toContain('<m_nFormatFrom>');
-    expect(params).not.toContain('<m_nFormatTo>');
+    expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>8194</m_nFormatFrom>'));
+    expect(params).toEqual(expect.stringContaining('<m_nFormatTo>257</m_nFormatTo>'));
     expect(params).toEqual(expect.stringContaining('<m_bIsNoBase64>true</m_bIsNoBase64>'));
     expect(result.fileName).toBe('legacy.xlsx');
     expect(Array.from(x2tModule.lastInputBytes || [])).toEqual(
       Array.from(Uint8Array.from(nativeText, (char) => char.charCodeAt(0) & 0xff)),
     );
+  });
+
+  it('routes native document exports to Markdown through the upstream native-bin path first', async () => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const nativeBytes = new Uint8Array([0x44, 0x4f, 0x43, 0x59, 0x3b, 0x76, 0x31, 0x30, 0x3b, 0x30, 0x3b, 1, 2, 3]);
+
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+
+    const result = await converter.convertBinToDocument(nativeBytes, 'local.docx', 'MD');
+    const [markdownParams] = x2tModule.paramsXmls;
+
+    expect(x2tModule.paramsXmls).toHaveLength(1);
+    expect(markdownParams).toEqual(expect.stringContaining('<m_nFormatFrom>8193</m_nFormatFrom>'));
+    expect(markdownParams).toEqual(expect.stringContaining('<m_nFormatTo>92</m_nFormatTo>'));
+    expect(markdownParams).toEqual(expect.stringContaining('<m_bIsNoBase64>true</m_bIsNoBase64>'));
+    expect(result.fileName).toBe('local.md');
+  });
+
+  it.each([
+    { targetExt: 'TXT', targetFormat: oAscFileType.TXT, outputFileName: 'local.txt' },
+    { targetExt: 'RTF', targetFormat: oAscFileType.RTF, outputFileName: 'local.rtf' },
+  ])('routes native document exports to $targetExt through the upstream native-bin path', async ({ targetExt, targetFormat, outputFileName }) => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const nativeBytes = new Uint8Array([0x44, 0x4f, 0x43, 0x59, 0x3b, 0x76, 0x31, 0x30, 0x3b, 0x30, 0x3b, 1, 2, 3]);
+
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+
+    const result = await converter.convertBinToDocument(nativeBytes, 'local.docx', targetExt);
+    const [targetParams] = x2tModule.paramsXmls;
+
+    expect(x2tModule.paramsXmls).toHaveLength(1);
+    expect(targetParams).toEqual(expect.stringContaining(`<m_nFormatFrom>${oAscFileType.CANVAS_WORD}</m_nFormatFrom>`));
+    expect(targetParams).toEqual(expect.stringContaining(`<m_nFormatTo>${targetFormat}</m_nFormatTo>`));
+    expect(result.fileName).toBe(outputFileName);
+  });
+
+  it('keeps single-image native document exports as image files by default', async () => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const nativeBytes = new Uint8Array([0x44, 0x4f, 0x43, 0x59, 0x3b, 0x76, 0x31, 0x30, 0x3b, 0x30, 0x3b, 1, 2, 3]);
+
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+
+    const result = await converter.convertBinToDocument(nativeBytes, 'local.docx', 'PNG');
+    const [imageParams] = x2tModule.paramsXmls;
+
+    expect(imageParams).toEqual(expect.stringContaining('<m_sFileTo>/working/local.png</m_sFileTo>'));
+    expect(imageParams).toEqual(expect.stringContaining(`<m_nFormatTo>${oAscFileType.PNG}</m_nFormatTo>`));
+    expect(result.fileName).toBe('local.png');
+  });
+
+  it('routes native spreadsheet CSV exports through x2t instead of SheetJS text rendering', async () => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const nativeBytes = new Uint8Array([0x58, 0x4c, 0x53, 0x59, 0x3b, 0x76, 0x31, 0x30, 0x3b, 0x30, 0x3b, 1, 2, 3]);
+
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+
+    const result = await converter.convertBinToDocument(nativeBytes, 'local.xlsx', 'CSV');
+    const [csvParams] = x2tModule.paramsXmls;
+
+    expect(x2tModule.paramsXmls).toHaveLength(1);
+    expect(csvParams).toEqual(expect.stringContaining(`<m_nFormatFrom>${oAscFileType.CANVAS_SPREADSHEET}</m_nFormatFrom>`));
+    expect(csvParams).toEqual(expect.stringContaining(`<m_nFormatTo>${oAscFileType.CSV}</m_nFormatTo>`));
+    expect(result.fileName).toBe('local.csv');
   });
 
   it('restores media files into the x2t workspace before native document export', async () => {

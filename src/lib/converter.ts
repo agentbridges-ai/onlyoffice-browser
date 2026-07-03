@@ -45,6 +45,17 @@ export const convertPrintDataToPdf = (
   media?: DocumentMediaMap,
 ): Promise<BinConversionResult> =>
   queueConversion(() => x2tConverter.convertPrintDataToPdf(printData, fileName, media));
+export const convertHtmlToDocument = (
+  htmlData: Uint8Array,
+  fileName: string,
+  targetExt: string,
+): Promise<BinConversionResult> => queueConversion(() => x2tConverter.convertHtmlToDocument(htmlData, fileName, targetExt));
+export const convertPdfToImage = (
+  pdfData: Uint8Array,
+  fileName: string,
+  targetExt: string,
+  options?: { allPages?: boolean },
+): Promise<BinConversionResult> => queueConversion(() => x2tConverter.convertPdfToImage(pdfData, fileName, targetExt, options));
 export const convertBinToDocumentAndDownload = (
   bin: Uint8Array,
   fileName: string,

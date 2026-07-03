@@ -288,6 +288,20 @@
       }
       return api.asc_nativeGetPDF(...args);
     }
+    asc_nativeCalculateFile(...args) {
+      const api = this.getEditorApi();
+      if (!api || typeof api.asc_nativeCalculateFile !== 'function') {
+        throw new Error('OnlyOffice native calculate API is not ready');
+      }
+      return api.asc_nativeCalculateFile(...args);
+    }
+    asc_nativeGetHtml(...args) {
+      const api = this.getEditorApi();
+      if (!api || typeof api.asc_nativeGetHtml !== 'function') {
+        throw new Error('OnlyOffice native HTML API is not ready');
+      }
+      return api.asc_nativeGetHtml(...args);
+    }
     attachMouseEvents(...args) {
       return this.origEditor.attachMouseEvents(...args);
     }
@@ -475,9 +489,9 @@
       } else if (typeof parsed.q === 'string') {
         if (handlers[parsed.q]) {
           if (parsed.txid) postToFrame(JSON.stringify({ txid: parsed.txid, ack: true }));
+          const handlerMessage = parsed;
           handlers[parsed.q].forEach((handler) => {
-            handler(parsed || JSON.parse(eventMessage.data), eventMessage, parsed?.raw);
-            parsed = undefined;
+            handler(handlerMessage, eventMessage, handlerMessage?.raw);
           });
         } else if (parsed.txid) {
           postToFrame(JSON.stringify({ txid: parsed.txid, ack: false }));

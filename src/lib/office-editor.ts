@@ -7,6 +7,7 @@ import {
   type OfficeHostSaveBehavior,
   type OfficeHostSource,
   type OfficeHostSourceKind,
+  type OfficeSaveToNewFormatConfirmationOptions,
   type OfficeHostState,
   type OfficeHostWindowMessage,
 } from './office-host-protocol';
@@ -26,7 +27,9 @@ export type OfficeEditorMode = 'edit' | 'readonly' | 'preview';
 export type OfficeEditorInput = Blob | ArrayBuffer | Uint8Array;
 export type OfficeEditorSourceKind = OfficeHostSourceKind;
 export type OfficeSaveBehavior = OfficeHostSaveBehavior;
+export type { OfficeSaveToNewFormatConfirmationOptions };
 export type OfficeSaveCallbackResult = void | boolean;
+export type OfficeDownloadCallbackResult = void;
 export type OfficeHostUrlContext = {
   sessionId: string;
   fileName: string;
@@ -52,6 +55,7 @@ export interface CreateOfficeEditorOptions {
   onReady?: (instance: OfficeEditorInstance) => void;
   saveBehavior?: OfficeSaveBehavior;
   onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
+  onDownload?: (file: File, instance: OfficeEditorInstance) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
 }
@@ -71,6 +75,7 @@ export interface OfficeEditorState {
 export interface OfficeEditorInstance {
   readonly id: string;
   save(targetExt?: string): Promise<File>;
+  confirmSaveToNewFormat(options?: OfficeSaveToNewFormatConfirmationOptions): Promise<boolean>;
   setReadonly(readonly: boolean): void;
   destroy(): Promise<void>;
   getState(): OfficeEditorState;
@@ -78,6 +83,11 @@ export interface OfficeEditorInstance {
 
 type PendingRequest = {
   resolve: (file: File) => void;
+  reject: (error: Error) => void;
+};
+
+type PendingConfirmationRequest = {
+  resolve: (confirmed: boolean) => void;
   reject: (error: Error) => void;
 };
 
@@ -402,6 +412,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private readonly hostOrigin: string;
   private readonly prepared: PreparedHostInit;
   private readonly pendingRequests = new Map<string, PendingRequest>();
+  private readonly pendingConfirmationRequests = new Map<string, PendingConfirmationRequest>();
   private iframe: HTMLIFrameElement | null = null;
   private port: MessagePort | null = null;
   private hostWindow: Window | null = null;
@@ -541,8 +552,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       case 'SAVE_RESULT':
         void this.handleSaveResult(message);
         return;
+      case 'DOWNLOAD_RESULT':
+        void this.handleDownloadResult(message);
+        return;
       case 'PRINT_TITLE':
         setTemporaryDocumentTitle(message.title, message.durationMs);
+        return;
+      case 'CONFIRM_SAVE_TO_NEW_FORMAT_RESULT':
+        this.handleConfirmSaveToNewFormatResult(message);
         return;
       case 'ERROR':
         this.handleHostError(message);
@@ -600,6 +617,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
   }
 
+  private async persistDownloadedFile(file: File): Promise<void> {
+    if (this.options.onDownload) {
+      await this.options.onDownload(file, this);
+      return;
+    }
+    downloadFile(file);
+  }
+
   private postSaveAck(requestId: string, ok: boolean, message?: string): void {
     this.postToHost({
       protocol: OFFICE_HOST_PROTOCOL,
@@ -637,9 +662,28 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
   }
 
+  private async handleDownloadResult(message: Extract<OfficeHostChildMessage, { type: 'DOWNLOAD_RESULT' }>): Promise<void> {
+    const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
+
+    try {
+      await this.persistDownloadedFile(file);
+    } catch (error) {
+      const normalized = toError(error);
+      this.options.onError?.(normalized, this);
+    }
+  }
+
   private handleHostError(message: Extract<OfficeHostChildMessage, { type: 'ERROR' }>): void {
     const error = new Error(message.message);
     if (message.requestId) {
+      const confirmRequest = this.pendingConfirmationRequests.get(message.requestId);
+      if (confirmRequest) {
+        this.pendingConfirmationRequests.delete(message.requestId);
+        confirmRequest.reject(error);
+        this.options.onError?.(error, this);
+        return;
+      }
+
       const request = this.pendingRequests.get(message.requestId);
       if (request) {
         this.pendingRequests.delete(message.requestId);
@@ -656,6 +700,15 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
     this.state = { ...this.state, status: 'error' };
     this.options.onError?.(error, this);
+  }
+
+  private handleConfirmSaveToNewFormatResult(
+    message: Extract<OfficeHostChildMessage, { type: 'CONFIRM_SAVE_TO_NEW_FORMAT_RESULT' }>,
+  ): void {
+    const request = this.pendingConfirmationRequests.get(message.requestId);
+    if (!request) return;
+    this.pendingConfirmationRequests.delete(message.requestId);
+    request.resolve(message.confirmed);
   }
 
   private failBeforeReady(error: Error): void {
@@ -712,6 +765,24 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     });
   }
 
+  confirmSaveToNewFormat(options?: OfficeSaveToNewFormatConfirmationOptions): Promise<boolean> {
+    if (this.destroyed || !this.port) {
+      return Promise.reject(new Error('Editor is not open'));
+    }
+
+    const requestId = nextRequestId(this.id);
+    return new Promise<boolean>((resolve, reject) => {
+      this.pendingConfirmationRequests.set(requestId, { resolve, reject });
+      this.postToHost({
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'CONFIRM_SAVE_TO_NEW_FORMAT',
+        sessionId: this.id,
+        requestId,
+        options,
+      });
+    });
+  }
+
   setReadonly(readonly: boolean): void {
     if (this.state.mode === 'preview' && !readonly) {
       throw new Error('Preview mode cannot be switched to editing; recreate the editor with mode: "edit".');
@@ -755,6 +826,10 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       request.reject(new Error('Editor was destroyed before save completed'));
     }
     this.pendingRequests.clear();
+    for (const request of this.pendingConfirmationRequests.values()) {
+      request.reject(new Error('Editor was destroyed before confirmation completed'));
+    }
+    this.pendingConfirmationRequests.clear();
     activeInstances.delete(this.id);
 
     this.destroyPromise = this.destroyHost();

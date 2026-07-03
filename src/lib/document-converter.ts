@@ -67,7 +67,9 @@ function safeDecodeURIComponent(value: string): string {
 const X2T_SOURCE_FORMAT_BY_EXTENSION: Record<string, number> = {
   csv: oAscFileType.CSV,
   doc: oAscFileType.DOC,
+  docm: oAscFileType.DOCM,
   docx: oAscFileType.DOCX,
+  docxf: oAscFileType.DOCXF,
   dotx: oAscFileType.DOTX,
   epub: oAscFileType.EPUB,
   fb2: oAscFileType.FB2,
@@ -75,14 +77,26 @@ const X2T_SOURCE_FORMAT_BY_EXTENSION: Record<string, number> = {
   md: oAscFileType.MD,
   odp: oAscFileType.ODP,
   ods: oAscFileType.ODS,
+  oform: oAscFileType.OFORM,
   odt: oAscFileType.ODT,
   ott: oAscFileType.OTT,
+  otp: oAscFileType.OTP,
+  ots: oAscFileType.OTS,
+  potm: oAscFileType.POTM,
+  potx: oAscFileType.POTX,
   ppt: oAscFileType.PPT,
+  pptm: oAscFileType.PPTM,
   pptx: oAscFileType.PPTX,
+  ppsm: oAscFileType.PPSM,
+  ppsx: oAscFileType.PPSX,
   rtf: oAscFileType.RTF,
   txt: oAscFileType.TXT,
   xls: oAscFileType.XLS,
+  xlsb: oAscFileType.XLSB,
+  xlsm: oAscFileType.XLSM,
   xlsx: oAscFileType.XLSX,
+  xltm: oAscFileType.XLTM,
+  xltx: oAscFileType.XLTX,
 };
 
 const X2T_TARGET_FORMAT_BY_EXTENSION: Record<string, number> = {
@@ -100,6 +114,9 @@ const X2T_OUTPUT_EXTENSION_BY_TARGET_EXTENSION: Record<string, string> = {
 };
 
 const NATIVE_BASE64_PASSTHROUGH_TARGETS = new Set(['pdf', 'pdfa', 'jpg', 'jpeg', 'png']);
+const CONVERTER_ALL_FONTS_PATH = '/server/FileConverter/bin/AllFonts.js';
+const GENERATED_CONVERTER_ALL_FONTS_ASSET = 'server/FileConverter/bin/AllFonts.js';
+const CONVERTER_TEMP_DIR = '/tmp/x2t-conversion';
 
 const LEGACY_TARGET_INTERMEDIATE_EXTENSION: Record<string, string> = {
   doc: 'docx',
@@ -119,17 +136,39 @@ const X2T_CANVAS_FORMAT_BY_DOCUMENT_TYPE: Record<DocumentType, number> = {
   word: oAscFileType.CANVAS_WORD,
 };
 
+function blobPartStartsWith(data: BlobPart, signature: number[]): boolean {
+  if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) return false;
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  if (bytes.byteLength < signature.length) return false;
+  return signature.every((value, index) => bytes[index] === value);
+}
+
+function resolveGeneratedOutputFileName(fileName: string, data: BlobPart, targetExt: string): string {
+  const normalizedTargetExt = targetExt.toLowerCase();
+  if (!['jpg', 'jpeg', 'png'].includes(normalizedTargetExt)) return fileName;
+  if (!blobPartStartsWith(data, [0x50, 0x4b, 0x03, 0x04])) return fileName;
+  return fileName.replace(/\.[^/.]+$/, '.zip');
+}
+
 export class X2TConverter {
   private x2tModule: EmscriptenModule | null = null;
   private isReady = false;
   private initPromise: Promise<EmscriptenModule> | null = null;
   private hasScriptLoaded = false;
   private hasGeneratedFontAssetsLoaded = false;
+  private hasThemeAssetsLoaded = false;
 
   // Supported file type mapping
   private readonly DOCUMENT_TYPE_MAP: Record<string, DocumentType> = DOCUMENT_TYPE_MAP;
 
-  private readonly WORKING_DIRS = ['/working', '/working/media', '/working/fonts', '/working/themes'];
+  private readonly WORKING_DIRS = [
+    '/tmp',
+    CONVERTER_TEMP_DIR,
+    '/working',
+    '/working/media',
+    '/working/fonts',
+    '/working/themes',
+  ];
   private readonly SCRIPT_PATH = `${BASE_PATH}wasm/x2t/x2t.js`;
   private readonly INIT_TIMEOUT = 300000;
 
@@ -192,6 +231,7 @@ export class X2TConverter {
               this.createWorkingDirectories(x2t);
               this.x2tModule = x2t;
               await this.loadGeneratedFontAssets();
+              await this.loadThemeAssets();
               this.isReady = true;
               console.log('X2T module initialized successfully');
               resolve(x2t);
@@ -350,6 +390,20 @@ export class X2TConverter {
     this.writeFontAliases(fontDataByName);
 
     try {
+      let allFontsData: Uint8Array;
+      try {
+        allFontsData = await fetchRuntimeBinaryAsset(GENERATED_CONVERTER_ALL_FONTS_ASSET);
+      } catch {
+        allFontsData = await fetchRuntimeBinaryAsset(manifest.allFonts);
+      }
+      this.writeBinaryFile(CONVERTER_ALL_FONTS_PATH, allFontsData);
+    } catch (error) {
+      throw new Error(
+        `Failed to load generated AllFonts asset: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    try {
       const data = await fetchRuntimeBinaryAsset(manifest.fontSelection);
       this.writeBinaryFile('/font_selection.bin', data);
       this.writeBinaryFile('/working/font_selection.bin', data);
@@ -361,6 +415,32 @@ export class X2TConverter {
         }`,
       );
     }
+  }
+
+  private async loadThemeAssets(): Promise<void> {
+    if (this.hasThemeAssetsLoaded || !this.x2tModule) return;
+    this.hasThemeAssetsLoaded = true;
+
+    const themeAssets = [
+      'sdkjs/slide/themes/themes.js',
+      ...Array.from({ length: 6 }, (_, index) => `sdkjs/slide/themes/theme${index + 1}/theme.bin`),
+    ];
+
+    await Promise.all(
+      themeAssets.map(async (assetPath) => {
+        try {
+          const data = await fetchRuntimeBinaryAsset(assetPath);
+          const relativePath = assetPath.replace(/^sdkjs\/slide\/themes\/?/, '');
+          this.writeBinaryFile(`/working/themes/${relativePath}`, data);
+        } catch (error) {
+          throw new Error(
+            `Failed to load OnlyOffice theme asset ${assetPath}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }),
+    );
   }
 
   private unlinkIfExists(path: string): void {
@@ -405,6 +485,7 @@ export class X2TConverter {
     }
 
     this.clearDirectoryFiles('/working/media');
+    this.clearDirectoryFiles(CONVERTER_TEMP_DIR);
   }
 
   /**
@@ -474,6 +555,33 @@ export class X2TConverter {
     }
   }
 
+  private readRequiredOutputFile(outputPath: string): BlobPart {
+    const fs = this.x2tModule?.FS;
+    if (!fs) {
+      throw new Error('X2T module not initialized');
+    }
+
+    let result: BlobPart;
+    try {
+      result = fs.readFile(outputPath, { encoding: 'binary' });
+    } catch {
+      throw new Error(`Conversion completed without output file: ${outputPath}`);
+    }
+
+    const byteLength =
+      typeof result === 'string'
+        ? result.length
+        : result instanceof Blob
+          ? result.size
+          : result instanceof ArrayBuffer
+            ? result.byteLength
+            : result.byteLength;
+    if (byteLength === 0) {
+      throw new Error(`Conversion produced an empty output file: ${outputPath}`);
+    }
+    return result;
+  }
+
   /**
    * Create conversion parameters XML
    */
@@ -482,6 +590,8 @@ export class X2TConverter {
 <TaskQueueDataConvert xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <m_sFileFrom>${fromPath}</m_sFileFrom>
   <m_sThemeDir>/working/themes</m_sThemeDir>
+  <m_sAllFontsPath>${CONVERTER_ALL_FONTS_PATH}</m_sAllFontsPath>
+  <m_sTempDir>${CONVERTER_TEMP_DIR}</m_sTempDir>
   <m_sFileTo>${toPath}</m_sFileTo>
   <m_bIsNoBase64>${isNoBase64 ? 'true' : 'false'}</m_bIsNoBase64>
   ${additionalParams}
@@ -513,6 +623,10 @@ export class X2TConverter {
     return X2T_NATIVE_FORMAT_BY_SIGNATURE[signature];
   }
 
+  private detectNativeBinSourceFormat(bin: Uint8Array): number | undefined {
+    return this.detectNativeBinFormat(bin) || this.detectNativeBinFormat(this.decodeNativeBase64Container(bin));
+  }
+
   private isNativeNoBase64Container(bin: Uint8Array): boolean {
     if (bin.length < 12) return false;
     const header = String.fromCharCode(...bin.slice(0, Math.min(bin.length, 32)));
@@ -533,10 +647,12 @@ export class X2TConverter {
   }
 
   private createBinToDocumentParams(fromPath: string, toPath: string, bin: Uint8Array, targetExt: string): string {
+    const sourceFormat = this.detectNativeBinSourceFormat(bin);
     const targetFormat = X2T_TARGET_FORMAT_BY_EXTENSION[targetExt.toLowerCase()];
-    const isNativeBin = Boolean(this.detectNativeBinFormat(bin));
+    const isNativeBin = sourceFormat !== undefined;
     const formatParams = [
-      targetFormat === oAscFileType.PDFA ? `<m_nFormatTo>${targetFormat}</m_nFormatTo>` : '',
+      sourceFormat !== undefined ? `<m_nFormatFrom>${sourceFormat}</m_nFormatFrom>` : '',
+      targetFormat !== undefined ? `<m_nFormatTo>${targetFormat}</m_nFormatTo>` : '',
       isNativeBin || targetFormat === oAscFileType.PDF || targetFormat === oAscFileType.PDFA
         ? '<m_sFontDir>/working/fonts/</m_sFontDir>'
         : '',
@@ -634,7 +750,10 @@ export class X2TConverter {
   }
 
   /**
-   * Load xlsx library from local file
+   * Load SheetJS for the demo CSV input adapter.
+   *
+   * Office Download As conversions must not use SheetJS or any other secondary
+   * converter; they go through native OnlyOffice bytes and x2t-wasm only.
    */
   private async loadXlsxLibrary(): Promise<any> {
     // Check if xlsx is already loaded
@@ -660,8 +779,9 @@ export class X2TConverter {
   }
 
   /**
-   * Convert CSV to XLSX format using SheetJS library
-   * This is a workaround since x2t may not support CSV directly
+   * Convert standalone CSV input to XLSX before opening it in the spreadsheet editor.
+   *
+   * This is not part of the Office Download As/export pipeline.
    */
   private async convertCsvToXlsx(csvData: Uint8Array, fileName: string): Promise<File> {
     try {
@@ -716,7 +836,7 @@ export class X2TConverter {
       const arrayBuffer = await file.arrayBuffer();
       const data = new Uint8Array(arrayBuffer);
 
-      // Handle CSV files - x2t may not support them directly, so convert to XLSX first
+      // CSV is a standalone input adapter. Office Download As exports stay on x2t-wasm.
       if (fileExt.toLowerCase() === 'csv') {
         if (data.length === 0) {
           throw new Error('CSV file is empty');
@@ -749,7 +869,7 @@ export class X2TConverter {
           this.executeConversion('/working/params.xml');
 
           // Read conversion result
-          const result = this.x2tModule!.FS.readFile(outputPath);
+          const result = this.readRequiredOutputFile(outputPath);
           const media = await this.readMediaFiles();
 
           // Return original CSV fileName, not the XLSX one
@@ -784,7 +904,7 @@ export class X2TConverter {
       this.executeConversion('/working/params.xml');
 
       // Read conversion result
-      const result = this.x2tModule!.FS.readFile(outputPath);
+      const result = this.readRequiredOutputFile(outputPath);
       const media = await this.readMediaFiles();
 
       return {
@@ -795,57 +915,6 @@ export class X2TConverter {
       };
     } catch (error) {
       throw new Error(`Document conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-      this.clearConversionWorkspace();
-    }
-  }
-
-  /**
-   * Attempt to convert CSV directly using x2t (may fail)
-   */
-  private async convertCsvDirectly(
-    _file: File,
-    data: Uint8Array,
-    fileName: string,
-    documentType: DocumentType,
-  ): Promise<ConversionResult> {
-    this.clearConversionWorkspace();
-    try {
-      // Handle UTF-8 BOM
-      let fileData = data;
-      const hasBOM = data.length >= 3 && data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf;
-      if (!hasBOM) {
-        const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
-        fileData = new Uint8Array(bom.length + data.length);
-        fileData.set(bom, 0);
-        fileData.set(data, bom.length);
-      }
-
-      const sanitizedName = this.sanitizeFileName(fileName);
-      const inputPath = `/working/${sanitizedName}`;
-      const outputPath = `${inputPath}.bin`;
-
-      // Write file to virtual file system
-      this.x2tModule!.FS.writeFile(inputPath, fileData);
-
-      // Try with format specification
-      const additionalParams = '<m_nFormatFrom>260</m_nFormatFrom>';
-      const params = this.createConversionParams(inputPath, outputPath, additionalParams);
-      this.x2tModule!.FS.writeFile('/working/params.xml', params);
-
-      // Execute conversion - this will likely fail with error 89
-      this.executeConversion('/working/params.xml');
-
-      // If we get here, conversion succeeded (unlikely for CSV)
-      const result = this.x2tModule!.FS.readFile(outputPath);
-      const media = await this.readMediaFiles();
-
-      return {
-        fileName: sanitizedName,
-        type: documentType,
-        bin: result,
-        media,
-      };
     } finally {
       this.clearConversionWorkspace();
     }
@@ -876,52 +945,9 @@ export class X2TConverter {
     try {
       await this.writeMediaFiles(media);
 
-      // Handle CSV files specially - need to convert bin -> XLSX -> CSV
-      if (requestedTargetExt === 'csv') {
-        // First convert bin to XLSX
-        const xlsxFileName = `${sanitizedBase}.xlsx`;
-        this.x2tModule!.FS.writeFile(`/working/${binFileName}`, sourceBin);
-
-        const params = this.createBinToDocumentParams(
-          `/working/${binFileName}`,
-          `/working/${xlsxFileName}`,
-          sourceBin,
-          'xlsx',
-        );
-
-        this.x2tModule!.FS.writeFile('/working/params.xml', params);
-        this.executeConversion('/working/params.xml');
-
-        // Read XLSX file
-        const xlsxResult = this.x2tModule!.FS.readFile(`/working/${xlsxFileName}`);
-        const xlsxArray = xlsxResult instanceof Uint8Array ? xlsxResult : new Uint8Array(xlsxResult as ArrayBuffer);
-
-        // Convert XLSX to CSV using SheetJS
-        const XLSX = await this.loadXlsxLibrary();
-        const workbook = XLSX.read(xlsxArray, { type: 'array' });
-
-        // Get the first sheet
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-
-        // Convert to CSV
-        const csvText = XLSX.utils.sheet_to_csv(worksheet);
-
-        // Convert CSV text to Uint8Array (UTF-8 with BOM for better compatibility)
-        const csvBOM = new Uint8Array([0xef, 0xbb, 0xbf]);
-        const csvTextBytes = new TextEncoder().encode(csvText);
-        const csvArray = new Uint8Array(csvBOM.length + csvTextBytes.length);
-        csvArray.set(csvBOM, 0);
-        csvArray.set(csvTextBytes, csvBOM.length);
-
-        return {
-          fileName: outputFileName,
-          data: csvArray,
-        };
-      }
-
-      // For all other file types, use standard conversion
-      // Write bin file
+      // Keep the entry point aligned with DocumentServer. Native DOCY/XLSY/PPTY
+      // bins go directly to x2t with explicit format ids; x2t owns any internal
+      // DOCX/XLSX/PPTX or HTML intermediate steps.
       this.x2tModule!.FS.writeFile(`/working/${binFileName}`, sourceBin);
 
       const params = this.createBinToDocumentParams(
@@ -932,19 +958,63 @@ export class X2TConverter {
       );
 
       this.x2tModule!.FS.writeFile('/working/params.xml', params);
-
-      // Execute conversion
       this.executeConversion('/working/params.xml');
 
       // Read generated document
-      const result = this.x2tModule!.FS.readFile(`/working/${outputFileName}`);
+      const result = this.readRequiredOutputFile(`/working/${outputFileName}`);
 
+      return {
+        fileName: resolveGeneratedOutputFileName(outputFileName, result, normalizedTargetExt),
+        data: result,
+      };
+    } catch (error) {
+      throw new Error(`Bin to document conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      this.clearConversionWorkspace();
+    }
+  }
+
+  async convertHtmlToDocument(
+    htmlData: Uint8Array,
+    originalFileName: string,
+    targetExt: string,
+  ): Promise<BinConversionResult> {
+    await this.initialize();
+
+    const normalizedTargetExt = targetExt.toLowerCase();
+    const targetFormat = X2T_TARGET_FORMAT_BY_EXTENSION[normalizedTargetExt];
+    if (targetFormat === undefined) {
+      throw new Error(`Unsupported HTML export target: ${targetExt}`);
+    }
+
+    const outputExtension = X2T_OUTPUT_EXTENSION_BY_TARGET_EXTENSION[normalizedTargetExt] || normalizedTargetExt;
+    const sanitizedBase = this.sanitizeFileName(originalFileName).replace(/\.[^/.]+$/, '');
+    const inputFileName = `${sanitizedBase}.html`;
+    const outputFileName = `${sanitizedBase}.${outputExtension}`;
+
+    this.clearConversionWorkspace();
+    try {
+      this.x2tModule!.FS.writeFile(`/working/${inputFileName}`, htmlData);
+
+      const params = this.createConversionParams(
+        `/working/${inputFileName}`,
+        `/working/${outputFileName}`,
+        `<m_nFormatFrom>${oAscFileType.HTML}</m_nFormatFrom>
+  <m_nFormatTo>${targetFormat}</m_nFormatTo>
+  <m_sFontDir>/working/fonts/</m_sFontDir>`,
+        true,
+      );
+
+      this.x2tModule!.FS.writeFile('/working/params.xml', params);
+      this.executeConversion('/working/params.xml');
+
+      const result = this.readRequiredOutputFile(`/working/${outputFileName}`);
       return {
         fileName: outputFileName,
         data: result,
       };
     } catch (error) {
-      throw new Error(`Bin to document conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(`HTML to document conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       this.clearConversionWorkspace();
     }
@@ -982,13 +1052,66 @@ export class X2TConverter {
       this.x2tModule!.FS.writeFile('/working/params.xml', params);
       this.executeConversion('/working/params.xml');
 
-      const result = this.x2tModule!.FS.readFile(`/working/${outputFileName}`);
+      const result = this.readRequiredOutputFile(`/working/${outputFileName}`);
       return {
         fileName: outputFileName,
         data: result,
       };
     } catch (error) {
       throw new Error(`Print PDF conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      this.clearConversionWorkspace();
+    }
+  }
+
+  async convertPdfToImage(
+    pdfData: Uint8Array,
+    originalFileName: string,
+    targetExt: string,
+    options: { allPages?: boolean } = {},
+  ): Promise<BinConversionResult> {
+    await this.initialize();
+
+    const normalizedTargetExt = targetExt.toLowerCase() === 'jpeg' ? 'jpg' : targetExt.toLowerCase();
+    const targetFormat = X2T_TARGET_FORMAT_BY_EXTENSION[normalizedTargetExt];
+    if (targetFormat !== oAscFileType.JPG && targetFormat !== oAscFileType.PNG) {
+      throw new Error(`Unsupported PDF image export target: ${targetExt}`);
+    }
+
+    const sanitizedBase = this.sanitizeFileName(originalFileName).replace(/\.[^/.]+$/, '');
+    const inputFileName = `${sanitizedBase}.pdf`;
+    const outputFileName = `${sanitizedBase}.${normalizedTargetExt}`;
+    const rasterFormat = targetFormat === oAscFileType.JPG ? 3 : 4;
+    const exportAllPages = options.allPages === true;
+
+    this.clearConversionWorkspace();
+    try {
+      this.x2tModule!.FS.writeFile(`/working/${inputFileName}`, pdfData);
+
+      const params = this.createConversionParams(
+        `/working/${inputFileName}`,
+        `/working/${outputFileName}`,
+        `<m_nFormatFrom>${oAscFileType.PDF}</m_nFormatFrom>
+  <m_nFormatTo>${targetFormat}</m_nFormatTo>
+  <m_sFontDir>/working/fonts/</m_sFontDir>
+  <m_oThumbnail>
+    <format>${rasterFormat}</format>
+    <aspect>2</aspect>
+    <first>${exportAllPages ? 'false' : 'true'}</first>
+    <zip>${exportAllPages ? 'true' : 'false'}</zip>
+  </m_oThumbnail>`,
+        true,
+      );
+      this.x2tModule!.FS.writeFile('/working/params.xml', params);
+      this.executeConversion('/working/params.xml');
+
+      const result = this.readRequiredOutputFile(`/working/${outputFileName}`);
+      return {
+        fileName: resolveGeneratedOutputFileName(outputFileName, result, normalizedTargetExt),
+        data: result,
+      };
+    } catch (error) {
+      throw new Error(`PDF to image conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       this.clearConversionWorkspace();
     }

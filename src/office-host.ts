@@ -123,6 +123,21 @@ async function postSavedFile(file: File, requestId = nextNativeSaveRequestId()):
   await ack;
 }
 
+async function postDownloadedFile(file: File): Promise<void> {
+  const buffer = await file.arrayBuffer();
+  postPortMessage(
+    {
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'DOWNLOAD_RESULT',
+      sessionId,
+      buffer,
+      fileName: file.name,
+      mimeType: file.type,
+    },
+    [buffer],
+  );
+}
+
 function postState(type: 'READY' | 'STATE', state: OfficeHostState): void {
   postPortMessage({
     protocol: OFFICE_HOST_PROTOCOL,
@@ -435,6 +450,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
         postError('runtime', error);
       },
       onSave: (file) => postSavedFile(file, activeSaveRequestId),
+      onDownload: (file) => postDownloadedFile(file),
     };
 
     if (source.kind === 'empty') {
@@ -483,6 +499,26 @@ async function handleSave(message: Extract<OfficeHostParentMessage, { type: 'SAV
   }
 }
 
+async function handleConfirmSaveToNewFormat(
+  message: Extract<OfficeHostParentMessage, { type: 'CONFIRM_SAVE_TO_NEW_FORMAT' }>,
+): Promise<void> {
+  try {
+    if (!editor) {
+      throw new Error('Editor is not open');
+    }
+    const confirmed = await editor.confirmSaveToNewFormat(message.options);
+    postPortMessage({
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'CONFIRM_SAVE_TO_NEW_FORMAT_RESULT',
+      sessionId,
+      requestId: message.requestId,
+      confirmed,
+    });
+  } catch (error) {
+    postError('confirm', error, message.requestId);
+  }
+}
+
 function handleSetReadonly(message: Extract<OfficeHostParentMessage, { type: 'SET_READONLY' }>): void {
   try {
     if (!editor) {
@@ -518,6 +554,9 @@ function handlePortMessage(event: MessageEvent<OfficeHostParentMessage>): void {
       return;
     case 'SAVE_ACK':
       handleSaveAck(event.data);
+      return;
+    case 'CONFIRM_SAVE_TO_NEW_FORMAT':
+      void handleConfirmSaveToNewFormat(event.data);
       return;
     case 'SET_READONLY':
       handleSetReadonly(event.data);

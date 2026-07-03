@@ -156,6 +156,12 @@ await fetch('/api/files/123', {
 
 文档资源必须和 native bin 一起进入转换器。上游 DocumentServer 在运行 FileConverter 前，会把整棵文档 storage 目录下载到 converter 的 `source` 目录，因此 `Editor.bin`、changes，以及 `media/...` 这类侧车文件会一起交给 x2t。本浏览器包没有服务端 storage 目录，所以会保留打开/插入过程中形成的 media object URL 映射，并在保存、打印、下载为转换前重新 materialize 到 x2t 的 `/working/media`。不要把导出链路改回“只传 native bin”；否则可能生成关系仍引用图片、但 `word/media/*`、`xl/media/*` 或 `ppt/media/*` 实际缺失的 OOXML 包。
 
+“下载为”转换应贴近上游 DocumentServer 的 converter 任务形态。运行时必须在 x2t 参数中显式传目标格式号（`m_nFormatTo`），不要只依赖输出文件扩展名推断。Markdown 这类格式尤其依赖这一点：上游 `MD = 92`，x2t 会把 native document bin 先走 DOCX/HTML 中间链路，再由 `HtmlFile2`/`MDWriter` 写出 `.md`。如果浏览器 x2t 拒绝某个目标格式，应暴露转换错误并修正 x2t 参数、资源或 wasm 构建；不要用 SDKJS 文本导出、纯文本渲染或无关包来合成另一个文件作为兜底。
+
+产品转换行为以 [ONLYOFFICE/DocumentServer](https://github.com/ONLYOFFICE/DocumentServer) 为准；浏览器 x2t/WebAssembly 构建变更和发布走 [agentbridges-ai/onlyoffice-x2t-wasm](https://github.com/agentbridges-ai/onlyoffice-x2t-wasm)，[cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 只作为运行时文件系统、测试组织方式和 wasm 打包约束的源码分析参考。本包不修改或发布 CryptPad 上游。只有在 x2t 已经产出目标字节后，才允许做产物后处理，例如把 Markdown 中的 data URI 图片拆成 `.zip` 里的独立资源；后处理不能掩盖转换失败。
+
+x2t-wasm 是本包浏览器端 Office 转换的唯一引擎。不要为“下载为”产物增加第二转换器、Pandoc 链路或 fallback 链路。只有 x2t-wasm 已经产出目标字节后，才允许做 Markdown 图片资源打包这类产物后处理。可见导出格式失败时，应修复 `agentbridges-ai/onlyoffice-x2t-wasm`、x2t 参数或资源 materialize 流程，而不是合成另一个替代文件。
+
 `saveBehavior` 决定 native 导出后的分流：
 
 - `auto`（默认）：已有 `file`/`buffer`/`url` 来源走 `onSave`；缺少 `onSave` 则保存失败。`emptyType` 新建文档默认下载，除非 `onSave` 返回 `true` 表示已处理。
@@ -177,7 +183,7 @@ await createOfficeEditor(container, {
 });
 ```
 
-OnlyOffice 原生“所有更改已保存”不是本浏览器集成里的最终持久化信号。在上游 ONLYOFFICE DocumentServer 部署里，这个角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/DocumentServer](https://github.com/ONLYOFFICE/DocumentServer)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)、[cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 和 [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 为集成参考。
+OnlyOffice 原生“所有更改已保存”不是本浏览器集成里的最终持久化信号。在上游 ONLYOFFICE DocumentServer 部署里，这个角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/DocumentServer](https://github.com/ONLYOFFICE/DocumentServer)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer) 和 [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 作为保存/存储集成参考。
 
 ## 打印
 

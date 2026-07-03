@@ -88,11 +88,51 @@ describe('office-editor parent proxy', () => {
     document.head.innerHTML = '';
     document.body.innerHTML = '';
     vi.restoreAllMocks();
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:onlyoffice-browser-parent-download'),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
   });
 
   it('keeps loadOfficeEditorApi as a parent-side no-op', async () => {
     await expect(loadOfficeEditorApi()).resolves.toBeUndefined();
     expect(document.querySelectorAll('script[data-office-editor-api="true"]')).toHaveLength(0);
+  });
+
+  it('round-trips save-to-new-format confirmation through the isolated host', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'legacy.doc'),
+      fileName: 'legacy.doc',
+      destroyTimeoutMs: 1,
+    });
+    const { messages } = await connectHost(container, (message, childPort) => {
+      if (message.type !== 'CONFIRM_SAVE_TO_NEW_FORMAT') return;
+      childPort.postMessage({
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'CONFIRM_SAVE_TO_NEW_FORMAT_RESULT',
+        sessionId: message.sessionId,
+        requestId: message.requestId,
+        confirmed: true,
+      });
+    });
+    const instance = await promise;
+
+    await expect(instance.confirmSaveToNewFormat({ dontshow: true })).resolves.toBe(true);
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'CONFIRM_SAVE_TO_NEW_FORMAT',
+      options: { dontshow: true },
+    }));
+
+    await instance.destroy();
   });
 
   it('defaults the isolated host iframe to fill its container', async () => {
@@ -336,6 +376,78 @@ describe('office-editor parent proxy', () => {
       requestId,
       ok: true,
     }));
+  });
+
+  it('downloads host-exported files from the parent page', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      destroyTimeoutMs: 1,
+    });
+    const { childPort, iframe } = await connectHost(container);
+    const instance = await promise;
+    const buffer = new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer;
+
+    childPort.postMessage(
+      {
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'DOWNLOAD_RESULT',
+        sessionId: getSessionId(iframe),
+        buffer,
+        fileName: 'alpha.pdf',
+        mimeType: 'application/pdf',
+      },
+      [buffer],
+    );
+    await waitForMessage();
+
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+    expect(URL.createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ name: 'alpha.pdf' }));
+
+    await instance.destroy();
+  });
+
+  it('allows hosts to intercept Download As files without saving them', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onDownload = vi.fn();
+    const onSave = vi.fn();
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      onDownload,
+      onSave,
+      destroyTimeoutMs: 1,
+    });
+    const { childPort, iframe } = await connectHost(container);
+    const instance = await promise;
+    const buffer = new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer;
+
+    childPort.postMessage(
+      {
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'DOWNLOAD_RESULT',
+        sessionId: getSessionId(iframe),
+        buffer,
+        fileName: 'alpha.pdf',
+        mimeType: 'application/pdf',
+      },
+      [buffer],
+    );
+    await waitForMessage();
+
+    expect(onDownload).toHaveBeenCalledTimes(1);
+    expect(onDownload.mock.calls[0][0]).toMatchObject({ name: 'alpha.pdf' });
+    expect(onSave).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+
+    await instance.destroy();
   });
 
   it('reports dirty state changes from the host', async () => {
