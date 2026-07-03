@@ -46,6 +46,8 @@ interface DocEditorConfig {
       hideRightMenu: boolean;
       /** Start with the native OnlyOffice ribbon collapsed. */
       compactToolbar?: boolean;
+      /** OnlyOffice interface theme. Use modern values: theme-system, theme-white, or theme-night. */
+      uiTheme?: 'theme-system' | 'theme-white' | 'theme-night';
       /** OnlyOffice zoom preset. -2 maps to native fit-to-width. */
       zoom?: number;
       /** Whether spell checking is enabled by default. */

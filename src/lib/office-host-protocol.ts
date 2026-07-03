@@ -2,6 +2,7 @@ export const OFFICE_HOST_PROTOCOL = 'onlyoffice-browser-host/v1';
 
 export type OfficeHostSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
 export type OfficeHostSaveBehavior = 'auto' | 'callback' | 'download';
+export type OfficeHostInterfaceTheme = 'system' | 'light' | 'dark';
 
 export type OfficeSaveToNewFormatConfirmationOptions = {
   title?: string;
@@ -27,6 +28,7 @@ export interface OfficeHostInitOptions {
   mode?: 'edit' | 'readonly' | 'preview';
   readonly?: boolean;
   spellcheck?: boolean;
+  interfaceTheme?: OfficeHostInterfaceTheme;
   lang?: string;
   saveBehavior?: OfficeHostSaveBehavior;
   source: OfficeHostSource;
@@ -86,6 +88,10 @@ export type OfficeHostParentMessage =
       readonly: boolean;
     })
   | (OfficeHostBaseMessage & {
+      type: 'SET_INTERFACE_THEME';
+      interfaceTheme: OfficeHostInterfaceTheme;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'DESTROY';
     });
 
@@ -128,7 +134,7 @@ export type OfficeHostChildMessage =
     })
   | (OfficeHostBaseMessage & {
       type: 'ERROR';
-      phase: 'handshake' | 'init' | 'save' | 'confirm' | 'setReadonly' | 'destroy' | 'runtime';
+      phase: 'handshake' | 'init' | 'save' | 'confirm' | 'setReadonly' | 'setInterfaceTheme' | 'destroy' | 'runtime';
       message: string;
     })
   | (OfficeHostBaseMessage & {

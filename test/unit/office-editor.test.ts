@@ -224,6 +224,7 @@ describe('office-editor parent proxy', () => {
       hostUrl: HOST_URL,
       file: new File(['a'], 'alpha.docx'),
       fileName: 'alpha.docx',
+      interfaceTheme: 'dark',
       onReady,
     });
     const { iframe, messages } = await connectHost(container);
@@ -237,6 +238,7 @@ describe('office-editor parent proxy', () => {
       type: 'INIT',
       options: {
         fileName: 'alpha.docx',
+        interfaceTheme: 'dark',
         spellcheck: false,
         source: {
           kind: 'buffer',
@@ -247,6 +249,13 @@ describe('office-editor parent proxy', () => {
     });
     expect(instance.getState()).toMatchObject({ fileName: 'alpha.docx', fileType: 'docx', status: 'ready' });
     expect(onReady).toHaveBeenCalledTimes(1);
+
+    instance.setInterfaceTheme('light');
+    await waitForMessage();
+    expect(messages).toContainEqual(expect.objectContaining({
+      type: 'SET_INTERFACE_THEME',
+      interfaceTheme: 'light',
+    }));
   });
 
   it('removes sandbox if an integration mutates the host iframe after mount', async () => {

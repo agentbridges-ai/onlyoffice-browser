@@ -77,6 +77,7 @@ Supported `mode` values:
 Spellcheck is disabled by default. Pass `spellcheck: true` only when the host app should open documents with spell checking enabled.
 Word and presentation documents opened in the editor runtime default to fit-to-width zoom so the page/slide uses the available preview area.
 Autosave and force-save are disabled. User-facing saves should go through the native OnlyOffice Save button; `editor.save()` is kept for programmatic integrations and tests.
+OnlyOffice interface themes are intentionally limited to the modern set. Pass `interfaceTheme: 'system' | 'light' | 'dark'`; the wrapper maps these to `theme-system`, `theme-white`, and `theme-night`, and migrates legacy OnlyOffice theme ids such as `theme-classic-light`, `theme-light`, `theme-gray`, `theme-dark`, and `theme-contrast-dark` to the closest modern theme. Do not remove `sdkjs/slide/themes`; those are presentation document theme assets, not UI skins.
 
 For multiple documents, create one container and one component instance per document. Prefer wildcard DNS/TLS so each instance gets its own host origin, such as `https://<session>.office-host.example.com/office-host.html`; this lets the corresponding subframe task exit when an individual document closes. In local development, `.localhost` hosts are automatically derived into `host-<session>.localhost`.
 

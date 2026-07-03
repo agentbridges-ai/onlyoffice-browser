@@ -109,6 +109,7 @@ type CapturedDocEditorConfig = {
     customization: {
       zoom?: number;
       spellcheck?: boolean;
+      uiTheme?: 'theme-system' | 'theme-white' | 'theme-night';
       autosave?: boolean;
       forcesave?: boolean;
       features: {
@@ -174,6 +175,8 @@ type CapturedDocEditorInstance = {
 describe('office editor runtime', () => {
   const docEditorConfigs: CapturedDocEditorConfig[] = [];
   const docEditorInstances: CapturedDocEditorInstance[] = [];
+  const themeSetMocks: ReturnType<typeof vi.fn>[] = [];
+  const themeControllers: Array<{ map: () => Record<string, unknown>; setTheme: ReturnType<typeof vi.fn> }> = [];
 
   beforeEach(() => {
     document.head.innerHTML = '';
@@ -181,6 +184,8 @@ describe('office editor runtime', () => {
     window.localStorage.clear();
     docEditorConfigs.length = 0;
     docEditorInstances.length = 0;
+    themeSetMocks.length = 0;
+    themeControllers.length = 0;
     vi.clearAllMocks();
     Object.defineProperty(URL, 'createObjectURL', {
       configurable: true,
@@ -335,6 +340,32 @@ describe('office editor runtime', () => {
         const frame = document.createElement('iframe');
         frame.name = 'frameEditor';
         document.getElementById(elementId)?.appendChild(frame);
+        const setTheme = vi.fn();
+        const themeMap = {
+          'theme-system': { text: 'System' },
+          'theme-light': { text: 'Light' },
+          'theme-dark': { text: 'Dark' },
+          'theme-white': { text: 'Modern light' },
+          'theme-night': { text: 'Modern dark' },
+        };
+        const themes = {
+          map: vi.fn(() => themeMap),
+          get: vi.fn((theme: string) => themeMap[theme as keyof typeof themeMap]),
+          setTheme,
+          defaultThemeId: vi.fn(() => 'theme-light'),
+          defaultTheme: vi.fn(() => themeMap['theme-light']),
+        };
+        themeSetMocks.push(setTheme);
+        themeControllers.push(themes);
+        Object.defineProperty(frame.contentWindow, 'Common', {
+          configurable: true,
+          writable: true,
+          value: {
+            UI: {
+              Themes: themes,
+            },
+          },
+        });
         queueMicrotask(() => {
           config.events.onAppReady();
           config.events.onDocumentReady();
@@ -573,6 +604,81 @@ describe('office editor runtime', () => {
       mode: 'strict',
       change: false,
     });
+
+    await instance.destroy();
+  });
+
+  it('defaults the OnlyOffice interface to the modern system theme', async () => {
+    window.localStorage.setItem('ui-theme-id', 'theme-classic-light');
+    window.localStorage.setItem('ui-theme', JSON.stringify({ id: 'theme-classic-light', source: 'static' }));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+    });
+
+    expect(docEditorConfigs[0].editorConfig.customization.uiTheme).toBe('theme-system');
+    expect(window.localStorage.getItem('ui-theme-id')).toBe('theme-system');
+    expect(window.localStorage.getItem('ui-theme')).toBeNull();
+    expect(Object.keys(themeControllers[0].map())).toEqual(['theme-system', 'theme-white', 'theme-night']);
+
+    await instance.destroy();
+  });
+
+  it('maps supported interface theme choices to modern OnlyOffice theme ids', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+      interfaceTheme: 'dark',
+    });
+
+    expect(docEditorConfigs[0].editorConfig.customization.uiTheme).toBe('theme-night');
+    expect(window.localStorage.getItem('ui-theme-id')).toBe('theme-night');
+
+    await instance.destroy();
+  });
+
+  it('migrates legacy interface theme ids to modern light or dark themes', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+      interfaceTheme: 'theme-contrast-dark' as unknown as 'dark',
+    });
+
+    expect(docEditorConfigs[0].editorConfig.customization.uiTheme).toBe('theme-night');
+    expect(window.localStorage.getItem('ui-theme-id')).toBe('theme-night');
+
+    await instance.destroy();
+  });
+
+  it('updates the nested OnlyOffice theme at runtime', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+    });
+
+    instance.setInterfaceTheme('light');
+    expect(window.localStorage.getItem('ui-theme-id')).toBe('theme-white');
+    expect(themeSetMocks[0]).toHaveBeenLastCalledWith('theme-white', 'host');
+
+    instance.setInterfaceTheme('dark');
+    expect(window.localStorage.getItem('ui-theme-id')).toBe('theme-night');
+    expect(themeSetMocks[0]).toHaveBeenLastCalledWith('theme-night', 'host');
 
     await instance.destroy();
   });

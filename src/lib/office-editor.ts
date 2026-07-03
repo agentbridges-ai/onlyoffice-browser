@@ -2,6 +2,7 @@ import {
   isOfficeHostMessage,
   OFFICE_HOST_PROTOCOL,
   type OfficeHostChildMessage,
+  type OfficeHostInterfaceTheme,
   type OfficeHostInitOptions,
   type OfficeHostParentMessage,
   type OfficeHostSaveBehavior,
@@ -27,6 +28,7 @@ export type OfficeEditorMode = 'edit' | 'readonly' | 'preview';
 export type OfficeEditorInput = Blob | ArrayBuffer | Uint8Array;
 export type OfficeEditorSourceKind = OfficeHostSourceKind;
 export type OfficeSaveBehavior = OfficeHostSaveBehavior;
+export type OfficeInterfaceTheme = OfficeHostInterfaceTheme;
 export type { OfficeSaveToNewFormatConfirmationOptions };
 export type OfficeSaveCallbackResult = void | boolean;
 export type OfficeSaveAsCallbackResult = void | boolean;
@@ -49,6 +51,7 @@ export interface CreateOfficeEditorOptions {
   mode?: OfficeEditorMode;
   readonly?: boolean;
   spellcheck?: boolean;
+  interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
@@ -78,6 +81,7 @@ export interface OfficeEditorInstance {
   readonly id: string;
   save(targetExt?: string): Promise<File>;
   confirmSaveToNewFormat(options?: OfficeSaveToNewFormatConfirmationOptions): Promise<boolean>;
+  setInterfaceTheme(theme: OfficeInterfaceTheme): void;
   setReadonly(readonly: boolean): void;
   destroy(): Promise<void>;
   getState(): OfficeEditorState;
@@ -331,6 +335,7 @@ async function prepareHostInit(
       mode: options.mode,
       readonly: options.readonly,
       spellcheck: options.spellcheck ?? false,
+      interfaceTheme: options.interfaceTheme,
       lang: options.lang,
       saveBehavior: options.saveBehavior,
       source,
@@ -822,6 +827,18 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
         type: 'SET_READONLY',
         sessionId: this.id,
         readonly,
+      });
+    }
+  }
+
+  setInterfaceTheme(theme: OfficeInterfaceTheme): void {
+    this.prepared.options.interfaceTheme = theme;
+    if (!this.destroyed && this.port) {
+      this.postToHost({
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'SET_INTERFACE_THEME',
+        sessionId: this.id,
+        interfaceTheme: theme,
       });
     }
   }

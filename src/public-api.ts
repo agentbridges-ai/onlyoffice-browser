@@ -5,6 +5,7 @@ export {
   type CreateOfficeEditorOptions,
   type OfficeEditorInput,
   type OfficeEditorInstance,
+  type OfficeInterfaceTheme,
   type OfficeDownloadCallbackResult,
   type OfficeEditorMode,
   type OfficeEditorSourceKind,

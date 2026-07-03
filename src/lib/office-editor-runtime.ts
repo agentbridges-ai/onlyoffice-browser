@@ -67,6 +67,8 @@ type OfficeEditorStatus = 'opening' | 'ready' | 'destroyed' | 'error';
 export type OfficeEditorMode = 'edit' | 'readonly' | 'preview';
 export type OfficeEditorSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
 export type OfficeSaveBehavior = 'auto' | 'callback' | 'download';
+export type OfficeInterfaceTheme = 'system' | 'light' | 'dark';
+type OnlyOfficeUiTheme = 'theme-system' | 'theme-white' | 'theme-night';
 export type OfficeSaveToNewFormatConfirmationOptions = {
   title?: string;
   message?: string;
@@ -88,6 +90,7 @@ export interface CreateOfficeEditorOptions {
   mode?: OfficeEditorMode;
   readonly?: boolean;
   spellcheck?: boolean;
+  interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
@@ -116,6 +119,7 @@ export interface OfficeEditorInstance {
   readonly id: string;
   save(targetExt?: string): Promise<File>;
   confirmSaveToNewFormat(options?: OfficeSaveToNewFormatConfirmationOptions): Promise<boolean>;
+  setInterfaceTheme(theme: OfficeInterfaceTheme): void;
   setReadonly(readonly: boolean): void;
   destroy(): Promise<void>;
   getState(): OfficeEditorState;
@@ -314,6 +318,19 @@ type OnlyOfficeNativeBridge = {
   Save_End?: (header: string, length: number) => unknown;
   [key: string]: unknown;
 };
+type OnlyOfficeThemeController = {
+  map?: () => Record<string, unknown>;
+  get?: (theme: string) => unknown;
+  setTheme?: (theme: OnlyOfficeUiTheme, source?: string) => unknown;
+  defaultThemeId?: () => string;
+  defaultTheme?: () => unknown;
+  __onlyOfficeBrowserModernThemeFilter?: boolean;
+  __onlyOfficeBrowserOriginalMap?: () => Record<string, unknown>;
+  __onlyOfficeBrowserOriginalGet?: (theme: string) => unknown;
+  __onlyOfficeBrowserOriginalSetTheme?: (theme: OnlyOfficeUiTheme, source?: string) => unknown;
+  __onlyOfficeBrowserOriginalDefaultThemeId?: () => string;
+  __onlyOfficeBrowserOriginalDefaultTheme?: () => unknown;
+};
 
 type RuntimeWindow = typeof window & {
   AscDesktopEditor_PrintOptions?: { advancedOptions?: unknown } | undefined;
@@ -344,6 +361,7 @@ type OnlyOfficeFrameWindow = Window & {
   Common?: {
     NotificationCenter?: OnlyOfficeNotificationCenter;
     UI?: {
+      Themes?: OnlyOfficeThemeController;
       warning?: (options: {
         closable?: boolean;
         width?: number;
@@ -397,6 +415,7 @@ const activeInstances = new Map<string, BrowserOfficeEditor>();
 const mediaRegistry = new Map<string, Record<string, string>>();
 let temporaryDocumentTitleOriginal: string | null = null;
 let temporaryDocumentTitleTimeout: number | null = null;
+const MODERN_ONLYOFFICE_UI_THEME_IDS: OnlyOfficeUiTheme[] = ['theme-system', 'theme-white', 'theme-night'];
 
 function createObjectUrl(blob: Blob): string {
   return URL.createObjectURL(blob);
@@ -470,6 +489,77 @@ function toError(error: unknown): Error {
 function resolveInitialMode(options: CreateOfficeEditorOptions): OfficeEditorMode {
   if (options.readonly && options.mode !== 'preview') return 'readonly';
   return options.mode || (options.readonly ? 'readonly' : 'edit');
+}
+
+function normalizeOfficeInterfaceTheme(value: unknown, fallback: OnlyOfficeUiTheme = 'theme-system'): OnlyOfficeUiTheme {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'system' || normalized === 'theme-system') return 'theme-system';
+  if (normalized === 'light' || normalized === 'theme-white') return 'theme-white';
+  if (normalized === 'dark' || normalized === 'theme-night') return 'theme-night';
+  if (normalized === 'theme-dark' || normalized === 'theme-contrast-dark') return 'theme-night';
+  if (normalized === 'theme-classic-light' || normalized === 'theme-light' || normalized === 'theme-gray') {
+    return 'theme-white';
+  }
+  return fallback;
+}
+
+function persistOnlyOfficeInterfaceTheme(theme: OnlyOfficeUiTheme): void {
+  try {
+    window.localStorage.setItem('ui-theme-id', theme);
+    const storedTheme = window.localStorage.getItem('ui-theme');
+    if (!storedTheme) return;
+    const storedThemeId = /"id":\s*"([\w-]+)"/.exec(storedTheme)?.[1];
+    if (!storedThemeId || normalizeOfficeInterfaceTheme(storedThemeId) !== theme) {
+      window.localStorage.removeItem('ui-theme');
+    }
+  } catch {
+    // Storage can be disabled in private contexts; customization.uiTheme remains authoritative.
+  }
+}
+
+function filterModernOnlyOfficeThemeMap(themeMap: Record<string, unknown> | undefined): Record<string, unknown> {
+  const source = themeMap || {};
+  return Object.fromEntries(
+    MODERN_ONLYOFFICE_UI_THEME_IDS
+      .filter((themeId) => Object.prototype.hasOwnProperty.call(source, themeId))
+      .map((themeId) => [themeId, source[themeId]]),
+  );
+}
+
+function installModernOnlyOfficeThemeFilter(frameWindow: OnlyOfficeFrameWindow | null): void {
+  const themes = frameWindow?.Common?.UI?.Themes;
+  if (!themes || themes.__onlyOfficeBrowserModernThemeFilter) return;
+
+  const originalMap = typeof themes.map === 'function' ? themes.map.bind(themes) : undefined;
+  const originalGet = typeof themes.get === 'function' ? themes.get.bind(themes) : undefined;
+  const originalSetTheme = typeof themes.setTheme === 'function' ? themes.setTheme.bind(themes) : undefined;
+  const originalDefaultThemeId =
+    typeof themes.defaultThemeId === 'function' ? themes.defaultThemeId.bind(themes) : undefined;
+  const originalDefaultTheme = typeof themes.defaultTheme === 'function' ? themes.defaultTheme.bind(themes) : undefined;
+
+  themes.__onlyOfficeBrowserModernThemeFilter = true;
+  themes.__onlyOfficeBrowserOriginalMap = originalMap;
+  themes.__onlyOfficeBrowserOriginalGet = originalGet;
+  themes.__onlyOfficeBrowserOriginalSetTheme = originalSetTheme;
+  themes.__onlyOfficeBrowserOriginalDefaultThemeId = originalDefaultThemeId;
+  themes.__onlyOfficeBrowserOriginalDefaultTheme = originalDefaultTheme;
+
+  if (originalMap) {
+    themes.map = () => filterModernOnlyOfficeThemeMap(originalMap());
+  }
+  if (originalGet) {
+    themes.get = (theme: string) => originalGet(normalizeOfficeInterfaceTheme(theme));
+  }
+  if (originalSetTheme) {
+    themes.setTheme = (theme: OnlyOfficeUiTheme, source?: string) => originalSetTheme(normalizeOfficeInterfaceTheme(theme), source);
+  }
+  themes.defaultThemeId = () => 'theme-white';
+  if (originalGet) {
+    themes.defaultTheme = () => originalGet('theme-white');
+  } else if (originalDefaultTheme) {
+    themes.defaultTheme = originalDefaultTheme;
+  }
 }
 
 function shouldFitEditorModePreviewToWidth(fileType: string, previewMode: boolean): boolean {
@@ -1844,6 +1934,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       installNestedFontPickerFilter();
       const defaultZoom = getDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       persistDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
+      const uiTheme = normalizeOfficeInterfaceTheme(this.options.interfaceTheme);
+      persistOnlyOfficeInterfaceTheme(uiTheme);
       const canEditInitially = !this.previewMode && !this.readonlyMode.value;
       const editor = new runtimeWindow.DocsAPI.DocEditor(this.placeholder.id, {
         type: this.previewMode ? 'embedded' : 'desktop',
@@ -1884,6 +1976,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             about: false,
             hideRightMenu: true,
             compactToolbar: true,
+            uiTheme,
             zoom: defaultZoom,
             spellcheck: this.options.spellcheck ?? false,
             autosave: false,
@@ -1904,6 +1997,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         events: {
           onAppReady: () => {
             this.applyNestedEditorFrameDefaults();
+            this.installModernThemeFilter();
             installNestedFontPickerFilter();
             this.installSpreadsheetPdfPrintPanelBridge();
             this.scheduleNativeDownloadAsInterceptor();
@@ -1911,6 +2005,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           onDocumentReady: () => {
             if (this.destroyed) return;
             this.applyNestedEditorFrameDefaults();
+            this.installModernThemeFilter();
             installNestedFontPickerFilter();
             this.installSpreadsheetPdfPrintPanelBridge();
             this.scheduleNativeDownloadAsInterceptor();
@@ -1938,6 +2033,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
 
       this.editor = editor;
       this.applyNestedEditorFrameDefaults();
+      this.installModernThemeFilter();
       this.attachDestroyCleanup(editor);
       this.scheduleNativeDownloadAsInterceptor();
 
@@ -1998,6 +2094,26 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       return;
     }
     this.editor.sendCommand?.({ command, data });
+  }
+
+  setInterfaceTheme(theme: OfficeInterfaceTheme): void {
+    const uiTheme = normalizeOfficeInterfaceTheme(theme);
+    persistOnlyOfficeInterfaceTheme(uiTheme);
+
+    const frameWindow = this.getNestedEditorWindow();
+    installModernOnlyOfficeThemeFilter(frameWindow);
+    const themes = frameWindow?.Common?.UI?.Themes;
+    if (typeof themes?.setTheme === 'function') {
+      themes.setTheme(uiTheme, 'host');
+    }
+  }
+
+  private installModernThemeFilter(): void {
+    const frameWindow = this.getNestedEditorWindow();
+    installModernOnlyOfficeThemeFilter(frameWindow);
+    if (frameWindow?.Common?.UI?.Themes) {
+      this.setInterfaceTheme(this.options.interfaceTheme || 'system');
+    }
   }
 
   private getNestedEditorWindow(): OnlyOfficeFrameWindow | null {

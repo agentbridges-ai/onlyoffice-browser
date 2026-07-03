@@ -453,6 +453,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       mode: message.options.mode,
       readonly: message.options.readonly,
       spellcheck: message.options.spellcheck ?? false,
+      interfaceTheme: message.options.interfaceTheme,
       lang: message.options.lang,
       saveBehavior: message.options.saveBehavior,
       onReady: (instance) => {
@@ -547,6 +548,17 @@ function handleSetReadonly(message: Extract<OfficeHostParentMessage, { type: 'SE
   }
 }
 
+function handleSetInterfaceTheme(message: Extract<OfficeHostParentMessage, { type: 'SET_INTERFACE_THEME' }>): void {
+  try {
+    if (!editor) {
+      throw new Error('Editor is not open');
+    }
+    editor.setInterfaceTheme(message.interfaceTheme);
+  } catch (error) {
+    postError('setInterfaceTheme', error, message.requestId);
+  }
+}
+
 async function handleDestroy(): Promise<void> {
   await destroyRuntime();
   const currentPort = port;
@@ -576,6 +588,9 @@ function handlePortMessage(event: MessageEvent<OfficeHostParentMessage>): void {
       return;
     case 'SET_READONLY':
       handleSetReadonly(event.data);
+      return;
+    case 'SET_INTERFACE_THEME':
+      handleSetInterfaceTheme(event.data);
       return;
     case 'DESTROY':
       void handleDestroy();

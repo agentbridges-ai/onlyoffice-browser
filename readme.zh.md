@@ -77,6 +77,7 @@ editor.destroy();
 拼写检查默认关闭。只有宿主应用确实需要默认打开拼写检查时，才传入 `spellcheck: true`。
 Word 和演示文稿在编辑器运行态中默认使用适合宽度缩放，让页面/幻灯片优先占满可用预览区域。
 autosave 和 forcesave 默认关闭；面向用户的保存应走编辑器工具栏里的 OnlyOffice 原生保存按钮，`editor.save()` 仅作为程序化集成和测试 API 保留。
+OnlyOffice 界面主题只支持现代三项：`interfaceTheme: 'system' | 'light' | 'dark'`。组件会映射到 `theme-system`、`theme-white`、`theme-night`，并把历史 OnlyOffice 主题值（如 `theme-classic-light`、`theme-light`、`theme-gray`、`theme-dark`、`theme-contrast-dark`）迁移到最接近的现代主题。不要删除 `sdkjs/slide/themes`；那是演示文稿文档主题资产，不是界面皮肤。
 
 多文档同时打开时，宿主为每个文档创建一个容器和一个组件实例即可。推荐使用 wildcard DNS/TLS 给每个实例分配独立 host origin，例如 `https://<session>.office-host.example.com/office-host.html`；这样逐个关闭文档时，对应子框架任务可以独立退出。开发环境下，`.localhost` host 会自动派生为 `host-<session>.localhost`。
 
