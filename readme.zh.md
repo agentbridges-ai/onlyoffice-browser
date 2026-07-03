@@ -140,7 +140,8 @@ npm run assets:build
 ## 参考
 
 - [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor)
-- [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm)
+- [agentbridges-ai/onlyoffice-x2t-wasm](https://github.com/agentbridges-ai/onlyoffice-x2t-wasm)
+- [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm)（仅作源码分析参考，不向该上游提交本包变更）
 - [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)
 - [ONLYOFFICE web-apps](https://github.com/ONLYOFFICE/web-apps)
 - [ONLYOFFICE sdkjs](https://github.com/ONLYOFFICE/sdkjs)

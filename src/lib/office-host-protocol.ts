@@ -111,6 +111,12 @@ export type OfficeHostChildMessage =
       mimeType: string;
     })
   | (OfficeHostBaseMessage & {
+      type: 'SAVE_AS_RESULT';
+      buffer: ArrayBuffer;
+      fileName: string;
+      mimeType: string;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'PRINT_TITLE';
       title: string;
       durationMs: number;

@@ -12,6 +12,7 @@ export {
   type OfficeHostUrlContext,
   type OfficeHostUrlResolver,
   type OfficeSaveBehavior,
+  type OfficeSaveAsCallbackResult,
   type OfficeSaveCallbackResult,
   type OfficeSaveToNewFormatConfirmationOptions,
 } from './lib/office-editor';

@@ -138,6 +138,21 @@ async function postDownloadedFile(file: File): Promise<void> {
   );
 }
 
+async function postSaveAsFile(file: File): Promise<void> {
+  const buffer = await file.arrayBuffer();
+  postPortMessage(
+    {
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'SAVE_AS_RESULT',
+      sessionId,
+      buffer,
+      fileName: file.name,
+      mimeType: file.type,
+    },
+    [buffer],
+  );
+}
+
 function postState(type: 'READY' | 'STATE', state: OfficeHostState): void {
   postPortMessage({
     protocol: OFFICE_HOST_PROTOCOL,
@@ -450,6 +465,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
         postError('runtime', error);
       },
       onSave: (file) => postSavedFile(file, activeSaveRequestId),
+      onSaveAs: (file) => postSaveAsFile(file),
       onDownload: (file) => postDownloadedFile(file),
     };
 

@@ -40,6 +40,32 @@ describe('onlyoffice-mock-server', () => {
     await expect(server.getImageURL?.('missing.png')).resolves.toBe('');
   });
 
+  it('includes converted media URLs in the documentOpen URL map', () => {
+    const media = {
+      'media/image1.png': 'blob:image-1',
+      'media/chart.png': 'blob:chart',
+    };
+    const server = createOnlyOfficeMockServer({ media });
+
+    expect(server.getDocumentOpenData?.('blob:document-bin')).toEqual({
+      'Editor.bin': 'blob:document-bin',
+      'media/image1.png': 'blob:image-1',
+      'media/chart.png': 'blob:chart',
+    });
+  });
+
+  it('passes direct image URLs through without requiring a media registry entry', async () => {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const blobUrl = 'blob:http://localhost/image-id';
+    const httpsUrl = 'https://example.test/image.png';
+    const server = createOnlyOfficeMockServer();
+
+    expect(resolveOnlyOfficeMediaUrl(undefined, dataUrl)).toBe(dataUrl);
+    expect(resolveOnlyOfficeMediaUrl(undefined, blobUrl)).toBe(blobUrl);
+    expect(resolveOnlyOfficeMediaUrl(undefined, httpsUrl)).toBe(httpsUrl);
+    await expect(server.getImageURL?.(dataUrl)).resolves.toBe(dataUrl);
+  });
+
   it('passes OnlyOffice messages to the optional observer', () => {
     const onMessage = vi.fn();
     const server = createOnlyOfficeMockServer({ onMessage });

@@ -148,6 +148,10 @@ function targetsForFixture(fixture: OfficeFixtureCase): DownloadTarget[] {
 }
 
 function expectedDownloadName(fixture: OfficeFixtureCase, target: DownloadTarget): string {
+  if (target.kind === 'image-zip') {
+    const outputExt = target.ext === 'jpeg' ? 'jpg' : target.ext;
+    return `${fixture.baseName}_${fixture.sourceType}_${outputExt}.zip`;
+  }
   return `${fixture.baseName}.${target.outputExt || target.ext}`;
 }
 
@@ -250,9 +254,13 @@ async function expectImageZipDownload(
 async function expectMarkdownDownload(
   download: import('@playwright/test').Download,
   expectedName: string,
+  fixture: OfficeFixtureCase,
 ): Promise<void> {
   const baseName = expectedName.replace(/\.md$/i, '');
-  const { content, fileName } = await readDownloadWithExpectedNames(download, [`${baseName}.md`, `${baseName}.zip`]);
+  const { content, fileName } = await readDownloadWithExpectedNames(download, [
+    `${baseName}.md`,
+    `${fixture.baseName}_${fixture.sourceType}_md.zip`,
+  ]);
   expectNonEmpty(content);
 
   if (/\.zip$/i.test(fileName)) {
@@ -312,6 +320,7 @@ async function expectDownloadByKind(
   download: import('@playwright/test').Download,
   target: DownloadTarget,
   expectedName: string,
+  fixture: OfficeFixtureCase,
 ): Promise<void> {
   if (target.kind === 'pdf') {
     await expectPdfDownload(download, expectedName);
@@ -338,7 +347,7 @@ async function expectDownloadByKind(
     return;
   }
   if (target.kind === 'markdown') {
-    await expectMarkdownDownload(download, expectedName);
+    await expectMarkdownDownload(download, expectedName, fixture);
     return;
   }
   if (target.kind === 'image-jpeg') {
@@ -626,7 +635,7 @@ for (const fixture of OFFICE_FIXTURES) {
       expect(editorFrame, `${fixture.fileName} editor frame`).toBeTruthy();
 
       const download = await triggerDownloadAs(page, editorFrame!, target);
-      await expectDownloadByKind(download, target, expectedDownloadName(fixture, target));
+      await expectDownloadByKind(download, target, expectedDownloadName(fixture, target), fixture);
     });
   }
 }

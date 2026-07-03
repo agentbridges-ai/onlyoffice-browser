@@ -30,6 +30,37 @@ async function getStatus(page: Page): Promise<SaveE2EStatus> {
   });
 }
 
+async function installAnchorDownloadProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const globalWindow = window as Window & { __ONLYOFFICE_ANCHOR_DOWNLOADS__?: string[] };
+    globalWindow.__ONLYOFFICE_ANCHOR_DOWNLOADS__ = [];
+    const anchorPrototype = HTMLAnchorElement.prototype as HTMLAnchorElement & {
+      __onlyOfficeBrowserDownloadProbe?: boolean;
+    };
+    if (anchorPrototype.__onlyOfficeBrowserDownloadProbe) return;
+    const originalClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function clickWithDownloadProbe(this: HTMLAnchorElement) {
+      const download = this.getAttribute('download') || '';
+      if (download || this.href.startsWith('blob:')) {
+        globalWindow.__ONLYOFFICE_ANCHOR_DOWNLOADS__?.push(download || this.href);
+      }
+      return originalClick.call(this);
+    };
+    anchorPrototype.__onlyOfficeBrowserDownloadProbe = true;
+  });
+}
+
+async function getAnchorDownloads(page: Page): Promise<string[]> {
+  const downloads = await Promise.all(
+    page.frames().map((frame) =>
+      frame
+        .evaluate(() => (window as Window & { __ONLYOFFICE_ANCHOR_DOWNLOADS__?: string[] }).__ONLYOFFICE_ANCHOR_DOWNLOADS__ || [])
+        .catch(() => [] as string[]),
+    ),
+  );
+  return downloads.flat();
+}
+
 async function waitForReady(page: Page): Promise<void> {
   await page.waitForFunction(() => window.__ONLYOFFICE_SAVE_E2E__?.getStatus().ready === true, null, {
     timeout: 90_000,
@@ -140,9 +171,15 @@ async function getPrintFrameInfo(
 async function runNativePrintScenario(page: Page, type: PrintTargetType): Promise<void> {
   const failures = collectPageFailures(page);
   const popups: string[] = [];
+  const downloads: string[] = [];
+  await installAnchorDownloadProbe(page);
   page.on('popup', async (popup) => {
     popups.push(popup.url());
     await popup.close().catch(() => undefined);
+  });
+  page.on('download', async (download) => {
+    downloads.push(download.suggestedFilename());
+    await download.cancel().catch(() => undefined);
   });
 
   await page.goto(`/save-e2e.html?scenario=local-file&type=${type}`);
@@ -225,7 +262,9 @@ async function runNativePrintScenario(page: Page, type: PrintTargetType): Promis
   expect(pdfInfo.rangeContentRange).toMatch(/^bytes 0-3\/\d+$/);
   expect(pdfInfo.rangeHeader).toBe('%PDF');
   expect(printFrameInfo!.id).toBe('id-print-frame');
+  expect(await getAnchorDownloads(page)).toEqual([]);
   expect(popups).toEqual([]);
+  expect(downloads.every((name) => name.toLowerCase().endsWith('.pdf'))).toBe(true);
   expect(failures).toEqual([]);
 }
 

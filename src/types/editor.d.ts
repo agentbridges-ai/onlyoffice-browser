@@ -138,6 +138,7 @@ interface OnlyOfficeMockServer {
       },
     ];
   };
+  getDocumentOpenData?: (documentUrl: string) => Record<string, string>;
   getImageURL?: (name: string) => Promise<string>;
   onAuth?: () => void;
   handleMessage?: (msg: any, respond: (response: any) => void) => boolean;

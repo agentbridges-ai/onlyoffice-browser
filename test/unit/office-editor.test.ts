@@ -450,6 +450,48 @@ describe('office-editor parent proxy', () => {
     await instance.destroy();
   });
 
+  it('routes host Save Copy As files to onSaveAs instead of onDownload', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onDownload = vi.fn();
+    const onSave = vi.fn();
+    const onSaveAs = vi.fn();
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      onDownload,
+      onSave,
+      onSaveAs,
+      destroyTimeoutMs: 1,
+    });
+    const { childPort, iframe } = await connectHost(container);
+    const instance = await promise;
+    const buffer = new Uint8Array([0x50, 0x4b, 0x03, 0x04]).buffer;
+
+    childPort.postMessage(
+      {
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'SAVE_AS_RESULT',
+        sessionId: getSessionId(iframe),
+        buffer,
+        fileName: 'alpha.odt',
+        mimeType: 'application/vnd.oasis.opendocument.text',
+      },
+      [buffer],
+    );
+    await waitForMessage();
+
+    expect(onSaveAs).toHaveBeenCalledTimes(1);
+    expect(onSaveAs.mock.calls[0][0]).toMatchObject({ name: 'alpha.odt' });
+    expect(onDownload).not.toHaveBeenCalled();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+
+    await instance.destroy();
+  });
+
   it('reports dirty state changes from the host', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);

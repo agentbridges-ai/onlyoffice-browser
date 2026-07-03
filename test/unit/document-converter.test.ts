@@ -77,7 +77,12 @@ function createFakeX2TModule(): FakeX2TModule {
           .filter(([path]) => path.startsWith('/working/media/'))
           .map(([path, value]) => [path, value instanceof Uint8Array ? new Uint8Array(Array.from(value)) : value]),
       );
-      files.set(outputPath, new Uint8Array(new ArrayBuffer(4)));
+      files.set(
+        outputPath,
+        params.includes('<zip>true</zip>')
+          ? new Uint8Array([0x50, 0x4b, 0x03, 0x04])
+          : new Uint8Array(new ArrayBuffer(4)),
+      );
       return 0;
     }),
     onRuntimeInitialized: vi.fn(),
@@ -200,7 +205,7 @@ describe('X2TConverter', () => {
     expect(Array.from(x2tModule.lastInputBytes || [])).toEqual(Array.from(pdfBytes));
   });
 
-	  it('passes upstream thumbnail options for multi-page PDF image export archives', async () => {
+  it('passes upstream thumbnail options for multi-page PDF image export archives', async () => {
     const converter = new X2TConverter();
     const x2tModule = createFakeX2TModule();
     const pdfBytes = Uint8Array.from('%PDF-1.7\n%%EOF\n', (char) => char.charCodeAt(0) & 0xff);
@@ -208,15 +213,29 @@ describe('X2TConverter', () => {
     (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
     vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
 
-    await converter.convertPdfToImage(pdfBytes, 'local.xlsx', 'JPG', { allPages: true });
+    const result = await converter.convertPdfToImage(pdfBytes, 'local.pptx', 'JPG', { allPages: true });
     const params = x2tModule.lastParamsXml;
 
     expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>513</m_nFormatFrom>'));
     expect(params).toEqual(expect.stringContaining('<m_nFormatTo>1025</m_nFormatTo>'));
     expect(params).toEqual(expect.stringContaining('<format>3</format>'));
     expect(params).toEqual(expect.stringContaining('<first>false</first>'));
-	    expect(params).toEqual(expect.stringContaining('<zip>true</zip>'));
-	  });
+    expect(params).toEqual(expect.stringContaining('<zip>true</zip>'));
+    expect(result.fileName).toBe('local_pptx_jpg.zip');
+  });
+
+  it('keeps legacy and modern presentation suffixes separate for image export archives', async () => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const pdfBytes = Uint8Array.from('%PDF-1.7\n%%EOF\n', (char) => char.charCodeAt(0) & 0xff);
+
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+
+    const legacyResult = await converter.convertPdfToImage(pdfBytes, 'local.ppt', 'PNG', { allPages: true });
+
+    expect(legacyResult.fileName).toBe('local_ppt_png.zip');
+  });
 
 	  it('converts native editor HTML through x2t with explicit source and target formats', async () => {
 	    const converter = new X2TConverter();

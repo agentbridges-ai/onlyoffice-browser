@@ -12,6 +12,7 @@ import { getDocumentType, getMimeTypeFromExtension, BASE_PATH } from './document
 import { getOnlyOfficeLang, t } from './i18n';
 import {
   createOnlyOfficeMockServer,
+  isOnlyOfficeDirectMediaUrl,
   LOCAL_ONLYOFFICE_USER_ID,
   LOCAL_ONLYOFFICE_USER_NAME,
 } from './onlyoffice-mock-server';
@@ -29,7 +30,10 @@ const PRINT_PDF_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
 const PRINT_SERVICE_WORKER_URL = '/document_editor_service_worker.js';
 const PRINT_SERVICE_WORKER_READY_TIMEOUT_MS = 3_000;
 const PRINT_TITLE_RESTORE_MS = 45_000;
+const ONLYOFFICE_PRINT_DOWNLOAD_TYPE = 'asc_onPrintUrl';
+const ONLYOFFICE_PRINT_ACTION_TYPE = 7;
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
+const SPREADSHEET_PDF_EXPORT_FILE_TYPES = new Set<number>([oAscFileType.PDF, oAscFileType.PDFA]);
 const ZIP_DOWNLOAD_EXTENSIONS = new Set([
   'docm',
   'docx',
@@ -71,6 +75,7 @@ export type OfficeSaveToNewFormatConfirmationOptions = {
 
 export type OfficeEditorInput = Blob | ArrayBuffer | Uint8Array;
 export type OfficeSaveCallbackResult = void | boolean;
+export type OfficeSaveAsCallbackResult = void | boolean;
 export type OfficeDownloadCallbackResult = void;
 
 export interface CreateOfficeEditorOptions {
@@ -89,6 +94,7 @@ export interface CreateOfficeEditorOptions {
   onReady?: (instance: OfficeEditorInstance) => void;
   saveBehavior?: OfficeSaveBehavior;
   onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
+  onSaveAs?: (file: File, instance: OfficeEditorInstance) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
   onDownload?: (file: File, instance: OfficeEditorInstance) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
@@ -183,13 +189,25 @@ type NativeDownloadAsOptions = {
   advancedOptions?: unknown;
   textParams?: unknown;
   printOptions?: unknown;
+  isSaveAs?: unknown;
+  asc_getIsSaveAs?: () => unknown;
+  getIsSaveAs?: () => unknown;
+  get_IsSaveAs?: () => unknown;
+  wopiSaveAsPath?: unknown;
+  isDownloadEvent?: unknown;
+  isPdfPrint?: unknown;
+  isPrint?: unknown;
 };
 type NativeDownloadAsAdditionalData = {
   outputformat?: unknown;
   title?: unknown;
+  inline?: unknown;
+  withoutPassword?: unknown;
   jsonparams?: unknown;
   textParams?: unknown;
   thumbnail?: unknown;
+  isSaveAs?: unknown;
+  saveAsPath?: unknown;
   [key: string]: unknown;
 };
 type NativeDownloadAsDataContainer = {
@@ -207,6 +225,81 @@ type NativeDownloadAsHandler = (
   downloadType?: unknown,
 ) => boolean | undefined;
 type NativeAscDownloadAsHandler = (options?: NativeDownloadAsOptions | string | number) => unknown;
+type SpreadsheetPdfPrintExportMode = {
+  fileType: number;
+  isSaveAs: boolean;
+  returnPanel: 'saveas' | 'save-copy';
+  wopiSaveAsPath?: unknown;
+};
+type SpreadsheetPdfPrintPanelState = {
+  printPanel: HTMLElement | null;
+  sourcePanel: HTMLElement | null;
+  previousPrintDisplay: string;
+  previousSourceDisplay: string;
+};
+type OnlyOfficeNotificationCenter = {
+  trigger?: (...args: unknown[]) => unknown;
+  __onlyOfficeBrowserSpreadsheetPdfPrintTriggerPatched?: boolean;
+  __onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal?: (...args: unknown[]) => unknown;
+};
+type OnlyOfficeDownloadOptionsLike = {
+  asc_setAdvancedOptions?: (options: unknown) => unknown;
+  asc_setIsSaveAs?: (isSaveAs: boolean) => unknown;
+  asc_setWopiSaveAsPath?: (path: unknown) => unknown;
+};
+type OnlyOfficeButtonLike = {
+  setCaption?: (caption: string) => unknown;
+  updateCaption?: (caption: string) => unknown;
+  el?: unknown;
+  $el?: unknown;
+  btnEl?: unknown;
+  cmpEl?: unknown;
+};
+type OnlyOfficePrintSettingsLike = {
+  show?: () => unknown;
+  txtPrint?: unknown;
+  btnsPrint?: unknown[];
+  btnsSave?: unknown[];
+  btnPrintSystemDialog?: unknown;
+  applySettings?: () => unknown;
+  getRange?: () => unknown;
+  getIgnorePrintArea?: () => unknown;
+  getPagesFrom?: () => unknown;
+  getPagesTo?: () => unknown;
+  cmbPaperOrientation?: { getSelectedRecord?: () => { value?: unknown } | null };
+  cmbPrinter?: { getSelectedRecord?: () => { value?: unknown } | null };
+  cmbColorPrinting?: { getValue?: () => unknown };
+  spnCopies?: { getNumberValue?: () => unknown };
+  cmbSides?: { getValue?: () => unknown };
+  printScroller?: { update?: (options?: unknown) => unknown };
+  __onlyOfficeBrowserSpreadsheetPdfPrintShowPatched?: boolean;
+  __onlyOfficeBrowserSpreadsheetPdfPrintShowOriginal?: () => unknown;
+};
+type OnlyOfficePrintControllerLike = {
+  printSettings?: OnlyOfficePrintSettingsLike;
+  adjPrintParams?: {
+    asc_setPrintType?: (value: unknown) => unknown;
+    asc_setPageOptionsMap?: (value: unknown) => unknown;
+    asc_setIgnorePrintArea?: (value: unknown) => unknown;
+    asc_setActiveSheetsArray?: (value: unknown) => unknown;
+    asc_setStartPageIndex?: (value: unknown) => unknown;
+    asc_setEndPageIndex?: (value: unknown) => unknown;
+    asc_setNativeOptions?: (value: unknown) => unknown;
+  };
+  _changedProps?: unknown[] | Record<string, unknown>;
+  api?: {
+    asc_getActiveWorksheetIndex?: () => number;
+    asc_getPageOptions?: (index: number, keepOriginal?: boolean, init?: boolean) => unknown;
+    asc_DownloadAs?: (options: unknown) => unknown;
+  };
+  savePageOptions?: (settings: OnlyOfficePrintSettingsLike) => unknown;
+  findPagePreset?: (settings: OnlyOfficePrintSettingsLike, width: number, height: number) => unknown;
+  querySavePrintSettings?: (action: unknown, useSystemDialog?: unknown) => unknown;
+  onHidePrintMenu?: () => unknown;
+  updatePrintRenderContainerSize?: (redraw?: boolean) => unknown;
+  __onlyOfficeBrowserSpreadsheetPdfPrintQueryPatched?: boolean;
+  __onlyOfficeBrowserSpreadsheetPdfPrintQueryOriginal?: (action: unknown, useSystemDialog?: unknown) => unknown;
+};
 type OnlyOfficeEditorApi = {
   asc_DownloadAs?: NativeAscDownloadAsHandler;
   _downloadAs?: NativeDownloadAsHandler;
@@ -223,6 +316,7 @@ type OnlyOfficeNativeBridge = {
 };
 
 type RuntimeWindow = typeof window & {
+  AscDesktopEditor_PrintOptions?: { advancedOptions?: unknown } | undefined;
   DocsAPI?: DocsAPI;
   __fonts_visible_names?: unknown;
   __onlyOfficeBrowserSetPrintTitle?: (title: string, durationMs?: number) => void;
@@ -248,6 +342,7 @@ type OnlyOfficeFrameWindow = Window & {
     };
   };
   Common?: {
+    NotificationCenter?: OnlyOfficeNotificationCenter;
     UI?: {
       warning?: (options: {
         closable?: boolean;
@@ -265,6 +360,17 @@ type OnlyOfficeFrameWindow = Window & {
       };
     };
   };
+  SSE?: {
+    getController?: (name: string) => unknown;
+  };
+  Asc?: {
+    c_oAscPrintType?: {
+      Selection?: unknown;
+      ActiveSheets?: unknown;
+      EntireWorkbook?: unknown;
+    };
+    asc_CDownloadOptions?: new (fileType?: unknown, asUrl?: unknown) => OnlyOfficeDownloadOptionsLike;
+  };
   DE?: {
     Controllers?: {
       LeftMenu?: {
@@ -279,6 +385,10 @@ type OnlyOfficeFrameWindow = Window & {
   };
   __fonts_visible_names?: unknown;
   __onlyOfficeBrowserPrintOpenGuard?: boolean;
+  __onlyOfficeBrowserSpreadsheetPdfPrintExportMode?: SpreadsheetPdfPrintExportMode | null;
+  __onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel?: boolean;
+  __onlyOfficeBrowserShowingSpreadsheetPdfPrintPanel?: boolean;
+  __onlyOfficeBrowserSpreadsheetPdfPrintPanel?: SpreadsheetPdfPrintPanelState | null;
 };
 
 let editorApiPromise: Promise<void> | null = null;
@@ -507,9 +617,192 @@ function getNativeDownloadAsFileType(options: NativeDownloadAsOptions | string |
   return undefined;
 }
 
+function isTruthyOnlyOfficeFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function getOnlyOfficeActionTypeNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return undefined;
+}
+
+function isOnlyOfficeNativePrintRequest({
+  actionType,
+  options,
+  additionalData,
+  downloadType,
+}: {
+  actionType?: unknown;
+  options?: NativeDownloadAsOptions;
+  additionalData?: NativeDownloadAsAdditionalData;
+  downloadType?: unknown;
+}): boolean {
+  if (downloadType === ONLYOFFICE_PRINT_DOWNLOAD_TYPE) return true;
+  if (String(downloadType || '') === ONLYOFFICE_PRINT_DOWNLOAD_TYPE) return true;
+  if (getOnlyOfficeActionTypeNumber(actionType) === ONLYOFFICE_PRINT_ACTION_TYPE) return true;
+  if (isTruthyOnlyOfficeFlag(options?.isPrint) || isTruthyOnlyOfficeFlag(options?.isPdfPrint)) return true;
+  return isTruthyOnlyOfficeFlag(additionalData?.inline);
+}
+
+function isOnlyOfficeNativeSaveAsRequest({
+  options,
+  additionalData,
+}: {
+  options?: NativeDownloadAsOptions;
+  additionalData?: NativeDownloadAsAdditionalData;
+}): boolean {
+  if (isTruthyOnlyOfficeFlag(options?.isSaveAs) || isTruthyOnlyOfficeFlag(additionalData?.isSaveAs)) return true;
+  if (!options || typeof options !== 'object') return false;
+  for (const key of ['asc_getIsSaveAs', 'getIsSaveAs', 'get_IsSaveAs'] as const) {
+    const getter = options[key];
+    if (typeof getter !== 'function') continue;
+    try {
+      if (isTruthyOnlyOfficeFlag(getter.call(options))) return true;
+    } catch {
+      // Ignore non-standard OnlyOffice option accessors.
+    }
+  }
+  return false;
+}
+
+function getSpreadsheetPdfExportFileType(value: unknown): number | null {
+  const normalized = normalizeDownloadFileType(value);
+  if (normalized === undefined) return null;
+  const targetExt = getDownloadTargetExtension(normalized, undefined, '');
+  if (targetExt === 'pdf') return oAscFileType.PDF;
+  if (targetExt === 'pdfa') return oAscFileType.PDFA;
+  if (typeof normalized === 'number' && SPREADSHEET_PDF_EXPORT_FILE_TYPES.has(normalized)) return normalized;
+  return null;
+}
+
+function getOnlyOfficeController<T>(frameWindow: OnlyOfficeFrameWindow, name: string): T | null {
+  const controller = frameWindow.SSE?.getController?.(name);
+  return controller && typeof controller === 'object' ? (controller as T) : null;
+}
+
+function getOnlyOfficeNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function getOnlyOfficePageSetup(pageOptions: unknown): {
+  asc_getWidth?: () => unknown;
+  asc_getHeight?: () => unknown;
+  asc_getOrientation?: () => unknown;
+} | null {
+  if (!pageOptions || typeof pageOptions !== 'object') return null;
+  const getter = (pageOptions as { asc_getPageSetup?: () => unknown }).asc_getPageSetup;
+  if (typeof getter !== 'function') return null;
+  const pageSetup = getter.call(pageOptions);
+  return pageSetup && typeof pageSetup === 'object' ? pageSetup : null;
+}
+
+function getOnlyOfficeButtonElement(value: unknown): HTMLElement | null {
+  if (!value || typeof value !== 'object') return null;
+  if (isHTMLElementLike(value)) return value as HTMLElement;
+  const record = value as Record<string, unknown>;
+  for (const key of ['el', '$el', 'btnEl', 'cmpEl']) {
+    const candidate = record[key];
+    if (isHTMLElementLike(candidate)) return candidate as HTMLElement;
+    if (candidate && typeof candidate === 'object') {
+      const indexed = (candidate as { 0?: unknown })[0];
+      if (isHTMLElementLike(indexed)) return indexed as HTMLElement;
+      const element = (candidate as { get?: (index: number) => unknown }).get?.(0);
+      if (isHTMLElementLike(element)) return element as HTMLElement;
+    }
+  }
+  return null;
+}
+
+function isHTMLElementLike(value: unknown): boolean {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    (value as { nodeType?: unknown }).nodeType === 1 &&
+    typeof (value as { textContent?: unknown }).textContent === 'string',
+  );
+}
+
+function setOnlyOfficeButtonCaption(button: unknown, caption: string): void {
+  if (!button || typeof button !== 'object') return;
+  const control = button as OnlyOfficeButtonLike;
+  if (typeof control.setCaption === 'function') {
+    control.setCaption(caption);
+  } else if (typeof control.updateCaption === 'function') {
+    control.updateCaption(caption);
+  }
+  const element = getOnlyOfficeButtonElement(button);
+  if (!element) return;
+  const labelElement = element.querySelector<HTMLElement>('.caption, .btn-text, span') || element;
+  labelElement.textContent = caption;
+  element.setAttribute('title', caption);
+  element.setAttribute('aria-label', caption);
+}
+
+function getSpreadsheetPdfPrintActionLabel(lang: string, isSaveAs: boolean): string {
+  if (lang.toLowerCase().startsWith('zh')) return isSaveAs ? '保存副本' : '下载';
+  return isSaveAs ? 'Save Copy' : 'Download';
+}
+
+function getSpreadsheetPdfPrintPanelTitleLabel(lang: string, isSaveAs: boolean): string {
+  if (lang.toLowerCase().startsWith('zh')) return isSaveAs ? '另存副本' : '下载';
+  return isSaveAs ? 'Save Copy' : 'Download';
+}
+
+function getSpreadsheetPdfNativePrintPanelTitleLabel(
+  lang: string,
+  printSettings?: OnlyOfficePrintSettingsLike,
+): string {
+  if (typeof printSettings?.txtPrint === 'string' && printSettings.txtPrint.trim()) return printSettings.txtPrint;
+  return lang.toLowerCase().startsWith('zh') ? '打印' : 'Print';
+}
+
+function getPrintSettingsSaveCaption(lang: string): string {
+  return lang.toLowerCase().startsWith('zh') ? '保存设置' : 'Save settings';
+}
+
+function getSpreadsheetPdfPrintPanelElement(frameWindow: OnlyOfficeFrameWindow): HTMLElement | null {
+  return frameWindow.document?.getElementById('panel-print');
+}
+
+function getSpreadsheetPdfPrintPanelHeaderElement(frameWindow: OnlyOfficeFrameWindow): HTMLElement | null {
+  return frameWindow.document?.querySelector<HTMLElement>('#panel-print #id-print-settings .main-header') || null;
+}
+
+function setSpreadsheetPdfPrintPanelTitle(frameWindow: OnlyOfficeFrameWindow, title: string): void {
+  const headerElement = getSpreadsheetPdfPrintPanelHeaderElement(frameWindow);
+  if (headerElement) {
+    headerElement.textContent = title;
+  }
+}
+
+function getSpreadsheetPdfSourcePanelElement(
+  frameWindow: OnlyOfficeFrameWindow,
+  mode: SpreadsheetPdfPrintExportMode,
+): HTMLElement | null {
+  const panelId = mode.returnPanel === 'save-copy' ? 'panel-savecopy' : 'panel-saveas';
+  return frameWindow.document?.getElementById(panelId);
+}
+
+function isSpreadsheetPdfPrintPanelReady(panel: HTMLElement | null): panel is HTMLElement {
+  return Boolean(panel?.querySelector('#id-print-settings') && panel?.querySelector('#print-preview-box'));
+}
+
 function getDownloadFileName(sourceFileName: string, targetExt: string): string {
   const outputExtension = targetExt === 'pdfa' ? 'pdf' : targetExt === 'jpeg' ? 'jpg' : targetExt;
   return replaceFileExtension(sourceFileName, outputExtension);
+}
+
+function withFileName(file: File, fileName: string | undefined): File {
+  const normalizedName = fileName?.trim();
+  if (!normalizedName || normalizedName === file.name) return file;
+  return new File([file], normalizedName, {
+    type: file.type || getSavedFileMimeType(normalizedName),
+    lastModified: file.lastModified,
+  });
 }
 
 function getDefaultFileName(emptyType: OfficeEmptyType): string {
@@ -656,6 +949,11 @@ function readFileNameFromResponse(url: string, response: Response, fallback = 'd
 }
 
 function resolveMediaFromRegistry(name: string): string {
+  const directUrl = name.trim();
+  if (isOnlyOfficeDirectMediaUrl(directUrl)) {
+    return directUrl;
+  }
+
   const candidates = (() => {
     const trimmed = name.replace(/^(\.\/|\/)+/, '');
     const decoded = (() => {
@@ -1036,7 +1334,16 @@ function decodeDataUriBase64(value: string): Uint8Array | null {
   }
 }
 
-function packageMarkdownDataUriImages(fileName: string, bytes: Uint8Array): { fileName: string; data: Uint8Array } | null {
+function getExtensionFileNameSuffix(fileName: string): string {
+  const extension = getFileExtension(fileName).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return extension ? `_${extension}` : '';
+}
+
+function packageMarkdownDataUriImages(
+  fileName: string,
+  bytes: Uint8Array,
+  sourceFileName = fileName,
+): { fileName: string; data: Uint8Array } | null {
   const markdown = decodeUtf8Loose(bytes);
   if (!markdown) return null;
 
@@ -1074,13 +1381,17 @@ function packageMarkdownDataUriImages(fileName: string, bytes: Uint8Array): { fi
 
   files.unshift({ path: `${baseName}.md`, data: utf8Bytes(rewritten) });
   return {
-    fileName: `${baseName}.zip`,
+    fileName: `${baseName}${getExtensionFileNameSuffix(sourceFileName)}_md.zip`,
     data: createStoredZip(files),
   };
 }
 
 function hasNativeDownloadPrintOptions(options: NativeDownloadAsOptions | undefined): boolean {
   return Boolean(options && (options.advancedOptions !== undefined || options.printOptions !== undefined));
+}
+
+function getNativeDownloadAdvancedOptions(options: NativeDownloadAsOptions | undefined): unknown {
+  return options?.advancedOptions ?? options?.printOptions;
 }
 
 function encodePdfUtf16BeHex(value: string): string {
@@ -1594,12 +1905,14 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           onAppReady: () => {
             this.applyNestedEditorFrameDefaults();
             installNestedFontPickerFilter();
+            this.installSpreadsheetPdfPrintPanelBridge();
             this.scheduleNativeDownloadAsInterceptor();
           },
           onDocumentReady: () => {
             if (this.destroyed) return;
             this.applyNestedEditorFrameDefaults();
             installNestedFontPickerFilter();
+            this.installSpreadsheetPdfPrintPanelBridge();
             this.scheduleNativeDownloadAsInterceptor();
             this.status = 'ready';
             this.applyDefaultEditorModePreviewZoom();
@@ -1615,7 +1928,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             void this.handleDownloadAs(event);
           },
           onRequestSaveAs: (event: RequestSaveAsEvent) => {
-            void this.handleDownloadAs(event);
+            void this.handleRequestSaveAs(event);
           },
           writeFile: (event: any) => {
             void this.handleWriteFile(event);
@@ -1717,19 +2030,31 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     if (api.__onlyOfficeBrowserDownloadAsPatched) return true;
 
     if (typeof api.asc_DownloadAs === 'function') {
-      api.__onlyOfficeBrowserAscDownloadAsOriginal = api.asc_DownloadAs.bind(api);
+      const originalAscDownloadAs = api.asc_DownloadAs.bind(api);
+      api.__onlyOfficeBrowserAscDownloadAsOriginal = originalAscDownloadAs;
       api.asc_DownloadAs = (options?: NativeDownloadAsOptions | string | number) => {
+        const nativeOptions = options && typeof options === 'object' ? options : undefined;
+        if (isOnlyOfficeNativePrintRequest({ options: nativeOptions })) {
+          return originalAscDownloadAs(options);
+        }
+
         const fileType = getNativeDownloadAsFileType(options);
-        void this.handleDownloadAs({
+        const event = {
           data: { fileType },
-          nativeOptions: options && typeof options === 'object' ? options : undefined,
-        });
+          nativeOptions,
+        };
+        if (isOnlyOfficeNativeSaveAsRequest({ options: nativeOptions })) {
+          void this.handleRequestSaveAs(event);
+        } else {
+          void this.handleDownloadAs(event);
+        }
         return true;
       };
     }
 
     if (typeof api._downloadAs === 'function') {
-      api.__onlyOfficeBrowserDownloadAsOriginal = api._downloadAs.bind(api);
+      const originalDownloadAs = api._downloadAs.bind(api);
+      api.__onlyOfficeBrowserDownloadAsOriginal = originalDownloadAs;
       api._downloadAs = (
         actionType?: unknown,
         options?: NativeDownloadAsOptions,
@@ -1737,25 +2062,381 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         dataContainer?: NativeDownloadAsDataContainer,
         downloadType?: unknown,
       ) => {
+        if (isOnlyOfficeNativePrintRequest({ actionType, options, additionalData, downloadType })) {
+          return originalDownloadAs(actionType, options, additionalData, dataContainer, downloadType);
+        }
+
         const fileType =
           typeof additionalData?.outputformat === 'string' || typeof additionalData?.outputformat === 'number'
             ? additionalData.outputformat
             : getNativeDownloadAsFileType(options);
         const title = typeof additionalData?.title === 'string' ? additionalData.title : undefined;
-        void this.handleDownloadAs({
+        const event = {
           data: { fileType, title },
           nativeOptions: options,
           additionalData,
           dataContainer,
           actionType,
           downloadType,
-        });
+        };
+        if (isOnlyOfficeNativeSaveAsRequest({ options, additionalData })) {
+          void this.handleRequestSaveAs(event);
+        } else {
+          void this.handleDownloadAs(event);
+        }
         return true;
       };
     }
 
     api.__onlyOfficeBrowserDownloadAsPatched = true;
     return true;
+  }
+
+  private installSpreadsheetPdfPrintPanelBridge(): boolean {
+    if (getDocumentType(this.fileType) !== 'cell') return false;
+
+    const frameWindow = this.getNestedEditorWindow();
+    const notificationCenter = frameWindow?.Common?.NotificationCenter;
+    if (!frameWindow || !notificationCenter || typeof notificationCenter.trigger !== 'function') return false;
+
+    this.installSpreadsheetPdfPrintControllerPatch(frameWindow);
+
+    if (!notificationCenter.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerPatched) {
+      const originalTrigger = notificationCenter.trigger.bind(notificationCenter);
+      notificationCenter.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal = originalTrigger;
+      notificationCenter.trigger = (eventName?: unknown, ...args: unknown[]) => {
+        if (
+          eventName === 'file:print' &&
+          !frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel
+        ) {
+          this.closeSpreadsheetPdfPrintPanel(frameWindow, { restoreSourcePanel: false });
+          frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = null;
+        }
+
+        if (eventName === 'download:cancel') {
+          this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true });
+          frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = null;
+        }
+
+        if (eventName === 'download:settings') {
+          const fileType = getSpreadsheetPdfExportFileType(args[1]);
+          if (fileType !== null) {
+            const isSaveAs = isTruthyOnlyOfficeFlag(args[2]);
+            const mode: SpreadsheetPdfPrintExportMode = {
+              fileType,
+              isSaveAs,
+              returnPanel: isSaveAs ? 'save-copy' : 'saveas',
+              wopiSaveAsPath: args[3],
+            };
+            this.openSpreadsheetPdfPrintPanel(frameWindow, mode);
+            return undefined;
+          }
+        }
+
+        return originalTrigger(eventName, ...args);
+      };
+      notificationCenter.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerPatched = true;
+    }
+
+    return true;
+  }
+
+  private installSpreadsheetPdfPrintControllerPatch(frameWindow: OnlyOfficeFrameWindow): void {
+    const printController = getOnlyOfficeController<OnlyOfficePrintControllerLike>(frameWindow, 'Print');
+    if (!printController || typeof printController.querySavePrintSettings !== 'function') return;
+    this.installSpreadsheetPdfPrintSettingsShowPatch(frameWindow, printController);
+    if (printController.__onlyOfficeBrowserSpreadsheetPdfPrintQueryPatched) return;
+
+    const originalQuerySavePrintSettings = printController.querySavePrintSettings.bind(printController);
+    printController.__onlyOfficeBrowserSpreadsheetPdfPrintQueryOriginal = originalQuerySavePrintSettings;
+    printController.querySavePrintSettings = (action: unknown, useSystemDialog?: unknown) => {
+      const mode = frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode;
+      if (!mode || (action !== 'print' && action !== 'print-pdf')) {
+        return originalQuerySavePrintSettings(action, useSystemDialog);
+      }
+
+      this.exportSpreadsheetPdfFromPrintPanel(frameWindow, printController, mode, useSystemDialog);
+      return undefined;
+    };
+    printController.__onlyOfficeBrowserSpreadsheetPdfPrintQueryPatched = true;
+  }
+
+  private installSpreadsheetPdfPrintSettingsShowPatch(
+    frameWindow: OnlyOfficeFrameWindow,
+    printController: OnlyOfficePrintControllerLike,
+  ): void {
+    const printSettings = printController.printSettings;
+    if (!printSettings || typeof printSettings.show !== 'function') return;
+    if (printSettings.__onlyOfficeBrowserSpreadsheetPdfPrintShowPatched) return;
+
+    const originalShow = printSettings.show.bind(printSettings);
+    printSettings.__onlyOfficeBrowserSpreadsheetPdfPrintShowOriginal = originalShow;
+    printSettings.show = () => {
+      const result = originalShow();
+      if (!frameWindow.__onlyOfficeBrowserShowingSpreadsheetPdfPrintPanel) {
+        const state = frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintPanel;
+        if (state?.printPanel) {
+          delete state.printPanel.dataset.onlyofficeBrowserSpreadsheetPdfPrintPanel;
+        }
+        frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintPanel = null;
+        frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = null;
+        setSpreadsheetPdfPrintPanelTitle(
+          frameWindow,
+          getSpreadsheetPdfNativePrintPanelTitleLabel(this.editorLang, printSettings),
+        );
+      }
+      return result;
+    };
+    printSettings.__onlyOfficeBrowserSpreadsheetPdfPrintShowPatched = true;
+  }
+
+  private openSpreadsheetPdfPrintPanel(
+    frameWindow: OnlyOfficeFrameWindow,
+    mode: SpreadsheetPdfPrintExportMode,
+  ): void {
+    this.installSpreadsheetPdfPrintControllerPatch(frameWindow);
+    this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true, restoreSourcePanel: false });
+    frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = mode;
+
+    const panel = this.ensureSpreadsheetPdfPrintPanel(frameWindow, mode);
+    if (!isSpreadsheetPdfPrintPanelReady(panel)) {
+      this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true });
+      throw new Error('OnlyOffice spreadsheet print preview panel is not available');
+    }
+
+    const state = this.attachSpreadsheetPdfPrintPanel(frameWindow, mode, panel);
+    if (!state) {
+      this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true });
+      throw new Error('OnlyOffice spreadsheet print preview panel is not available');
+    }
+    frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintPanel = state;
+
+    this.applySpreadsheetPdfPrintPanelLabels(frameWindow);
+    this.refreshSpreadsheetPdfPrintPreview(frameWindow);
+    frameWindow.setTimeout?.(() => {
+      this.applySpreadsheetPdfPrintPanelLabels(frameWindow);
+      this.refreshSpreadsheetPdfPrintPreview(frameWindow);
+    }, 0);
+  }
+
+  private ensureSpreadsheetPdfPrintPanel(
+    frameWindow: OnlyOfficeFrameWindow,
+    mode: SpreadsheetPdfPrintExportMode,
+  ): HTMLElement | null {
+    this.restoreSpreadsheetPdfSourcePanel(frameWindow, mode);
+
+    let panel = getSpreadsheetPdfPrintPanelElement(frameWindow);
+    if (isSpreadsheetPdfPrintPanelReady(panel)) return panel;
+
+    const leftMenuController = getOnlyOfficeController<{
+      clickToolbarPrint?: () => unknown;
+      leftMenu?: { showMenu?: (name: string) => unknown };
+    }>(frameWindow, 'LeftMenu');
+
+    frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel = true;
+    try {
+      if (typeof leftMenuController?.leftMenu?.showMenu === 'function') {
+        leftMenuController.leftMenu.showMenu('file:printpreview');
+      } else if (typeof leftMenuController?.clickToolbarPrint === 'function') {
+        leftMenuController.clickToolbarPrint();
+      } else {
+        frameWindow.Common?.NotificationCenter?.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal?.('file:print', this);
+      }
+    } finally {
+      frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel = false;
+    }
+
+    this.restoreSpreadsheetPdfSourcePanel(frameWindow, mode);
+    panel = getSpreadsheetPdfPrintPanelElement(frameWindow);
+    return panel;
+  }
+
+  private attachSpreadsheetPdfPrintPanel(
+    frameWindow: OnlyOfficeFrameWindow,
+    mode: SpreadsheetPdfPrintExportMode,
+    panel: HTMLElement,
+  ): SpreadsheetPdfPrintPanelState | null {
+    if (!panel || !panel.parentNode) return null;
+
+    const sourcePanel = getSpreadsheetPdfSourcePanelElement(frameWindow, mode);
+    const state: SpreadsheetPdfPrintPanelState = {
+      printPanel: panel,
+      sourcePanel,
+      previousPrintDisplay: panel.style.display,
+      previousSourceDisplay: sourcePanel?.style.display || '',
+    };
+
+    if (sourcePanel && sourcePanel !== panel) {
+      sourcePanel.style.display = 'none';
+    }
+    const printSettings = getOnlyOfficeController<OnlyOfficePrintControllerLike>(frameWindow, 'Print')?.printSettings;
+    frameWindow.__onlyOfficeBrowserShowingSpreadsheetPdfPrintPanel = true;
+    try {
+      printSettings?.show?.();
+    } finally {
+      frameWindow.__onlyOfficeBrowserShowingSpreadsheetPdfPrintPanel = false;
+    }
+    panel.dataset.onlyofficeBrowserSpreadsheetPdfPrintPanel = 'true';
+    panel.style.display = 'block';
+    return state;
+  }
+
+  private closeSpreadsheetPdfPrintPanel(
+    frameWindow: OnlyOfficeFrameWindow,
+    options: { closePreview?: boolean; restoreSourcePanel?: boolean } = {},
+  ): void {
+    const state = frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintPanel;
+    const mode = frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode;
+    if (!state) return;
+
+    frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintPanel = null;
+    if (state.printPanel) {
+      delete state.printPanel.dataset.onlyofficeBrowserSpreadsheetPdfPrintPanel;
+      state.printPanel.style.display = state.previousPrintDisplay;
+    }
+    const printSettings = getOnlyOfficeController<OnlyOfficePrintControllerLike>(frameWindow, 'Print')?.printSettings;
+    setSpreadsheetPdfPrintPanelTitle(
+      frameWindow,
+      getSpreadsheetPdfNativePrintPanelTitleLabel(this.editorLang, printSettings),
+    );
+    if (state.sourcePanel) {
+      state.sourcePanel.style.display = state.previousSourceDisplay;
+    }
+    if (options.closePreview) {
+      getOnlyOfficeController<OnlyOfficePrintControllerLike>(frameWindow, 'Print')?.onHidePrintMenu?.();
+    }
+    if (options.restoreSourcePanel !== false && mode && !state.sourcePanel) {
+      this.restoreSpreadsheetPdfSourcePanel(frameWindow, mode);
+    }
+  }
+
+  private restoreSpreadsheetPdfSourcePanel(
+    frameWindow: OnlyOfficeFrameWindow,
+    mode: SpreadsheetPdfPrintExportMode,
+  ): void {
+    const leftMenuController = getOnlyOfficeController<{
+      leftMenu?: {
+        menuFile?: { show?: (name?: string) => unknown };
+        showMenu?: (name: string) => unknown;
+      };
+    }>(frameWindow, 'LeftMenu');
+    if (typeof leftMenuController?.leftMenu?.menuFile?.show === 'function') {
+      leftMenuController.leftMenu.menuFile.show(mode.returnPanel);
+    } else if (mode.returnPanel === 'saveas' && typeof leftMenuController?.leftMenu?.showMenu === 'function') {
+      leftMenuController.leftMenu.showMenu('file:saveas');
+    }
+  }
+
+  private refreshSpreadsheetPdfPrintPreview(frameWindow: OnlyOfficeFrameWindow): void {
+    const printController = getOnlyOfficeController<OnlyOfficePrintControllerLike>(frameWindow, 'Print');
+    printController?.updatePrintRenderContainerSize?.(true);
+    printController?.printSettings?.printScroller?.update?.();
+  }
+
+  private applySpreadsheetPdfPrintPanelLabels(frameWindow: OnlyOfficeFrameWindow): void {
+    const mode = frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode;
+    if (!mode) return;
+    const printController = getOnlyOfficeController<OnlyOfficePrintControllerLike>(frameWindow, 'Print');
+    const printSettings = printController?.printSettings;
+    if (!printSettings) return;
+
+    const actionCaption = getSpreadsheetPdfPrintActionLabel(this.editorLang, mode.isSaveAs);
+    const titleCaption = getSpreadsheetPdfPrintPanelTitleLabel(this.editorLang, mode.isSaveAs);
+    const saveSettingsCaption = getPrintSettingsSaveCaption(this.editorLang);
+    setSpreadsheetPdfPrintPanelTitle(frameWindow, titleCaption);
+    for (const button of printSettings.btnsPrint || []) {
+      setOnlyOfficeButtonCaption(button, actionCaption);
+    }
+    for (const button of printSettings.btnsSave || []) {
+      setOnlyOfficeButtonCaption(button, saveSettingsCaption);
+    }
+  }
+
+  private exportSpreadsheetPdfFromPrintPanel(
+    frameWindow: OnlyOfficeFrameWindow,
+    printController: OnlyOfficePrintControllerLike,
+    mode: SpreadsheetPdfPrintExportMode,
+    useSystemDialog: unknown,
+  ): void {
+    const printSettings = printController.printSettings;
+    const adjustPrintParams = printController.adjPrintParams;
+    const api = printController.api;
+    const DownloadOptions = frameWindow.Asc?.asc_CDownloadOptions;
+    if (!printSettings || !adjustPrintParams || !api || typeof api.asc_DownloadAs !== 'function' || !DownloadOptions) {
+      throw new Error('OnlyOffice spreadsheet print preview export is not available');
+    }
+
+    printController.savePageOptions?.(printSettings);
+    printSettings.applySettings?.();
+
+    const range = printSettings.getRange?.();
+    adjustPrintParams.asc_setPrintType?.(range);
+    adjustPrintParams.asc_setPageOptionsMap?.(printController._changedProps);
+    adjustPrintParams.asc_setIgnorePrintArea?.(printSettings.getIgnorePrintArea?.());
+
+    const printTypes = frameWindow.Asc?.c_oAscPrintType;
+    const statusbarController = getOnlyOfficeController<{ getSelectTabs?: () => unknown }>(frameWindow, 'Statusbar');
+    const activeSheets =
+      range === printTypes?.Selection || range === printTypes?.ActiveSheets
+        ? statusbarController?.getSelectTabs?.() ?? null
+        : null;
+    adjustPrintParams.asc_setActiveSheetsArray?.(activeSheets);
+
+    let pagesFrom = getOnlyOfficeNumber(printSettings.getPagesFrom?.(), 0);
+    let pagesTo = getOnlyOfficeNumber(printSettings.getPagesTo?.(), 0);
+    if (pagesFrom > pagesTo) {
+      const previousFrom = pagesFrom;
+      pagesFrom = pagesTo;
+      pagesTo = previousFrom;
+    }
+    adjustPrintParams.asc_setStartPageIndex?.(pagesFrom > 0 ? pagesFrom - 1 : null);
+    adjustPrintParams.asc_setEndPageIndex?.(pagesTo > 0 ? pagesTo - 1 : null);
+
+    const activeWorksheetIndex =
+      range === printTypes?.EntireWorkbook ? 0 : getOnlyOfficeNumber(api.asc_getActiveWorksheetIndex?.(), 0);
+    const changedProps = printController._changedProps;
+    const changedPageOptions = Array.isArray(changedProps)
+      ? changedProps[activeWorksheetIndex]
+      : changedProps?.[String(activeWorksheetIndex)];
+    const pageOptions = changedPageOptions || api.asc_getPageOptions?.(activeWorksheetIndex);
+    const pageSetup = getOnlyOfficePageSetup(pageOptions);
+    const pageWidth = getOnlyOfficeNumber(pageSetup?.asc_getWidth?.(), 0);
+    const pageHeight = getOnlyOfficeNumber(pageSetup?.asc_getHeight?.(), 0);
+    const orientationRecord = printSettings.cmbPaperOrientation?.getSelectedRecord?.();
+    const paperOrientation = orientationRecord?.value === 'auto'
+      ? 'auto'
+      : pageSetup?.asc_getOrientation?.()
+        ? 'landscape'
+        : 'portrait';
+    const printer = printSettings.cmbPrinter?.getSelectedRecord?.();
+    const colorMode = printSettings.cmbColorPrinting?.getValue?.();
+    adjustPrintParams.asc_setNativeOptions?.({
+      usesystemdialog: Boolean(useSystemDialog),
+      printer: printer ? printer.value : null,
+      colorMode: colorMode === 'color',
+      paperSize: {
+        w: pageWidth,
+        h: pageHeight,
+        preset: printController.findPagePreset?.(printSettings, pageWidth, pageHeight),
+      },
+      paperOrientation,
+      copies: getOnlyOfficeNumber(printSettings.spnCopies?.getNumberValue?.(), 1),
+      sides: printSettings.cmbSides?.getValue?.() || 'one',
+    });
+
+    const options = new DownloadOptions(mode.fileType, mode.isSaveAs);
+    options.asc_setAdvancedOptions?.(adjustPrintParams);
+    options.asc_setIsSaveAs?.(mode.isSaveAs);
+    if (mode.wopiSaveAsPath !== undefined) {
+      options.asc_setWopiSaveAsPath?.(mode.wopiSaveAsPath);
+    }
+
+    this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true });
+    frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = null;
+    api.asc_DownloadAs(options);
+    const toolbarView = getOnlyOfficeController<{ getView?: (name: string) => unknown }>(frameWindow, 'Toolbar')
+      ?.getView?.('Toolbar');
+    frameWindow.Common?.NotificationCenter?.trigger?.('edit:complete', toolbarView);
   }
 
   private scheduleNativeDownloadAsInterceptor(): void {
@@ -1875,7 +2556,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       let fileName = result.fileName;
       let bytes = toUint8Array(result.data);
       let validationTargetExt = normalizedTargetFormat;
-      const markdownPackage = normalizedTargetFormat === 'md' ? packageMarkdownDataUriImages(fileName, bytes) : null;
+      const markdownPackage =
+        normalizedTargetFormat === 'md' ? packageMarkdownDataUriImages(fileName, bytes, this.fileName) : null;
       if (markdownPackage) {
         fileName = markdownPackage.fileName;
         bytes = markdownPackage.data;
@@ -1944,7 +2626,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     let bytes = toUint8Array(result.data);
     let validationTargetExt = normalizedTargetExt;
 
-    const markdownPackage = normalizedTargetExt === 'md' ? packageMarkdownDataUriImages(fileName, bytes) : null;
+    const markdownPackage =
+      normalizedTargetExt === 'md' ? packageMarkdownDataUriImages(fileName, bytes, this.fileName) : null;
     if (markdownPackage) {
       fileName = markdownPackage.fileName;
       bytes = markdownPackage.data;
@@ -2064,6 +2747,33 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     downloadFile(file);
   }
 
+  private async emitSaveAsFile(file: File): Promise<void> {
+    if (this.options.onSaveAs) {
+      await this.options.onSaveAs(file, this);
+      return;
+    }
+    downloadFile(file);
+  }
+
+  private async createDownloadAsFileFromEvent(event: DownloadAsEvent): Promise<File> {
+    const targetExt = getDownloadTargetExtension(event.data?.fileType, event.data?.url, getFileExtension(this.fileName));
+    const url = event.data?.url;
+    if (!url) {
+      const file = await this.convertDownloadAsFile(targetExt, event.nativeOptions);
+      return withFileName(file, event.data?.title);
+    }
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      return this.convertDownloadAsFile(targetExt, event.nativeOptions);
+    }
+
+    const blob = await response.blob();
+    const fileName = event.data?.title || getDownloadFileName(this.fileName, targetExt);
+    assertValidDownloadFileBytes(toUint8Array(await blob.arrayBuffer()), fileName, targetExt);
+    return new File([blob], fileName, { type: blob.type || getSavedFileMimeType(fileName) });
+  }
+
   private async handleSaveDocument(event: SaveEvent): Promise<void> {
     try {
       const payload = event.data?.data?.data;
@@ -2100,25 +2810,20 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   private async handleDownloadAs(event: DownloadAsEvent): Promise<void> {
-    const targetExt = getDownloadTargetExtension(event.data?.fileType, event.data?.url, getFileExtension(this.fileName));
     try {
-      const url = event.data?.url;
-      if (!url) {
-        const file = await this.convertDownloadAsFile(targetExt, event.nativeOptions);
-        await this.emitDownloadedFile(file);
-        return;
-      }
-      const response = await fetch(url);
-      if (!response.ok) {
-        const file = await this.convertDownloadAsFile(targetExt, event.nativeOptions);
-        await this.emitDownloadedFile(file);
-        return;
-      }
+      const file = await this.createDownloadAsFileFromEvent(event);
+      await this.emitDownloadedFile(file);
+    } catch (error) {
+      const normalized = toError(error);
+      this.rejectSaveRequest(normalized);
+      this.options.onError?.(normalized, this);
+    }
+  }
 
-      const blob = await response.blob();
-      const fileName = event.data?.title || getDownloadFileName(this.fileName, targetExt);
-      assertValidDownloadFileBytes(toUint8Array(await blob.arrayBuffer()), fileName, targetExt);
-      await this.emitDownloadedFile(new File([blob], fileName, { type: blob.type || getSavedFileMimeType(fileName) }));
+  private async handleRequestSaveAs(event: RequestSaveAsEvent): Promise<void> {
+    try {
+      const file = await this.createDownloadAsFileFromEvent(event);
+      await this.emitSaveAsFile(file);
     } catch (error) {
       const normalized = toError(error);
       this.rejectSaveRequest(normalized);
@@ -2180,6 +2885,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     const nativeBridge = runtimeWindow.native || {};
     const hadSaveEnd = Object.prototype.hasOwnProperty.call(nativeBridge, 'Save_End');
     const originalSaveEnd = nativeBridge.Save_End;
+    const advancedOptions = getNativeDownloadAdvancedOptions(downloadOptions);
+    const useSpreadsheetNativePrintOptions = getDocumentType(this.fileType) === 'cell' && advancedOptions !== undefined;
+    const hadDesktopPrintOptions = Object.prototype.hasOwnProperty.call(runtimeWindow, 'AscDesktopEditor_PrintOptions');
+    const originalDesktopPrintOptions = runtimeWindow.AscDesktopEditor_PrintOptions;
     let nativeLength: number | undefined;
 
     runtimeWindow.native = nativeBridge;
@@ -2191,9 +2900,13 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     };
 
     try {
-      const printOptions: Record<string, unknown> = { isPrint: true };
-      const advancedOptions = downloadOptions?.advancedOptions ?? downloadOptions?.printOptions;
-      if (advancedOptions !== undefined) {
+      let printOptions: Record<string, unknown> | undefined = { isPrint: true };
+      if (useSpreadsheetNativePrintOptions) {
+        // Spreadsheet asc_nativePrint reads AscDesktopEditor_PrintOptions.advancedOptions;
+        // passing the same object via asc_nativeGetPDF(options) makes it reset to EntireWorkbook.
+        runtimeWindow.AscDesktopEditor_PrintOptions = { advancedOptions };
+        printOptions = undefined;
+      } else if (advancedOptions !== undefined) {
         printOptions.advancedOptions = advancedOptions;
         printOptions.printOptions = advancedOptions;
       }
@@ -2217,6 +2930,11 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       }
       if (!hadNative) {
         delete runtimeWindow.native;
+      }
+      if (hadDesktopPrintOptions) {
+        runtimeWindow.AscDesktopEditor_PrintOptions = originalDesktopPrintOptions;
+      } else {
+        delete runtimeWindow.AscDesktopEditor_PrintOptions;
       }
     }
   }

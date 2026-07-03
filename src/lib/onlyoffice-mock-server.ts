@@ -35,6 +35,7 @@ export interface OnlyOfficeMockServer {
   buildVersion?: string;
   getInitialChanges?: () => any[];
   getParticipants: () => OnlyOfficeParticipants;
+  getDocumentOpenData?: (documentUrl: string) => Record<string, string>;
   getImageURL?: (name: string) => Promise<string>;
   onAuth?: () => void;
   onSaveRequest?: () => void | Promise<void>;
@@ -70,6 +71,10 @@ function stripLeadingDotsAndSlashes(value: string): string {
   return value.replace(/^(\.\/|\/)+/, '');
 }
 
+export function isOnlyOfficeDirectMediaUrl(value: string): boolean {
+  return /^data:image\//i.test(value) || /^blob:/i.test(value) || /^https?:\/\//i.test(value);
+}
+
 export function getOnlyOfficeMediaCandidates(name: string): string[] {
   const trimmed = stripLeadingDotsAndSlashes(name);
   const decoded = (() => {
@@ -91,6 +96,11 @@ export function getOnlyOfficeMediaCandidates(name: string): string[] {
 }
 
 export function resolveOnlyOfficeMediaUrl(media: Record<string, string> | undefined, name: string): string {
+  const directUrl = name.trim();
+  if (isOnlyOfficeDirectMediaUrl(directUrl)) {
+    return directUrl;
+  }
+
   if (!media) {
     return '';
   }
@@ -167,6 +177,10 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
     getParticipants: () => ({
       index: 0,
       list: [{ ...LOCAL_PARTICIPANT }],
+    }),
+    getDocumentOpenData: (documentUrl: string) => ({
+      'Editor.bin': documentUrl,
+      ...(media || {}),
     }),
     getImageURL: async (name: string) => resolveOnlyOfficeMediaUrl(media, name),
     onAuth,

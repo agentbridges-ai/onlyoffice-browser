@@ -142,7 +142,8 @@ This project does not ship runtime font files. Generate and mount fonts before o
 ## References
 
 - [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor)
-- [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm)
+- [agentbridges-ai/onlyoffice-x2t-wasm](https://github.com/agentbridges-ai/onlyoffice-x2t-wasm)
+- [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) (source-analysis reference only; do not submit package changes upstream there)
 - [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)
 - [ONLYOFFICE web-apps](https://github.com/ONLYOFFICE/web-apps)
 - [ONLYOFFICE sdkjs](https://github.com/ONLYOFFICE/sdkjs)

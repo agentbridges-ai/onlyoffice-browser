@@ -143,11 +143,31 @@ function blobPartStartsWith(data: BlobPart, signature: number[]): boolean {
   return signature.every((value, index) => bytes[index] === value);
 }
 
-function resolveGeneratedOutputFileName(fileName: string, data: BlobPart, targetExt: string): string {
+function getExtensionFileNameSuffix(fileName: string): string {
+  const extension = fileName.split(/[\\/]/).pop()?.match(/\.([^.]+)$/)?.[1] || '';
+  const normalized = extension.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return normalized ? `_${normalized}` : '';
+}
+
+function getTargetExtensionSuffix(targetExt: string): string {
+  const normalizedTargetExt = targetExt.toLowerCase() === 'jpeg' ? 'jpg' : targetExt.toLowerCase();
+  const normalized = normalizedTargetExt.replace(/[^a-z0-9]+/g, '');
+  return normalized ? `_${normalized}` : '';
+}
+
+function resolveGeneratedOutputFileName(
+  fileName: string,
+  data: BlobPart,
+  targetExt: string,
+  sourceFileName = fileName,
+): string {
   const normalizedTargetExt = targetExt.toLowerCase();
   if (!['jpg', 'jpeg', 'png'].includes(normalizedTargetExt)) return fileName;
   if (!blobPartStartsWith(data, [0x50, 0x4b, 0x03, 0x04])) return fileName;
-  return fileName.replace(/\.[^/.]+$/, '.zip');
+  return fileName.replace(
+    /\.[^/.]+$/,
+    `${getExtensionFileNameSuffix(sourceFileName)}${getTargetExtensionSuffix(normalizedTargetExt)}.zip`,
+  );
 }
 
 export class X2TConverter {
@@ -1107,7 +1127,7 @@ export class X2TConverter {
 
       const result = this.readRequiredOutputFile(`/working/${outputFileName}`);
       return {
-        fileName: resolveGeneratedOutputFileName(outputFileName, result, normalizedTargetExt),
+        fileName: resolveGeneratedOutputFileName(outputFileName, result, normalizedTargetExt, originalFileName),
         data: result,
       };
     } catch (error) {

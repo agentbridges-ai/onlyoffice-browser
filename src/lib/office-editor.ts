@@ -29,6 +29,7 @@ export type OfficeEditorSourceKind = OfficeHostSourceKind;
 export type OfficeSaveBehavior = OfficeHostSaveBehavior;
 export type { OfficeSaveToNewFormatConfirmationOptions };
 export type OfficeSaveCallbackResult = void | boolean;
+export type OfficeSaveAsCallbackResult = void | boolean;
 export type OfficeDownloadCallbackResult = void;
 export type OfficeHostUrlContext = {
   sessionId: string;
@@ -55,6 +56,7 @@ export interface CreateOfficeEditorOptions {
   onReady?: (instance: OfficeEditorInstance) => void;
   saveBehavior?: OfficeSaveBehavior;
   onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
+  onSaveAs?: (file: File, instance: OfficeEditorInstance) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
   onDownload?: (file: File, instance: OfficeEditorInstance) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
@@ -555,6 +557,9 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       case 'DOWNLOAD_RESULT':
         void this.handleDownloadResult(message);
         return;
+      case 'SAVE_AS_RESULT':
+        void this.handleSaveAsResult(message);
+        return;
       case 'PRINT_TITLE':
         setTemporaryDocumentTitle(message.title, message.durationMs);
         return;
@@ -625,6 +630,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     downloadFile(file);
   }
 
+  private async persistSaveAsFile(file: File): Promise<void> {
+    if (this.options.onSaveAs) {
+      await this.options.onSaveAs(file, this);
+      return;
+    }
+    downloadFile(file);
+  }
+
   private postSaveAck(requestId: string, ok: boolean, message?: string): void {
     this.postToHost({
       protocol: OFFICE_HOST_PROTOCOL,
@@ -667,6 +680,17 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
     try {
       await this.persistDownloadedFile(file);
+    } catch (error) {
+      const normalized = toError(error);
+      this.options.onError?.(normalized, this);
+    }
+  }
+
+  private async handleSaveAsResult(message: Extract<OfficeHostChildMessage, { type: 'SAVE_AS_RESULT' }>): Promise<void> {
+    const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
+
+    try {
+      await this.persistSaveAsFile(file);
     } catch (error) {
       const normalized = toError(error);
       this.options.onError?.(normalized, this);

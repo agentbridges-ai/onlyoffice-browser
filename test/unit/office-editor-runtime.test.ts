@@ -89,6 +89,7 @@ function jpegFixture(): Uint8Array {
 }
 
 type CapturedDocEditorConfig = {
+  type?: 'desktop' | 'embedded' | 'mobile';
   document: {
     permissions: {
       edit: boolean;
@@ -154,7 +155,7 @@ type CapturedDocEditorInstance = {
 	      _downloadAs: (
       actionType?: unknown,
       options?: unknown,
-      additionalData?: { outputformat?: unknown; title?: unknown },
+      additionalData?: { outputformat?: unknown; title?: unknown; inline?: unknown; isSaveAs?: unknown },
       dataContainer?: unknown,
       downloadType?: unknown,
 	    ) => boolean | undefined;
@@ -313,6 +314,10 @@ describe('office editor runtime', () => {
                 ? (options as { fileType?: unknown }).fileType
                 : undefined,
 	            title: 'alpha.out',
+	            isSaveAs:
+              options && typeof options === 'object' && 'isSaveAs' in options
+                ? (options as { isSaveAs?: unknown }).isSaveAs
+                : undefined,
 	          }),
 	        asc_nativeCalculateFile: this.asc_nativeCalculateFile,
 	        asc_nativeGetHtml: this.asc_nativeGetHtml,
@@ -342,6 +347,205 @@ describe('office editor runtime', () => {
     };
   });
 
+  function installSpreadsheetPrintPreviewHarness(frameWindow: Window) {
+    class MockDownloadOptions {
+      fileType: unknown;
+      asUrl: unknown;
+      isSaveAs = false;
+      wopiSaveAsPath: unknown;
+      advancedOptions: unknown;
+
+      constructor(fileType?: unknown, asUrl?: unknown) {
+        this.fileType = fileType;
+        this.asUrl = asUrl;
+      }
+
+      asc_setAdvancedOptions = vi.fn((options: unknown) => {
+        this.advancedOptions = options;
+      });
+
+      asc_setIsSaveAs = vi.fn((isSaveAs: boolean) => {
+        this.isSaveAs = isSaveAs;
+      });
+
+      asc_setWopiSaveAsPath = vi.fn((path: unknown) => {
+        this.wopiSaveAsPath = path;
+      });
+
+      asc_getFileType = vi.fn(() => this.fileType);
+      asc_getIsSaveAs = vi.fn(() => this.isSaveAs);
+    }
+
+    const originalTrigger = vi.fn();
+    const fileMenuPanel = frameWindow.document.createElement('div');
+    fileMenuPanel.id = 'file-menu-panel';
+    const panelContext = frameWindow.document.createElement('div');
+    panelContext.className = 'panel-context';
+    const panelSaveAs = frameWindow.document.createElement('div');
+    panelSaveAs.id = 'panel-saveas';
+    panelSaveAs.className = 'content-box';
+    panelSaveAs.style.display = 'block';
+    const panelSaveCopy = frameWindow.document.createElement('div');
+    panelSaveCopy.id = 'panel-savecopy';
+    panelSaveCopy.className = 'content-box';
+    panelSaveCopy.style.display = 'none';
+    const printPanel = frameWindow.document.createElement('div');
+    printPanel.id = 'panel-print';
+    printPanel.className = 'content-box';
+    printPanel.style.display = 'none';
+    const printSettingsHost = frameWindow.document.createElement('div');
+    printSettingsHost.id = 'id-print-settings';
+    const printSettingsContainer = frameWindow.document.createElement('div');
+    printSettingsContainer.className = 'print-settings';
+    const printMainHeader = frameWindow.document.createElement('div');
+    printMainHeader.className = 'main-header';
+    printMainHeader.textContent = '打印';
+    const settingsContainer = frameWindow.document.createElement('div');
+    settingsContainer.className = 'settings-container';
+    printSettingsContainer.appendChild(printMainHeader);
+    printSettingsContainer.appendChild(settingsContainer);
+    printSettingsHost.appendChild(printSettingsContainer);
+    const printPreviewBox = frameWindow.document.createElement('div');
+    printPreviewBox.id = 'print-preview-box';
+    const printPreviewWrapper = frameWindow.document.createElement('div');
+    printPreviewWrapper.id = 'print-preview-wrapper';
+    const printPreview = frameWindow.document.createElement('div');
+    printPreview.id = 'print-preview';
+    printPreviewWrapper.appendChild(printPreview);
+    const printNavigation = frameWindow.document.createElement('div');
+    printNavigation.id = 'print-navigation';
+    printPreviewBox.append(printPreviewWrapper, printNavigation);
+    const printPreviewEmpty = frameWindow.document.createElement('div');
+    printPreviewEmpty.id = 'print-preview-empty';
+    printPanel.append(printSettingsHost, printPreviewBox, printPreviewEmpty);
+    panelContext.append(panelSaveAs, panelSaveCopy, printPanel);
+    fileMenuPanel.appendChild(panelContext);
+    frameWindow.document.body.appendChild(fileMenuPanel);
+    const showMenu = vi.fn();
+    const showFilePanel = vi.fn((name?: string) => {
+      for (const panel of [panelSaveAs, panelSaveCopy, printPanel]) {
+        panel.style.display = 'none';
+      }
+      if (name === 'save-copy') {
+        panelSaveCopy.style.display = 'block';
+      } else if (name === 'printpreview') {
+        printPanel.style.display = 'block';
+      } else {
+        panelSaveAs.style.display = 'block';
+      }
+    });
+    showMenu.mockImplementation((name: string) => {
+      if (name === 'file:printpreview') showFilePanel('printpreview');
+      if (name === 'file:saveas') showFilePanel('saveas');
+    });
+    const ascDownloadAs = vi.fn();
+    const pageSetup = {
+      asc_getWidth: vi.fn(() => 297),
+      asc_getHeight: vi.fn(() => 420),
+      asc_getOrientation: vi.fn(() => true),
+    };
+    const pageOptions = {
+      asc_getPageSetup: vi.fn(() => pageSetup),
+    };
+    const printSettingsShow = vi.fn(() => {
+      printPanel.style.display = 'block';
+    });
+    const printSettings = {
+      show: printSettingsShow,
+      txtPrint: '打印',
+      btnsPrint: [{ setCaption: vi.fn() }],
+      btnsSave: [{ setCaption: vi.fn() }],
+      applySettings: vi.fn(),
+      getRange: vi.fn(() => 2),
+      getIgnorePrintArea: vi.fn(() => true),
+      getPagesFrom: vi.fn(() => 1),
+      getPagesTo: vi.fn(() => 4),
+      cmbPaperOrientation: { getSelectedRecord: vi.fn(() => ({ value: 'landscape' })) },
+      cmbPrinter: { getSelectedRecord: vi.fn(() => ({ value: 'printer-1' })) },
+      cmbColorPrinting: { getValue: vi.fn(() => 'color') },
+      spnCopies: { getNumberValue: vi.fn(() => 1) },
+      cmbSides: { getValue: vi.fn(() => 'one') },
+      printScroller: { update: vi.fn() },
+    };
+    const adjustPrintParams = {
+      asc_setPrintType: vi.fn(),
+      asc_setPageOptionsMap: vi.fn(),
+      asc_setIgnorePrintArea: vi.fn(),
+      asc_setActiveSheetsArray: vi.fn(),
+      asc_setStartPageIndex: vi.fn(),
+      asc_setEndPageIndex: vi.fn(),
+      asc_setNativeOptions: vi.fn(),
+    };
+    const printController = {
+      printSettings,
+      adjPrintParams: adjustPrintParams,
+      _changedProps: [] as unknown[],
+      api: {
+        asc_getActiveWorksheetIndex: vi.fn(() => 0),
+        asc_getPageOptions: vi.fn(() => pageOptions),
+        asc_DownloadAs: ascDownloadAs,
+      },
+      savePageOptions: vi.fn(),
+      findPagePreset: vi.fn(() => 'A3'),
+      querySavePrintSettings: vi.fn(),
+      onHidePrintMenu: vi.fn(),
+      updatePrintRenderContainerSize: vi.fn(),
+    };
+    const leftMenuController = {
+      leftMenu: { showMenu, menuFile: { show: showFilePanel } },
+      clickToolbarPrint: vi.fn(() => showMenu('file:printpreview')),
+    };
+    const toolbarController = {
+      getView: vi.fn(() => ({ id: 'toolbar' })),
+    };
+    const statusbarController = {
+      getSelectTabs: vi.fn(() => [0]),
+    };
+
+    Object.assign(frameWindow, {
+      Common: {
+        NotificationCenter: {
+          trigger: originalTrigger,
+        },
+      },
+      Asc: {
+        c_oAscPrintType: {
+          Selection: 1,
+          ActiveSheets: 2,
+          EntireWorkbook: 3,
+        },
+        asc_CDownloadOptions: MockDownloadOptions,
+      },
+      SSE: {
+        getController: vi.fn((name: string) => {
+          if (name === 'Print') return printController;
+          if (name === 'LeftMenu') return leftMenuController;
+          if (name === 'Toolbar') return toolbarController;
+          if (name === 'Statusbar') return statusbarController;
+          return null;
+        }),
+      },
+    });
+
+    return {
+      MockDownloadOptions,
+      originalTrigger,
+      showMenu,
+      showFilePanel,
+      printSettingsShow,
+      ascDownloadAs,
+      printSettings,
+      adjustPrintParams,
+      printController,
+      statusbarController,
+      printPanel,
+      printMainHeader,
+      panelContext,
+      panelSaveAs,
+      panelSaveCopy,
+    };
+  }
+
   it('disables autosave, forcesave, and spellcheck by default', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -368,6 +572,63 @@ describe('office editor runtime', () => {
     expect(docEditorConfigs[0].editorConfig.coEditing).toEqual({
       mode: 'strict',
       change: false,
+    });
+
+    await instance.destroy();
+  });
+
+  it('passes direct image URLs through the OnlyOffice parent image resolver', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['pptx'], 'slides.pptx'),
+      fileName: 'slides.pptx',
+      mode: 'preview',
+    });
+    await flush();
+
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const app = window as typeof window & {
+      APP?: {
+        getImageURL?: (name: string, callback: (url: string) => void) => void;
+      };
+    };
+    const resolved = await new Promise<string>((resolve) => {
+      app.APP?.getImageURL?.(dataUrl, resolve);
+    });
+
+    expect(resolved).toBe(dataUrl);
+
+    await instance.destroy();
+  });
+
+  it('passes converted media URLs into the embedded documentOpen map', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const media = {
+      'media/image1.png': 'blob:image-1',
+    };
+    mocks.convertDocument.mockResolvedValueOnce({
+      fileName: 'slides.pptx',
+      bin: new Uint8Array([1, 2, 3]),
+      media,
+    });
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['pptx'], 'slides.pptx'),
+      fileName: 'slides.pptx',
+      mode: 'preview',
+    });
+    await flush();
+
+    const server = docEditorInstances[0].connectMockServer.mock.calls[0][0] as {
+      getDocumentOpenData?: (documentUrl: string) => Record<string, string>;
+    };
+    expect(docEditorConfigs[0].type).toBe('embedded');
+    expect(server.getDocumentOpenData?.('blob:document-bin')).toEqual({
+      'Editor.bin': 'blob:document-bin',
+      ...media,
     });
 
     await instance.destroy();
@@ -612,16 +873,18 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
-  it('passes Download As files to the host callback in embedded mode', async () => {
+  it('passes Save Copy As files to the host save-as callback without downloading', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const onDownload = vi.fn();
+    const onSaveAs = vi.fn();
 
     const instance = await createOfficeEditor(container, {
       file: new File(['hello'], 'alpha.docx'),
       fileName: 'alpha.docx',
       mode: 'edit',
       saveBehavior: 'download',
+      onSaveAs,
       onDownload,
     });
     await flush();
@@ -634,8 +897,9 @@ describe('office editor runtime', () => {
     docEditorConfigs[0].events.onRequestSaveAs?.({ data: { fileType: 67, title: 'alpha.odt' } });
     await waitForMessage();
 
-    expect(onDownload).toHaveBeenCalledTimes(1);
-    expect(onDownload.mock.calls[0][0]).toMatchObject({ name: 'alpha.odt' });
+    expect(onSaveAs).toHaveBeenCalledTimes(1);
+    expect(onSaveAs.mock.calls[0][0]).toMatchObject({ name: 'alpha.odt' });
+    expect(onDownload).not.toHaveBeenCalled();
     expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
 
     await instance.destroy();
@@ -805,6 +1069,52 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
+  it('passes spreadsheet PDF sheet and page settings through the native CAdjustPrint bridge', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const pdfBytes = validOnePagePdfFixture();
+    const adjustPrint = {
+      asc_getPrintType: vi.fn(() => 2),
+      asc_getActiveSheetsArray: vi.fn(() => [0, 2]),
+      asc_getStartPageIndex: vi.fn(() => 1),
+      asc_getEndPageIndex: vi.fn(() => 3),
+      asc_getPageOptionsMap: vi.fn(() => ({ 0: { id: 'sheet-0-options' }, 2: { id: 'sheet-2-options' } })),
+    };
+    let capturedPrintOptions: unknown = 'not-called';
+    let capturedDesktopPrintOptions: unknown;
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.xlsx'),
+      fileName: 'alpha.xlsx',
+      mode: 'edit',
+      saveBehavior: 'download',
+    });
+    await flush();
+
+    docEditorInstances[0].asc_nativeGetPDF.mockImplementationOnce((options?: unknown) => {
+      capturedPrintOptions = options;
+      capturedDesktopPrintOptions = (window as typeof window & { AscDesktopEditor_PrintOptions?: unknown })
+        .AscDesktopEditor_PrintOptions;
+      (window as typeof window & { native?: { Save_End?: (header: string, length: number) => void } }).native?.Save_End?.(
+        '',
+        pdfBytes.byteLength,
+      );
+      return pdfBytes;
+    });
+
+    docEditorInstances[0].nativeApi.asc_DownloadAs({ fileType: 513, advancedOptions: adjustPrint });
+    await waitForMessage();
+
+    expect(capturedPrintOptions).toBeUndefined();
+    expect(capturedDesktopPrintOptions).toEqual({ advancedOptions: adjustPrint });
+    expect((window as typeof window & { AscDesktopEditor_PrintOptions?: unknown }).AscDesktopEditor_PrintOptions).toBeUndefined();
+    expect(docEditorInstances[0].asc_nativeGetPDF).toHaveBeenCalledTimes(1);
+    expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+
+    await instance.destroy();
+  });
+
 	  it('intercepts final native asc_DownloadAs calls after upstream Download As dialogs are confirmed', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -864,6 +1174,115 @@ describe('office editor runtime', () => {
 	    await instance.destroy();
 	  });
 
+	  it('routes native Save Copy As _downloadAs calls to onSaveAs instead of browser download', async () => {
+	    const container = document.createElement('div');
+	    document.body.appendChild(container);
+	    const onSaveAs = vi.fn();
+	    const onDownload = vi.fn();
+
+	    const instance = await createOfficeEditor(container, {
+	      file: new File(['hello'], 'alpha.docx'),
+	      fileName: 'alpha.docx',
+	      mode: 'edit',
+	      saveBehavior: 'callback',
+	      onSaveAs,
+	      onDownload,
+	    });
+	    await flush();
+
+	    mocks.convertBinToDocument.mockResolvedValueOnce({
+	      fileName: 'alpha.odt',
+	      data: zipFixture(),
+	    });
+
+	    docEditorInstances[0].nativeApi._downloadAs(
+	      1,
+	      { fileType: 67, isSaveAs: true },
+	      { outputformat: 67, title: 'alpha.odt', isSaveAs: true },
+	    );
+	    await waitForMessage();
+
+	    expect(docEditorInstances[0].nativeDownloadAsHandler).not.toHaveBeenCalled();
+	    expect(docEditorInstances[0].asc_nativeGetFile3).toHaveBeenCalledTimes(1);
+	    expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.docx', 'ODT', {});
+	    expect(onSaveAs).toHaveBeenCalledTimes(1);
+	    expect(onSaveAs.mock.calls[0][0]).toMatchObject({ name: 'alpha.odt' });
+	    expect(onDownload).not.toHaveBeenCalled();
+	    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+
+	    await instance.destroy();
+	  });
+
+  it('lets native print _downloadAs requests continue into OnlyOffice APP.printPdf flow', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+      saveBehavior: 'download',
+    });
+    await flush();
+
+    docEditorInstances[0].nativeApi._downloadAs(
+      7,
+      { fileType: 513, isDownloadEvent: true },
+      { outputformat: 513, title: 'alpha.pdf', inline: 1 },
+      { data: new Uint8Array([1, 2, 3]) },
+      'asc_onPrintUrl',
+    );
+    await waitForMessage();
+
+    expect(docEditorInstances[0].nativeDownloadAsHandler).toHaveBeenCalledTimes(1);
+    expect(docEditorInstances[0].nativeDownloadAsHandler).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ fileType: 513, isDownloadEvent: true }),
+      expect.objectContaining({ outputformat: 513, inline: 1 }),
+      expect.objectContaining({ data: expect.any(Uint8Array) }),
+      'asc_onPrintUrl',
+    );
+    expect(docEditorInstances[0].asc_nativeGetFile3).not.toHaveBeenCalled();
+    expect(docEditorInstances[0].asc_nativeGetPDF).not.toHaveBeenCalled();
+    expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
+    expect(mocks.convertPrintDataToPdf).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+
+    await instance.destroy();
+  });
+
+  it('lets asc_DownloadAs print markers reach upstream instead of downloading a PDF', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.xlsx'),
+      fileName: 'alpha.xlsx',
+      mode: 'edit',
+      saveBehavior: 'download',
+    });
+    await flush();
+
+    docEditorInstances[0].nativeApi.asc_DownloadAs({ fileType: 513, isPrint: true });
+    await waitForMessage();
+
+    expect(docEditorInstances[0].nativeDownloadAsHandler).toHaveBeenCalledTimes(1);
+    expect(docEditorInstances[0].nativeDownloadAsHandler).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ fileType: 513, isPrint: true }),
+      expect.objectContaining({ outputformat: 513 }),
+      undefined,
+      undefined,
+    );
+    expect(docEditorInstances[0].asc_nativeGetFile3).not.toHaveBeenCalled();
+    expect(docEditorInstances[0].asc_nativeGetPDF).not.toHaveBeenCalled();
+    expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
+    expect(mocks.convertPrintDataToPdf).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+
+    await instance.destroy();
+  });
+
   it('lets built-in Download As panel tile clicks reach the upstream OnlyOffice UI', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -898,7 +1317,7 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
-  it('lets Spreadsheet PDF settings confirmations reach upstream before the final asc_DownloadAs call', async () => {
+  it('opens spreadsheet PDF Download As and Save Copy As in the native file-menu side panel', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
 
@@ -907,62 +1326,194 @@ describe('office editor runtime', () => {
       fileName: 'alpha.xlsx',
       mode: 'edit',
       saveBehavior: 'download',
+      lang: 'zh',
     });
     await flush();
 
     const editorFrame = container.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
-    const frameDocument = editorFrame!.contentDocument!;
-    const formatButton = frameDocument.createElement('div');
-    formatButton.className = 'btn-doc-format';
-    formatButton.setAttribute('format', '513');
-    frameDocument.body.appendChild(formatButton);
-    formatButton.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
-
-    const dialog = frameDocument.createElement('div');
-    dialog.setAttribute('role', 'dialog');
-    dialog.append('PDF settings');
-    const saveAndDownload = frameDocument.createElement('button');
-    saveAndDownload.textContent = 'Save & Download';
-    dialog.appendChild(saveAndDownload);
-    frameDocument.body.appendChild(dialog);
-
-    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
-    const notCancelled = saveAndDownload.dispatchEvent(clickEvent);
+    const frameWindow = editorFrame!.contentWindow!;
+    const harness = installSpreadsheetPrintPreviewHarness(frameWindow);
+    docEditorConfigs[0].events.onAppReady();
     await flush();
 
-    expect(notCancelled).toBe(true);
-    expect(clickEvent.defaultPrevented).toBe(false);
-    expect(docEditorInstances[0].asc_nativeGetPDF).not.toHaveBeenCalled();
-    expect(mocks.convertPrintDataToPdf).not.toHaveBeenCalled();
-    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+    const trigger = (frameWindow as typeof frameWindow & {
+      Common: { NotificationCenter: { trigger: (...args: unknown[]) => unknown } };
+    }).Common.NotificationCenter.trigger;
 
-    const printStream = new Uint8Array([0xa3, 0, 0, 0, 1, 2, 3, 4]);
-    const pdfBytes = validOnePagePdfFixture();
-    const advancedOptions = { range: 'active-sheets' };
-    docEditorInstances[0].asc_nativeGetPDF.mockImplementationOnce(() => {
-      (window as typeof window & { native?: { Save_End?: (header: string, length: number) => void } }).native?.Save_End?.(
-        '',
-        printStream.byteLength,
-      );
-      return printStream;
-    });
-    mocks.convertPrintDataToPdf.mockResolvedValueOnce({
-      fileName: 'alpha.pdf',
-      data: pdfBytes,
-    });
+    trigger('download:settings', {}, 513, false);
+    expect(harness.originalTrigger).not.toHaveBeenCalledWith(
+      'download:settings',
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(harness.showMenu).not.toHaveBeenCalledWith('file:printpreview');
+    const downloadPanel = frameWindow.document.querySelector(
+      '[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]',
+    );
+    expect(downloadPanel).toBe(harness.printPanel);
+    expect(harness.printPanel.querySelector('button[aria-label="关闭"]')).toBeNull();
+    expect(harness.panelContext.contains(harness.printPanel)).toBe(true);
+    expect(harness.printPanel.style.display).toBe('block');
+    expect(harness.panelSaveAs.style.display).toBe('none');
+    expect(harness.printSettingsShow).toHaveBeenCalledTimes(1);
+    expect(harness.printMainHeader.textContent).toBe('下载');
+    expect(harness.printPanel.style.position).toBe('');
+    expect(harness.printPanel.style.top).toBe('');
+    expect(harness.printPanel.style.bottom).toBe('');
+    expect(harness.printPanel.querySelector<HTMLElement>('#id-print-settings')?.style.position).toBe('');
+    expect(harness.printPanel.querySelector<HTMLElement>('#print-preview-box')?.style.left).toBe('');
+    expect(harness.showFilePanel).toHaveBeenLastCalledWith('saveas');
+    expect(harness.printSettings.btnsPrint[0].setCaption).toHaveBeenCalledWith('下载');
+    expect(harness.printSettings.btnsSave[0].setCaption).toHaveBeenCalledWith('保存设置');
+    expect(harness.printController.updatePrintRenderContainerSize).toHaveBeenCalledWith(true);
+    expect(harness.printSettings.printScroller.update).toHaveBeenCalled();
 
-    docEditorInstances[0].nativeApi.asc_DownloadAs({ fileType: 513, advancedOptions });
-    await waitForMessage();
+    harness.showFilePanel.mockClear();
+    trigger('download:cancel');
+    expect(
+      frameWindow.document.querySelector('[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]'),
+    ).toBeNull();
+    expect(harness.panelContext.contains(harness.printPanel)).toBe(true);
+    expect(harness.printPanel.style.display).toBe('none');
+    expect(harness.panelSaveAs.style.display).toBe('block');
+    expect(harness.printMainHeader.textContent).toBe('打印');
+    expect(harness.printPanel.style.position).toBe('');
+    expect(harness.printPanel.querySelector('button[aria-label="关闭"]')).toBeNull();
+    expect(harness.printPanel.querySelector<HTMLElement>('#print-preview-box')?.style.left).toBe('');
+    expect(harness.printController.onHidePrintMenu).toHaveBeenCalledTimes(1);
+    expect(harness.showFilePanel).not.toHaveBeenCalled();
 
-    expect(docEditorInstances[0].asc_nativeGetPDF).toHaveBeenCalledWith(
+    harness.showMenu.mockClear();
+    harness.showFilePanel.mockClear();
+    harness.printController.onHidePrintMenu.mockClear();
+    harness.printSettings.btnsPrint[0].setCaption.mockClear();
+    harness.printSettings.btnsSave[0].setCaption.mockClear();
+    harness.printSettingsShow.mockClear();
+
+    trigger('download:settings', {}, 513, false);
+    expect(harness.showMenu).not.toHaveBeenCalledWith('file:printpreview');
+    expect(harness.showFilePanel).toHaveBeenLastCalledWith('saveas');
+    expect(harness.printSettingsShow).toHaveBeenCalledTimes(1);
+    expect(
+      frameWindow.document.querySelector('[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]'),
+    ).not.toBeNull();
+
+    harness.printController.querySavePrintSettings('print', false);
+
+    expect(harness.printController.savePageOptions).toHaveBeenCalledWith(harness.printSettings);
+    expect(harness.printSettings.applySettings).toHaveBeenCalledTimes(1);
+    expect(harness.adjustPrintParams.asc_setPrintType).toHaveBeenCalledWith(2);
+    expect(harness.adjustPrintParams.asc_setPageOptionsMap).toHaveBeenCalledWith([]);
+    expect(harness.adjustPrintParams.asc_setIgnorePrintArea).toHaveBeenCalledWith(true);
+    expect(harness.adjustPrintParams.asc_setActiveSheetsArray).toHaveBeenCalledWith([0]);
+    expect(harness.adjustPrintParams.asc_setStartPageIndex).toHaveBeenCalledWith(0);
+    expect(harness.adjustPrintParams.asc_setEndPageIndex).toHaveBeenCalledWith(3);
+    expect(harness.adjustPrintParams.asc_setNativeOptions).toHaveBeenCalledWith(
       expect.objectContaining({
-        isPrint: true,
-        advancedOptions,
-        printOptions: advancedOptions,
+        colorMode: true,
+        copies: 1,
+        paperOrientation: 'landscape',
+        paperSize: expect.objectContaining({ h: 420, preset: 'A3', w: 297 }),
+        printer: 'printer-1',
+        sides: 'one',
+        usesystemdialog: false,
       }),
     );
-    expect(mocks.convertPrintDataToPdf).toHaveBeenCalledWith(printStream, 'alpha.xlsx', {});
-    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+    expect(harness.ascDownloadAs).toHaveBeenCalledTimes(1);
+    const downloadOptions = harness.ascDownloadAs.mock.calls[0][0] as {
+      advancedOptions?: unknown;
+      fileType?: unknown;
+      isSaveAs?: unknown;
+      wopiSaveAsPath?: unknown;
+    };
+    expect(downloadOptions.fileType).toBe(513);
+    expect(downloadOptions.isSaveAs).toBe(false);
+    expect(downloadOptions.wopiSaveAsPath).toBeUndefined();
+    expect(downloadOptions.advancedOptions).toBe(harness.adjustPrintParams);
+    expect(
+      frameWindow.document.querySelector('[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]'),
+    ).toBeNull();
+    expect(harness.panelContext.contains(harness.printPanel)).toBe(true);
+    expect(harness.printPanel.style.display).toBe('none');
+    expect(harness.panelSaveAs.style.display).toBe('block');
+    expect(harness.printPanel.style.position).toBe('');
+    expect(harness.printController.onHidePrintMenu).toHaveBeenCalledTimes(1);
+    expect(harness.showFilePanel).toHaveBeenLastCalledWith('saveas');
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+
+    harness.showMenu.mockClear();
+    harness.showFilePanel.mockClear();
+    harness.ascDownloadAs.mockClear();
+    harness.printSettings.btnsPrint[0].setCaption.mockClear();
+    harness.printSettings.btnsSave[0].setCaption.mockClear();
+    harness.printSettingsShow.mockClear();
+    harness.printController.onHidePrintMenu.mockClear();
+
+    trigger('download:settings', {}, 521, true, '/alpha-copy.pdf');
+    expect(harness.showMenu).not.toHaveBeenCalledWith('file:printpreview');
+    expect(harness.showFilePanel).toHaveBeenLastCalledWith('save-copy');
+    expect(harness.printSettingsShow).toHaveBeenCalledTimes(1);
+    expect(harness.printMainHeader.textContent).toBe('另存副本');
+    const saveCopyPanel = frameWindow.document.querySelector(
+      '[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]',
+    );
+    expect(saveCopyPanel).toBe(harness.printPanel);
+    expect(harness.printPanel.querySelector('button[aria-label="关闭"]')).toBeNull();
+    expect(harness.panelContext.contains(harness.printPanel)).toBe(true);
+    expect(harness.printPanel.style.display).toBe('block');
+    expect(harness.panelSaveCopy.style.display).toBe('none');
+    expect(harness.printPanel.style.position).toBe('');
+    expect(harness.printPanel.style.top).toBe('');
+    expect(harness.printSettings.btnsPrint[0].setCaption).toHaveBeenCalledWith('保存副本');
+    expect(harness.printSettings.btnsSave[0].setCaption).toHaveBeenCalledWith('保存设置');
+
+    harness.printSettingsShow.mockClear();
+    harness.printSettings.show?.();
+    expect(harness.printSettingsShow).toHaveBeenCalledTimes(1);
+    expect(harness.printMainHeader.textContent).toBe('打印');
+    expect(
+      frameWindow.document.querySelector('[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]'),
+    ).toBeNull();
+
+    harness.printSettingsShow.mockClear();
+    trigger('download:settings', {}, 521, true, '/alpha-copy.pdf');
+    expect(harness.printSettingsShow).toHaveBeenCalledTimes(1);
+    expect(harness.printMainHeader.textContent).toBe('另存副本');
+
+    harness.printController.querySavePrintSettings('print-pdf', false);
+
+    expect(harness.ascDownloadAs).toHaveBeenCalledTimes(1);
+    const saveCopyOptions = harness.ascDownloadAs.mock.calls[0][0] as {
+      advancedOptions?: unknown;
+      fileType?: unknown;
+      isSaveAs?: unknown;
+      wopiSaveAsPath?: unknown;
+    };
+    expect(saveCopyOptions.fileType).toBe(521);
+    expect(saveCopyOptions.isSaveAs).toBe(true);
+    expect(saveCopyOptions.wopiSaveAsPath).toBe('/alpha-copy.pdf');
+    expect(saveCopyOptions.advancedOptions).toBe(harness.adjustPrintParams);
+    expect(
+      frameWindow.document.querySelector('[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]'),
+    ).toBeNull();
+    expect(harness.panelContext.contains(harness.printPanel)).toBe(true);
+    expect(harness.printPanel.style.display).toBe('none');
+    expect(harness.panelSaveCopy.style.display).toBe('block');
+    expect(harness.printPanel.style.position).toBe('');
+    expect(harness.printController.onHidePrintMenu).toHaveBeenCalledTimes(1);
+    expect(harness.showFilePanel).toHaveBeenLastCalledWith('save-copy');
+    expect(harness.originalTrigger).toHaveBeenCalledWith(
+      'edit:complete',
+      expect.objectContaining({ id: 'toolbar' }),
+    );
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+
+    harness.originalTrigger.mockClear();
+    trigger('file:print', {});
+    expect(
+      frameWindow.document.querySelector('[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]'),
+    ).toBeNull();
+    expect(harness.originalTrigger).toHaveBeenCalledWith('file:print', {});
 
     await instance.destroy();
   });
@@ -1061,7 +1612,7 @@ describe('office editor runtime', () => {
     await waitForMessage();
 
     const downloadedFile = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as File;
-    expect(downloadedFile).toMatchObject({ name: 'alpha.zip' });
+    expect(downloadedFile).toMatchObject({ name: 'alpha_docx_md.zip' });
     const bytes = new Uint8Array(await downloadedFile.arrayBuffer());
     const latin1 = Array.from(bytes, (byte) => String.fromCharCode(byte)).join('');
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);

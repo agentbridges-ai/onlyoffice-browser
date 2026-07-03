@@ -207,6 +207,10 @@
     handleAuth(message) {
       const changes = this.server.getInitialChanges ? this.server.getInitialChanges() : [];
       const participants = this.server.getParticipants();
+      const documentOpenData =
+        this.server.getDocumentOpenData && message?.openCmd?.url
+          ? this.server.getDocumentOpenData(message.openCmd.url)
+          : { 'Editor.bin': message?.openCmd?.url };
       if (changes.length > 0) {
         this.sendMessageToOO({ type: 'authChanges', changes });
       }
@@ -228,7 +232,7 @@
         data: {
           type: 'open',
           status: 'ok',
-          data: { 'Editor.bin': message.openCmd.url },
+          data: documentOpenData,
         },
       });
       this.server.onAuth?.();
