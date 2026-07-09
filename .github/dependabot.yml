@@ -9,13 +9,3 @@ updates:
     labels:
       - scope:dependency
     target-branch: "main"
-
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: weekly
-      day: sunday
-      time: "01:00"
-    labels:
-      - scope:dependency
-    target-branch: "main"
