@@ -22,6 +22,14 @@ const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
 const OUTER_IFRAME_ALLOW = 'clipboard-read; clipboard-write; fullscreen';
 const PRINT_TITLE_RESTORE_MS = 45_000;
 
+function isHTMLElementContainer(value: unknown): value is HTMLElement {
+  if (value instanceof HTMLElement) return true;
+  if (!value || typeof value !== 'object') return false;
+  const element = value as Element;
+  const ownerHTMLElement = element.ownerDocument?.defaultView?.HTMLElement;
+  return typeof ownerHTMLElement === 'function' && value instanceof ownerHTMLElement;
+}
+
 type OfficeEmptyType = (typeof SUPPORTED_EMPTY_TYPES)[number];
 type OfficeEditorStatus = 'opening' | 'ready' | 'destroyed' | 'error';
 export type OfficeEditorMode = 'edit' | 'readonly' | 'preview';
@@ -420,6 +428,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private readonly prepared: PreparedHostInit;
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly pendingConfirmationRequests = new Map<string, PendingConfirmationRequest>();
+  private readonly parentWindow: Window;
   private iframe: HTMLIFrameElement | null = null;
   private port: MessagePort | null = null;
   private hostWindow: Window | null = null;
@@ -443,6 +452,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     this.prepared = prepared;
     this.hostOrigin = prepared.hostUrl.origin;
     this.state = prepared.initialState;
+    this.parentWindow = container.ownerDocument.defaultView || window;
   }
 
   static async create(container: HTMLElement, options: CreateOfficeEditorOptions): Promise<BrowserOfficeEditorProxy> {
@@ -458,7 +468,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     this.container.classList.add('office-editor-host');
     applyFillContainerDefaults(this.container);
 
-    const iframe = document.createElement('iframe');
+    const iframe = this.container.ownerDocument.createElement('iframe');
     iframe.className = 'office-editor-host-frame';
     iframe.title = this.prepared.options.fileName || 'Office editor';
     // Do not sandbox: native PDF printing needs same-origin script access inside
@@ -478,9 +488,9 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     });
 
     this.windowMessageListener = (event) => this.handleWindowMessage(event);
-    window.addEventListener('message', this.windowMessageListener);
+    this.parentWindow.addEventListener('message', this.windowMessageListener);
 
-    this.hostReadyTimeout = window.setTimeout(() => {
+    this.hostReadyTimeout = this.parentWindow.setTimeout(() => {
       this.failBeforeReady(new Error('Timed out waiting for the office host to become ready'));
     }, HOST_READY_TIMEOUT_MS);
 
@@ -761,14 +771,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
   private clearHostReadyTimeout(): void {
     if (this.hostReadyTimeout !== null) {
-      window.clearTimeout(this.hostReadyTimeout);
+      this.parentWindow.clearTimeout(this.hostReadyTimeout);
       this.hostReadyTimeout = null;
     }
   }
 
   private removeWindowMessageListener(): void {
     if (this.windowMessageListener) {
-      window.removeEventListener('message', this.windowMessageListener);
+      this.parentWindow.removeEventListener('message', this.windowMessageListener);
       this.windowMessageListener = null;
     }
   }
@@ -898,8 +908,8 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
           debugStats.hostResetDoneCount += 1;
           resolve();
         };
-        window.addEventListener('message', listener);
-        removeResetListener = () => window.removeEventListener('message', listener);
+        this.parentWindow.addEventListener('message', listener);
+        removeResetListener = () => this.parentWindow.removeEventListener('message', listener);
       });
       this.postToHost({
         protocol: OFFICE_HOST_PROTOCOL,
@@ -948,7 +958,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private getHostResetUrl(): string {
     const resetUrl = new URL(HOST_SELF_RESET_PATH, this.prepared.hostUrl.href);
     resetUrl.searchParams.set('sessionId', this.id);
-    resetUrl.searchParams.set('parentOrigin', window.location.origin);
+    resetUrl.searchParams.set('parentOrigin', this.prepared.hostUrl.searchParams.get('parentOrigin') || this.parentWindow.location.origin);
     return resetUrl.href;
   }
 
@@ -965,7 +975,7 @@ export async function createOfficeEditor(
   container: HTMLElement,
   options: CreateOfficeEditorOptions,
 ): Promise<OfficeEditorInstance> {
-  if (!(container instanceof HTMLElement)) {
+  if (!isHTMLElementContainer(container)) {
     throw new Error('createOfficeEditor requires an HTMLElement container');
   }
 

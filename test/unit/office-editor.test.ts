@@ -31,6 +31,7 @@ async function connectHost(
   onChildMessage?: (message: OfficeHostParentMessage, childPort: MessagePort) => void,
 ): Promise<{ childPort: MessagePort; iframe: HTMLIFrameElement; messages: OfficeHostParentMessage[] }> {
   const iframe = await waitForIframe(container);
+  const parentWindow = container.ownerDocument.defaultView || window;
   const sessionId = getSessionId(iframe);
   const hostOrigin = new URL(iframe.src).origin;
   const messages: OfficeHostParentMessage[] = [];
@@ -67,8 +68,8 @@ async function connectHost(
     },
   );
 
-  window.dispatchEvent(
-    new MessageEvent('message', {
+  parentWindow.dispatchEvent(
+    new parentWindow.MessageEvent('message', {
       origin: hostOrigin,
       source: iframe.contentWindow,
       data: {
@@ -102,6 +103,29 @@ describe('office-editor parent proxy', () => {
   it('keeps loadOfficeEditorApi as a parent-side no-op', async () => {
     await expect(loadOfficeEditorApi()).resolves.toBeUndefined();
     expect(document.querySelectorAll('script[data-office-editor-api="true"]')).toHaveLength(0);
+  });
+
+  it('accepts an HTMLElement container from another window', async () => {
+    const popupFrame = document.createElement('iframe');
+    document.body.appendChild(popupFrame);
+    const container = popupFrame.contentWindow!.document.createElement('div');
+    popupFrame.contentWindow!.document.body.appendChild(container);
+
+    expect(container).not.toBeInstanceOf(HTMLElement);
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'popup.docx'),
+      fileName: 'popup.docx',
+      destroyTimeoutMs: 1,
+    });
+    await connectHost(container);
+    const instance = await promise;
+
+    expect(container.classList.contains('office-editor-host')).toBe(true);
+    expect(container.querySelector('iframe')?.ownerDocument).toBe(popupFrame.contentWindow!.document);
+
+    await instance.destroy();
   });
 
   it('round-trips save-to-new-format confirmation through the isolated host', async () => {

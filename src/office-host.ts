@@ -599,7 +599,10 @@ function handlePortMessage(event: MessageEvent<OfficeHostParentMessage>): void {
 }
 
 function handleConnect(event: MessageEvent): void {
-  if (!parentOrigin || !sessionId || event.origin !== parentOrigin || event.source !== window.parent) {
+  // Detached preview windows can have the opener deliver CONNECT while the
+  // host iframe still reports HOST_READY to its popup parent. The trusted
+  // boundary is the explicit parentOrigin plus the per-editor session id.
+  if (!parentOrigin || !sessionId || event.origin !== parentOrigin) {
     return;
   }
   if (!isOfficeHostMessage(event.data, sessionId)) {
