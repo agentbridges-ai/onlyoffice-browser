@@ -61,6 +61,19 @@ const ZIP_DOWNLOAD_EXTENSIONS = new Set([
   'zip',
 ]);
 const NATIVE_HTML_DOWNLOAD_EXTENSIONS = new Set(['html', 'md', 'fb2', 'epub']);
+const RETURN_PREVIEW_ICON_NAME = 'qlementine-icons:preview-16';
+const RETURN_PREVIEW_ICON_BODY =
+  '<path fill="currentColor" fill-rule="evenodd" d="M12 4.57a.5.5 0 0 0-.024-.235l-.013-.063a1.5 1.5 0 0 0-.18-.434c-.092-.15-.222-.28-.482-.54L8.711.707c-.259-.26-.389-.39-.54-.483a1.5 1.5 0 0 0-.496-.193a.5.5 0 0 0-.235-.024C7.329.004 7.194.004 7.015.004h-2.21c-1.68 0-2.52 0-3.16.327a3.02 3.02 0 0 0-1.31 1.31C.008 2.283.008 3.12.008 4.8v6.4c0 1.68 0 2.52.327 3.16a3.02 3.02 0 0 0 1.31 1.31c.642.327 1.48.327 3.16.327h2.423c.401 0 .602-.523.347-.832a.45.45 0 0 0-.345-.168H4.8c-.857 0-1.44-.001-1.89-.038c-.438-.036-.663-.1-.819-.18a2 2 0 0 1-.874-.874c-.08-.156-.145-.38-.18-.819c-.036-.45-.037-1.03-.037-1.89v-6.4c0-.857 0-1.44.037-1.89c.036-.438.101-.663.18-.819c.192-.376.498-.682.874-.874c.156-.08.381-.145.82-.18C3.36.997 3.94.997 4.8.997H7v3.5a.5.5 0 0 0 .5.5H11v.547c0 .25.207.45.456.473c.285.025.543-.188.543-.474V4.99c0-.178 0-.313-.005-.425zM8 1.41L10.59 4H8z" clip-rule="evenodd"/><path fill="currentColor" fill-rule="evenodd" d="M11 15c.834 0 1.61-.255 2.25-.691l1.47 1.47a.749.749 0 1 0 1.06-1.06l-1.47-1.47c.436-.641.691-1.41.691-2.25c0-2.21-1.79-4-4-4s-4 1.79-4 4s1.79 4 4 4zm0-1c1.66 0 3-1.34 3-3s-1.34-3-3-3s-3 1.34-3 3s1.34 3 3 3" clip-rule="evenodd"/>';
+const RETURN_PREVIEW_AVATAR_ANCHOR_IDS = [
+  'slot-btn-user',
+  'slot-btn-users',
+  'slot-btn-user-info',
+  'slot-btn-user-menu',
+  'slot-btn-coauth',
+  'slot-btn-profile',
+  'id-btn-user',
+  'id-btn-users',
+] as const;
 
 type OfficeEmptyType = (typeof SUPPORTED_EMPTY_TYPES)[number];
 type OfficeEditorStatus = 'opening' | 'ready' | 'destroyed' | 'error';
@@ -100,6 +113,7 @@ export interface CreateOfficeEditorOptions {
   onSaveAs?: (file: File, instance: OfficeEditorInstance) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
   onDownload?: (file: File, instance: OfficeEditorInstance) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
+  onStateChange?: (state: OfficeEditorState, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
 }
 
@@ -563,9 +577,9 @@ function installModernOnlyOfficeThemeFilter(frameWindow: OnlyOfficeFrameWindow |
 }
 
 function shouldFitEditorModePreviewToWidth(fileType: string, previewMode: boolean): boolean {
-  if (previewMode) return false;
   const documentType = getDocumentType(fileType);
-  return documentType === 'word' || documentType === 'slide';
+  if (documentType === 'word') return true;
+  return !previewMode && documentType === 'slide';
 }
 
 function getDefaultEditorModePreviewZoom(fileType: string, previewMode: boolean): number | undefined {
@@ -1648,6 +1662,14 @@ function applyOnlyOfficeFrameDefaults(iframe: HTMLIFrameElement): void {
   iframe.style.border ||= '0';
 }
 
+function hideIframeForTeardown(iframe: HTMLIFrameElement): void {
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.visibility = 'hidden';
+  iframe.style.opacity = '0';
+  iframe.style.pointerEvents = 'none';
+  iframe.style.background = 'transparent';
+}
+
 function isPrintPdfUrl(value: unknown, baseUrl: string): boolean {
   if (!value) return false;
   try {
@@ -1870,14 +1892,19 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private destroyed = false;
   private readonly fileName: string;
   private readonly fileType: string;
+  private binData: BlobPart;
   private readonly originalFile?: File;
   private readonly sourceKind: OfficeEditorSourceKind;
   private readonly editorLang: string;
   private readonly readonlyMode: { value: boolean };
-  private readonly previewMode: boolean;
+  private readonly previewEditAllowed: boolean;
+  private editorMode: OfficeEditorMode;
   private destroyPromise: Promise<void> | null = null;
   private downloadAsInterceptorRetryId: number | null = null;
   private downloadAsInterceptorAttempts = 0;
+  private switchingPreviewMode = false;
+  private nativeEditModeBridgeCleanup: (() => void) | null = null;
+  private nativeEditModeBridgeRetryId: number | null = null;
 
   private constructor(
     container: HTMLElement,
@@ -1891,14 +1918,20 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.placeholder = placeholder;
     this.fileName = prepared.fileName;
     this.fileType = prepared.fileType;
+    this.binData = prepared.binData;
     this.originalFile = prepared.originalFile;
     this.sourceKind = prepared.sourceKind;
     this.sourceObjectUrl = prepared.sourceObjectUrl || null;
     this.media = prepared.media || {};
     this.editorLang = options.lang || getOnlyOfficeLang();
     const initialMode = resolveInitialMode(options);
-    this.previewMode = initialMode === 'preview';
+    this.editorMode = initialMode;
+    this.previewEditAllowed = initialMode === 'preview' && options.readonly !== true;
     this.readonlyMode = { value: initialMode !== 'edit' };
+  }
+
+  private get previewMode(): boolean {
+    return this.editorMode === 'preview';
   }
 
   static async create(container: HTMLElement, options: CreateOfficeEditorOptions): Promise<BrowserOfficeEditor> {
@@ -1908,11 +1941,11 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     const prepared = await prepareDocument(options);
     const placeholder = document.createElement('div');
     const instance = new BrowserOfficeEditor(container, options, prepared, placeholder);
-    await instance.mount(prepared);
+    await instance.mount();
     return instance;
   }
 
-  private async mount(prepared: PreparedDocument): Promise<void> {
+  private async mount(): Promise<void> {
     const runtimeWindow = window as RuntimeWindow;
     if (!runtimeWindow.DocsAPI?.DocEditor) {
       throw new Error('OnlyOffice 9.3.0 browser wrapper is not available');
@@ -1926,7 +1959,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     applyFillContainerDefaults(this.placeholder);
     this.container.appendChild(this.placeholder);
 
-    this.editorBinUrl = createObjectUrl(new Blob([prepared.binData], { type: 'application/octet-stream' }));
+    this.editorBinUrl = createObjectUrl(new Blob([this.binData], { type: 'application/octet-stream' }));
     registerMedia(this.id, this.media);
     activeInstances.set(this.id, this);
 
@@ -1937,8 +1970,9 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       const uiTheme = normalizeOfficeInterfaceTheme(this.options.interfaceTheme);
       persistOnlyOfficeInterfaceTheme(uiTheme);
       const canEditInitially = !this.previewMode && !this.readonlyMode.value;
+      const canRequestEditFromPreview = this.previewMode && this.previewEditAllowed;
       const editor = new runtimeWindow.DocsAPI.DocEditor(this.placeholder.id, {
-        type: this.previewMode ? 'embedded' : 'desktop',
+        type: 'desktop',
         width: '100%',
         height: '100%',
         documentType: getDocumentType(this.fileType) || undefined,
@@ -1948,8 +1982,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           fileType: this.fileType,
           key: `local-${this.id}-${Date.now()}`,
           permissions: {
-            edit: canEditInitially,
-            download: !this.previewMode,
+            edit: canRequestEditFromPreview || canEditInitially,
+            download: true,
             chat: false,
             protect: false,
           },
@@ -1965,12 +1999,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             id: LOCAL_ONLYOFFICE_USER_ID,
             name: LOCAL_ONLYOFFICE_USER_NAME,
           },
-          embedded: this.previewMode
-            ? {
-                autostart: 'document',
-                toolbarDocked: 'top',
-              }
-            : undefined,
+          embedded: undefined,
           customization: {
             help: false,
             about: false,
@@ -2000,6 +2029,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             this.installModernThemeFilter();
             installNestedFontPickerFilter();
             this.installSpreadsheetPdfPrintPanelBridge();
+            this.installNativeEditModeBridge();
             this.scheduleNativeDownloadAsInterceptor();
           },
           onDocumentReady: () => {
@@ -2008,6 +2038,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             this.installModernThemeFilter();
             installNestedFontPickerFilter();
             this.installSpreadsheetPdfPrintPanelBridge();
+            this.installNativeEditModeBridge();
             this.scheduleNativeDownloadAsInterceptor();
             this.status = 'ready';
             this.applyDefaultEditorModePreviewZoom();
@@ -2025,6 +2056,9 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           onRequestSaveAs: (event: RequestSaveAsEvent) => {
             void this.handleRequestSaveAs(event);
           },
+          onRequestEditRights: () => {
+            void this.handleRequestEditRights();
+          },
           writeFile: (event: any) => {
             void this.handleWriteFile(event);
           },
@@ -2034,6 +2068,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       this.editor = editor;
       this.applyNestedEditorFrameDefaults();
       this.installModernThemeFilter();
+      this.installNativeEditModeBridge();
       this.attachDestroyCleanup(editor);
       this.scheduleNativeDownloadAsInterceptor();
 
@@ -2116,12 +2151,246 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     }
   }
 
+  private clearNativeEditModeBridgeRetry(): void {
+    if (this.nativeEditModeBridgeRetryId === null) return;
+    window.clearTimeout(this.nativeEditModeBridgeRetryId);
+    this.nativeEditModeBridgeRetryId = null;
+  }
+
+  private scheduleNativeEditModeBridgeRetry(): void {
+    if (this.nativeEditModeBridgeRetryId !== null || this.destroyed) return;
+    this.nativeEditModeBridgeRetryId = window.setTimeout(() => {
+      this.nativeEditModeBridgeRetryId = null;
+      this.installNativeEditModeBridge();
+    }, 200);
+  }
+
+  private installNativeEditModeBridge(): void {
+    if (!this.previewEditAllowed) {
+      this.clearNativeEditModeBridgeRetry();
+      return;
+    }
+
+    const frameWindow = this.getFrameEditorWindow();
+    const frameDocument = frameWindow?.document;
+    if (!frameWindow || !frameDocument) {
+      this.scheduleNativeEditModeBridgeRetry();
+      return;
+    }
+
+    this.clearNativeEditModeBridgeRetry();
+    this.nativeEditModeBridgeCleanup?.();
+    this.nativeEditModeBridgeCleanup = null;
+
+    let checkTimeoutId: number | null = null;
+    const getNativeModeCaption = () =>
+      frameDocument
+        .querySelector('#slot-btn-edit-mode .btn.dropdown-toggle .caption')
+        ?.textContent
+        ?.replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase() || '';
+    const isVisibleElement = (element: Element | null) => {
+      const FrameHTMLElement = (frameWindow as Window & { HTMLElement?: typeof HTMLElement }).HTMLElement || HTMLElement;
+      if (!element || !(element instanceof FrameHTMLElement)) return false;
+      const style = frameWindow.getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      return element.getClientRects().length > 0 || /\bjsdom\b/i.test(frameWindow.navigator.userAgent);
+    };
+    const hasNativeEditToolbar = () => isVisibleElement(frameDocument.getElementById('home'));
+    const returnPreviewTitle = this.editorLang.toLowerCase().startsWith('zh') ? '返回预览' : 'Return to preview';
+    const ensureNativeReturnPreviewStyle = () => {
+      if (frameDocument.getElementById('onlyoffice-browser-return-preview-mode-style')) return;
+      const style = frameDocument.createElement('style');
+      style.id = 'onlyoffice-browser-return-preview-mode-style';
+      style.textContent = `
+        #onlyoffice-browser-return-preview-mode {
+          display: inline-flex;
+          align-items: center;
+          vertical-align: middle;
+          margin: 0 4px 0 2px;
+        }
+        #onlyoffice-browser-return-preview-mode .onlyoffice-browser-return-preview-mode-button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 32px;
+          width: 32px;
+          height: 32px;
+          padding: 0;
+          border: 0;
+          border-radius: 4px;
+          background: transparent;
+          color: var(--text-toolbar-header, var(--text-normal, #f2f2f2));
+          font: inherit;
+          line-height: 1;
+          cursor: pointer;
+        }
+        #onlyoffice-browser-return-preview-mode .onlyoffice-browser-return-preview-mode-button:hover,
+        #onlyoffice-browser-return-preview-mode .onlyoffice-browser-return-preview-mode-button:focus-visible {
+          background: var(--highlight-header-button-hover, rgba(255, 255, 255, 0.12));
+          outline: none;
+        }
+        #onlyoffice-browser-return-preview-mode .onlyoffice-browser-return-preview-mode-icon {
+          display: block;
+          width: 16px;
+          height: 16px;
+          flex: 0 0 auto;
+        }
+      `;
+      frameDocument.head.appendChild(style);
+    };
+    const getButtonSlotAnchor = (element: Element) =>
+      element.closest('.btn-slot, .btn-group, .toolbar-item, .toolbar-group') || element;
+    const getNativeUserAvatarAnchor = () => {
+      for (const id of RETURN_PREVIEW_AVATAR_ANCHOR_IDS) {
+        const element = frameDocument.getElementById(id);
+        if (element && isVisibleElement(element)) return getButtonSlotAnchor(element);
+      }
+
+      const isJSDOM = /\bjsdom\b/i.test(frameWindow.navigator.userAgent);
+      const candidates = frameDocument.querySelectorAll(
+        'button, [role="button"], .btn, .btn-slot, [id*="user"], [class*="user"], [id*="avatar"], [class*="avatar"], [id*="profile"], [class*="profile"], [id*="coauth"], [class*="coauth"]',
+      );
+      for (const element of Array.from(candidates)) {
+        if (!isVisibleElement(element)) continue;
+        const text = element.textContent?.replace(/\s+/g, '').trim() || '';
+        if (!/^[A-Z]{1,3}$/.test(text)) continue;
+        if (!isJSDOM) {
+          const rect = element.getBoundingClientRect();
+          if (rect.top > 64 || rect.width > 96 || rect.height > 48) continue;
+        }
+        return getButtonSlotAnchor(element);
+      }
+
+      return null;
+    };
+    const getNativeReturnPreviewAnchor = () =>
+      getNativeUserAvatarAnchor() ||
+      frameDocument.getElementById('slot-btn-search') ||
+      frameDocument.getElementById('slot-btn-print') ||
+      frameDocument.getElementById('title-doc-name') ||
+      frameDocument.getElementById('toolbar');
+    const removeNativeReturnPreviewButton = () => {
+      frameDocument.getElementById('onlyoffice-browser-return-preview-mode')?.remove();
+    };
+    const syncNativeReturnPreviewButton = () => {
+      if (this.destroyed || this.previewMode || this.readonlyMode.value) {
+        removeNativeReturnPreviewButton();
+        return;
+      }
+
+      const anchor = getNativeReturnPreviewAnchor();
+      const host = anchor?.parentElement;
+      if (!anchor || !host) return;
+
+      ensureNativeReturnPreviewStyle();
+      let buttonSlot = frameDocument.getElementById('onlyoffice-browser-return-preview-mode');
+      if (!buttonSlot) {
+        buttonSlot = frameDocument.createElement('span');
+        buttonSlot.id = 'onlyoffice-browser-return-preview-mode';
+        buttonSlot.className = 'btn-slot onlyoffice-browser-return-preview-mode';
+        const button = frameDocument.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-header onlyoffice-browser-return-preview-mode-button';
+        button.title = returnPreviewTitle;
+        button.setAttribute('aria-label', returnPreviewTitle);
+        const icon = frameDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        icon.classList.add('onlyoffice-browser-return-preview-mode-icon');
+        icon.setAttribute('viewBox', '0 0 16 16');
+        icon.setAttribute('width', '16');
+        icon.setAttribute('height', '16');
+        icon.setAttribute('aria-hidden', 'true');
+        icon.setAttribute('focusable', 'false');
+        icon.setAttribute('data-iconify-icon', RETURN_PREVIEW_ICON_NAME);
+        icon.innerHTML = RETURN_PREVIEW_ICON_BODY;
+        button.appendChild(icon);
+        button.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void this.handleReturnToPreview();
+        });
+        buttonSlot.appendChild(button);
+      }
+
+      if (buttonSlot.parentElement !== host || buttonSlot.nextSibling !== anchor) {
+        host.insertBefore(buttonSlot, anchor);
+      }
+    };
+    const isNativeEditMode = () => {
+      const caption = getNativeModeCaption();
+      return (caption.startsWith('edit') || caption.startsWith('编辑')) && hasNativeEditToolbar();
+    };
+    const isNativePreviewMode = () => {
+      const caption = getNativeModeCaption();
+      return caption.startsWith('view') || caption.startsWith('查看') || caption.startsWith('preview') || caption.startsWith('预览');
+    };
+    const syncNativeEditMode = () => {
+      checkTimeoutId = null;
+      if (this.destroyed || !this.previewEditAllowed || this.switchingPreviewMode) return;
+      if (this.previewMode) {
+        if (!isNativeEditMode()) return;
+        this.editorMode = 'edit';
+        this.readonlyMode.value = false;
+        this.notifyStateChange();
+        syncNativeReturnPreviewButton();
+        return;
+      }
+      syncNativeReturnPreviewButton();
+      if (!this.readonlyMode.value && isNativePreviewMode()) {
+        void this.handleReturnToPreview();
+      }
+    };
+    const checkIntervalId = frameWindow.setInterval(() => syncNativeEditMode(), 250);
+    const scheduleSync = () => {
+      if (checkTimeoutId !== null) {
+        frameWindow.clearTimeout(checkTimeoutId);
+      }
+      checkTimeoutId = frameWindow.setTimeout(syncNativeEditMode, 0);
+    };
+
+    const editModeSlot = frameDocument.getElementById('slot-btn-edit-mode');
+    const observer = typeof MutationObserver === 'function'
+      ? new MutationObserver(scheduleSync)
+      : null;
+    observer?.observe(editModeSlot || frameDocument.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'title', 'aria-label'],
+    });
+    frameDocument.addEventListener('click', scheduleSync, true);
+    frameDocument.addEventListener('keyup', scheduleSync, true);
+    scheduleSync();
+
+    this.nativeEditModeBridgeCleanup = () => {
+      removeNativeReturnPreviewButton();
+      observer?.disconnect();
+      frameDocument.removeEventListener('click', scheduleSync, true);
+      frameDocument.removeEventListener('keyup', scheduleSync, true);
+      if (checkTimeoutId !== null) {
+        frameWindow.clearTimeout(checkTimeoutId);
+        checkTimeoutId = null;
+      }
+      frameWindow.clearInterval(checkIntervalId);
+      this.clearNativeEditModeBridgeRetry();
+    };
+  }
+
   private getNestedEditorWindow(): OnlyOfficeFrameWindow | null {
     const editorWindow = this.editor?.getEditorWindow?.() as OnlyOfficeFrameWindow | null | undefined;
     if (editorWindow) return editorWindow;
 
-    const frame = this.placeholder.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
-    return (frame?.contentWindow as OnlyOfficeFrameWindow | null | undefined) || null;
+    return this.getFrameEditorWindow();
+  }
+
+  private getFrameEditorWindow(): OnlyOfficeFrameWindow | null {
+    const frame =
+      this.placeholder.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]') ||
+      this.container.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+    const frameWindow = frame?.contentWindow as OnlyOfficeFrameWindow | null | undefined;
+    return frameWindow || null;
   }
 
   private getNativeEditorApi(): OnlyOfficeEditorApi | null {
@@ -2569,6 +2838,18 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.downloadAsInterceptorRetryId = window.setTimeout(retry, 50);
   }
 
+  private clearNativeDownloadAsInterceptorRetry(): void {
+    if (this.downloadAsInterceptorRetryId === null) return;
+    window.clearTimeout(this.downloadAsInterceptorRetryId);
+    this.downloadAsInterceptorRetryId = null;
+  }
+
+  private notifyStateChange(): void {
+    void Promise.resolve(this.options.onStateChange?.(this.getState(), this)).catch((error) => {
+      this.options.onError?.(toError(error), this);
+    });
+  }
+
   async confirmSaveToNewFormat(options: OfficeSaveToNewFormatConfirmationOptions = {}): Promise<boolean> {
     const frameWindow = this.getNestedEditorWindow();
     const warning = frameWindow?.Common?.UI?.warning;
@@ -2608,6 +2889,86 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       enabled: canEdit,
       message,
     });
+  }
+
+  private revokeCurrentEditorBinUrl(): void {
+    if (!this.editorBinUrl) return;
+    URL.revokeObjectURL(this.editorBinUrl);
+    this.editorBinUrl = null;
+  }
+
+  private releasePrintResourceUrls(): void {
+    for (const url of this.printResourceUrls) {
+      if (url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      } else {
+        void deleteCachedPrintPdf(url);
+      }
+    }
+    this.printResourceUrls.clear();
+  }
+
+  private async remountCurrentEditor(): Promise<void> {
+    this.cleanupSaveRequest(new Error('Editor was reopened before save completed'));
+    this.clearNativeDownloadAsInterceptorRetry();
+    this.clearNativeEditModeBridgeRetry();
+    this.nativeEditModeBridgeCleanup?.();
+    this.nativeEditModeBridgeCleanup = null;
+    try {
+      this.editor?.destroyEditor?.();
+    } catch (error) {
+      console.warn('Failed to destroy editor before reopening:', error);
+    }
+    this.editor = null;
+    await this.blankAndRemoveIframes();
+    this.placeholder.remove();
+    this.container.replaceChildren();
+    this.revokeCurrentEditorBinUrl();
+    this.releasePrintResourceUrls();
+    await this.mount();
+  }
+
+  private async handleRequestEditRights(): Promise<void> {
+    if (this.destroyed || !this.previewMode || !this.previewEditAllowed || this.switchingPreviewMode) return;
+    this.switchingPreviewMode = true;
+    this.status = 'opening';
+    this.editorMode = 'edit';
+    this.readonlyMode.value = false;
+    this.notifyStateChange();
+
+    try {
+      await this.remountCurrentEditor();
+    } catch (error) {
+      if (!this.destroyed) {
+        this.status = 'error';
+        this.options.onError?.(toError(error), this);
+      }
+    } finally {
+      this.switchingPreviewMode = false;
+    }
+  }
+
+  private async handleReturnToPreview(): Promise<void> {
+    if (this.destroyed || this.previewMode || !this.previewEditAllowed || this.switchingPreviewMode) return;
+    this.switchingPreviewMode = true;
+
+    try {
+      if (this.dirty) {
+        await this.save(getFileExtension(this.fileName).toUpperCase());
+      }
+      if (this.destroyed) return;
+      this.status = 'opening';
+      this.editorMode = 'preview';
+      this.readonlyMode.value = true;
+      this.notifyStateChange();
+      await this.remountCurrentEditor();
+    } catch (error) {
+      if (!this.destroyed) {
+        this.options.onError?.(toError(error), this);
+      }
+    } finally {
+      this.switchingPreviewMode = false;
+    }
   }
 
   private applyDefaultEditorModePreviewZoom(): void {
@@ -2851,6 +3212,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
 
   private async emitSavedFile(file: File): Promise<void> {
     await this.persistSavedFile(file);
+    this.binData = await file.arrayBuffer();
     this.setDirty(false);
     this.resolveSaveRequest(file);
   }
@@ -3108,14 +3470,19 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
 
   setReadonly(readonly: boolean): void {
     if (this.previewMode && !readonly) {
-      throw new Error('Preview mode cannot be switched to editing; recreate the editor with mode: "edit".');
+      void this.handleRequestEditRights();
+      return;
+    }
+    if (!this.previewMode && readonly && this.previewEditAllowed) {
+      void this.handleReturnToPreview();
+      return;
     }
     this.readonlyMode.value = readonly;
     this.applyReadonlyState();
   }
 
   getState(): OfficeEditorState {
-    const mode: OfficeEditorMode = this.previewMode ? 'preview' : this.readonlyMode.value ? 'readonly' : 'edit';
+    const mode: OfficeEditorMode = this.editorMode === 'preview' ? 'preview' : this.readonlyMode.value ? 'readonly' : 'edit';
     return {
       id: this.id,
       fileName: this.fileName,
@@ -3133,10 +3500,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     if (this.destroyPromise) return this.destroyPromise;
     this.destroyed = true;
     this.status = 'destroyed';
-    if (this.downloadAsInterceptorRetryId !== null) {
-      window.clearTimeout(this.downloadAsInterceptorRetryId);
-      this.downloadAsInterceptorRetryId = null;
-    }
+    this.clearNativeDownloadAsInterceptorRetry();
+    this.clearNativeEditModeBridgeRetry();
+    this.nativeEditModeBridgeCleanup?.();
+    this.nativeEditModeBridgeCleanup = null;
     this.cleanupSaveRequest(new Error('Editor was destroyed before save completed'));
 
     this.destroyPromise = this.destroyInternal();
@@ -3155,22 +3522,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.placeholder.remove();
     this.container.replaceChildren();
 
-    if (this.editorBinUrl) {
-      URL.revokeObjectURL(this.editorBinUrl);
-      this.editorBinUrl = null;
-    }
+    this.revokeCurrentEditorBinUrl();
     if (this.sourceObjectUrl) {
       URL.revokeObjectURL(this.sourceObjectUrl);
       this.sourceObjectUrl = null;
     }
-    for (const url of this.printResourceUrls) {
-      if (url.startsWith('blob:')) {
-        URL.revokeObjectURL(url);
-      } else {
-        void deleteCachedPrintPdf(url);
-      }
-    }
-    this.printResourceUrls.clear();
+    this.releasePrintResourceUrls();
 
     for (const url of Object.values(this.media)) {
       if (url.startsWith('blob:')) {
@@ -3194,6 +3551,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
 
     await Promise.all(
       Array.from(frames).map(async (frame) => {
+        hideIframeForTeardown(frame);
         this.cleanupFrameWindow(frame);
         if (frame.isConnected) {
           const loaded = new Promise<void>((resolve) => {

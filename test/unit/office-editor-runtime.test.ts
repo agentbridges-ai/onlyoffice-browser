@@ -33,6 +33,16 @@ function waitForMessage(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('Timed out waiting for condition');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function asciiBytes(value: string): Uint8Array {
   return Uint8Array.from(value, (char) => char.charCodeAt(0) & 0xff);
 }
@@ -106,6 +116,10 @@ type CapturedDocEditorConfig = {
       mode?: 'fast' | 'strict';
       change?: boolean;
     };
+    embedded?: {
+      autostart?: 'document' | 'player';
+      toolbarDocked?: 'top' | 'bottom';
+    };
     customization: {
       zoom?: number;
       spellcheck?: boolean;
@@ -139,6 +153,7 @@ type CapturedDocEditorConfig = {
     onDocumentStateChange?: (event: boolean | { data?: boolean }) => void;
     onDownloadAs?: (event: { data?: { url?: string; fileType?: string | number; title?: string } }) => void;
     onRequestSaveAs?: (event: { data?: { url?: string; fileType?: string | number; title?: string } }) => void;
+    onRequestEditRights?: () => void;
   };
 };
 
@@ -709,7 +724,284 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
-  it('passes converted media URLs into the embedded documentOpen map', async () => {
+  it('hides editor iframes before blank teardown to avoid white-frame flashes', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'preview',
+    });
+    await flush();
+
+    const frame = container.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+    expect(frame).toBeTruthy();
+    const sourceDescriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+    expect(sourceDescriptor?.get).toEqual(expect.any(Function));
+    expect(sourceDescriptor?.set).toEqual(expect.any(Function));
+    const assignments: Array<{
+      src: string;
+      visibility: string;
+      opacity: string;
+      pointerEvents: string;
+      ariaHidden: string | null;
+    }> = [];
+    Object.defineProperty(frame!, 'src', {
+      configurable: true,
+      get() {
+        return sourceDescriptor!.get!.call(this);
+      },
+      set(value: string) {
+        assignments.push({
+          src: value,
+          visibility: frame!.style.visibility,
+          opacity: frame!.style.opacity,
+          pointerEvents: frame!.style.pointerEvents,
+          ariaHidden: frame!.getAttribute('aria-hidden'),
+        });
+        sourceDescriptor!.set!.call(this, value);
+        frame!.dispatchEvent(new Event('load'));
+      },
+    });
+
+    await instance.destroy();
+
+    expect(assignments).toContainEqual({
+      src: 'about:blank',
+      visibility: 'hidden',
+      opacity: '0',
+      pointerEvents: 'none',
+      ariaHidden: 'true',
+    });
+  });
+
+  it('opens preview mode as the desktop common viewer while allowing edit-rights requests', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'preview',
+      readonly: false,
+      lang: 'zh',
+    });
+    await flush();
+
+    expect(docEditorConfigs[0].type).toBe('desktop');
+    expect(docEditorConfigs[0].editorConfig.mode).toBe('view');
+    expect(docEditorConfigs[0].editorConfig.embedded).toBeUndefined();
+    expect(docEditorConfigs[0].document.permissions.edit).toBe(true);
+    expect(docEditorConfigs[0].document.permissions.download).toBe(true);
+    expect(docEditorConfigs[0].events.onRequestEditRights).toEqual(expect.any(Function));
+    expect(instance.getState()).toMatchObject({ mode: 'preview', readonly: true });
+
+    await instance.destroy();
+  });
+
+  it('keeps readonly preview files in the desktop common viewer without edit rights', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'preview',
+      readonly: true,
+    });
+    await flush();
+
+    expect(docEditorConfigs[0].type).toBe('desktop');
+    expect(docEditorConfigs[0].editorConfig.mode).toBe('view');
+    expect(docEditorConfigs[0].document.permissions.edit).toBe(false);
+    expect(docEditorConfigs[0].document.permissions.download).toBe(true);
+    expect(instance.getState()).toMatchObject({ mode: 'preview', readonly: true });
+
+    await instance.destroy();
+  });
+
+  it('reopens a preview document in edit mode when OnlyOffice requests edit rights', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'preview',
+      readonly: false,
+      lang: 'zh',
+    });
+    await flush();
+
+    docEditorConfigs[0].events.onRequestEditRights?.();
+    await waitForCondition(() => docEditorConfigs.length === 2);
+    await flush();
+
+    expect(docEditorInstances[1]).not.toBe(docEditorInstances[0]);
+    expect(container.querySelectorAll('iframe[name="frameEditor"]')).toHaveLength(1);
+    expect(docEditorConfigs[1].type).toBe('desktop');
+    expect(docEditorConfigs[1].editorConfig.mode).toBe('edit');
+    expect(docEditorConfigs[1].editorConfig.embedded).toBeUndefined();
+    expect(docEditorConfigs[1].document.permissions.edit).toBe(true);
+    expect(docEditorConfigs[1].document.permissions.download).toBe(true);
+    expect(instance.getState()).toMatchObject({ mode: 'edit', readonly: false, status: 'ready' });
+
+    await instance.destroy();
+  });
+
+  it('tracks native common-viewer edit mode changes without requiring a remount', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onStateChange = vi.fn();
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'preview',
+      readonly: false,
+      onStateChange,
+    });
+    await flush();
+
+    const frame = container.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+    const frameWindow = frame?.contentWindow;
+    const frameDocument = frameWindow?.document;
+    expect(frameWindow).toBeTruthy();
+    expect(frameDocument).toBeTruthy();
+
+    const slot = frameDocument!.createElement('div');
+    slot.id = 'slot-btn-edit-mode';
+    const button = frameDocument!.createElement('button');
+    button.className = 'btn dropdown-toggle';
+    const caption = frameDocument!.createElement('span');
+    caption.className = 'caption';
+    caption.textContent = '查看';
+    button.appendChild(caption);
+    slot.appendChild(button);
+    frameDocument!.body.appendChild(slot);
+    const homeTab = frameDocument!.createElement('button');
+    homeTab.id = 'home';
+    homeTab.textContent = '开始';
+    frameDocument!.body.appendChild(homeTab);
+    await waitForMessage();
+
+    expect(instance.getState()).toMatchObject({ mode: 'preview', readonly: true });
+
+    caption.textContent = '编辑';
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await waitForCondition(() => instance.getState().mode === 'edit');
+
+    expect(docEditorConfigs).toHaveLength(1);
+    expect(instance.getState()).toMatchObject({ mode: 'edit', readonly: false, status: 'ready' });
+    expect(onStateChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: 'edit', readonly: false }),
+      instance,
+    );
+
+    await instance.destroy();
+  });
+
+  it('shows an integrated OnlyOffice preview button for returning a preview-derived edit session', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'preview',
+      readonly: false,
+      lang: 'zh',
+    });
+    await flush();
+
+    const frame = container.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+    const frameWindow = frame?.contentWindow;
+    const frameDocument = frameWindow?.document;
+    expect(frameWindow).toBeTruthy();
+    expect(frameDocument).toBeTruthy();
+
+    const slot = frameDocument!.createElement('div');
+    slot.id = 'slot-btn-edit-mode';
+    const button = frameDocument!.createElement('button');
+    button.className = 'btn dropdown-toggle';
+    const caption = frameDocument!.createElement('span');
+    caption.className = 'caption';
+    caption.textContent = '编辑';
+    button.appendChild(caption);
+    slot.appendChild(button);
+    frameDocument!.body.appendChild(slot);
+    const searchSlot = frameDocument!.createElement('span');
+    searchSlot.id = 'slot-btn-search';
+    searchSlot.className = 'btn-slot';
+    frameDocument!.body.appendChild(searchSlot);
+    const avatarSlot = frameDocument!.createElement('span');
+    avatarSlot.id = 'slot-btn-user';
+    avatarSlot.className = 'btn-slot';
+    avatarSlot.textContent = 'LU';
+    frameDocument!.body.appendChild(avatarSlot);
+    const homeTab = frameDocument!.createElement('button');
+    homeTab.id = 'home';
+    homeTab.textContent = '开始';
+    frameDocument!.body.appendChild(homeTab);
+
+    await waitForCondition(() => instance.getState().mode === 'edit');
+    await waitForCondition(() => !!frameDocument!.querySelector('#onlyoffice-browser-return-preview-mode button'));
+    expect(docEditorConfigs).toHaveLength(1);
+
+    const returnPreviewButton = frameDocument!.querySelector<HTMLButtonElement>(
+      '#onlyoffice-browser-return-preview-mode button',
+    );
+    expect(returnPreviewButton?.textContent?.trim()).toBe('');
+    expect(
+      returnPreviewButton?.querySelector('svg[data-iconify-icon="qlementine-icons:preview-16"]'),
+    ).toBeTruthy();
+    expect(caption.textContent).toBe('编辑');
+    expect(slot.dataset.officeBrowserModeAction).toBeUndefined();
+    expect(frameDocument!.getElementById('onlyoffice-browser-return-preview-mode')?.nextSibling).toBe(avatarSlot);
+
+    returnPreviewButton!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await waitForCondition(() => docEditorConfigs.length === 2);
+    await flush();
+
+    expect(docEditorConfigs[1].type).toBe('desktop');
+    expect(docEditorConfigs[1].editorConfig.mode).toBe('view');
+    expect(instance.getState()).toMatchObject({ mode: 'preview', readonly: true, status: 'ready' });
+
+    await instance.destroy();
+  });
+
+  it('reopens a preview-derived editor back in view mode when readonly is restored', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'preview',
+      readonly: false,
+    });
+    await flush();
+
+    docEditorConfigs[0].events.onRequestEditRights?.();
+    await waitForCondition(() => docEditorConfigs.length === 2);
+    await flush();
+
+    instance.setReadonly(true);
+    await waitForCondition(() => docEditorConfigs.length === 3);
+    await flush();
+
+    expect(docEditorConfigs[2].type).toBe('desktop');
+    expect(docEditorConfigs[2].editorConfig.mode).toBe('view');
+    expect(docEditorConfigs[2].editorConfig.embedded).toBeUndefined();
+    expect(docEditorConfigs[2].document.permissions.edit).toBe(true);
+    expect(instance.getState()).toMatchObject({ mode: 'preview', readonly: true, status: 'ready' });
+
+    await instance.destroy();
+  });
+
+  it('passes converted media URLs into the common viewer documentOpen map', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const media = {
@@ -731,7 +1023,7 @@ describe('office editor runtime', () => {
     const server = docEditorInstances[0].connectMockServer.mock.calls[0][0] as {
       getDocumentOpenData?: (documentUrl: string) => Record<string, string>;
     };
-    expect(docEditorConfigs[0].type).toBe('embedded');
+    expect(docEditorConfigs[0].type).toBe('desktop');
     expect(server.getDocumentOpenData?.('blob:document-bin')).toEqual({
       'Editor.bin': 'blob:document-bin',
       ...media,
@@ -2238,8 +2530,9 @@ endobj
 
   it.each([
     ['alpha.docx', 'edit', 'de-settings-zoom'],
+    ['alpha.docx', 'preview', 'de-settings-zoom'],
     ['slides.pptx', 'readonly', 'pe-settings-zoom'],
-  ] as const)('fits %s editor-mode preview to width by default', async (fileName, mode, storageKey) => {
+  ] as const)('fits %s in %s mode to width by default', async (fileName, mode, storageKey) => {
     const container = document.createElement('div');
     document.body.appendChild(container);
 
@@ -2259,7 +2552,6 @@ endobj
 
   it.each([
     ['sheet.xlsx', 'edit'],
-    ['alpha.docx', 'preview'],
     ['slides.pptx', 'preview'],
   ] as const)('does not force fit-to-width for %s in %s mode', async (fileName, mode) => {
     const container = document.createElement('div');

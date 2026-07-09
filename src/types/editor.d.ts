@@ -82,6 +82,7 @@ interface DocEditorConfig {
     onDocumentStateChange?: (event: DocumentStateChangeEvent) => void;
     onDownloadAs?: (event: DownloadAsEvent) => void;
     onRequestSaveAs?: (event: DownloadAsEvent) => void;
+    onRequestEditRights?: () => void;
     writeFile: (event: WriteFileEvent) => void;
     /** Handle external messages from plugins */
     onExternalPluginMessage?: (event: { type: string; data: any; pluginName?: string }) => void;

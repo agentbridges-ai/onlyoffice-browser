@@ -335,12 +335,21 @@ function createResourceTracker() {
 
 const resources = createResourceTracker();
 
+function hideIframeForTeardown(frame: HTMLIFrameElement): void {
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.visibility = 'hidden';
+  frame.style.opacity = '0';
+  frame.style.pointerEvents = 'none';
+  frame.style.background = 'transparent';
+}
+
 async function blankAndRemoveEditorIframes(): Promise<void> {
   const frames = Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe'));
   await Promise.all(
     frames.map(
       (frame) =>
         new Promise<void>((resolve) => {
+          hideIframeForTeardown(frame);
           cleanupFrameWindow(frame);
           if (!frame.isConnected) {
             resolve();
@@ -461,6 +470,9 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       },
       onDirtyChange: (_dirty, instance) => {
         postState('STATE', instance.getState());
+      },
+      onStateChange: (state) => {
+        postState('STATE', state);
       },
       onError: (error) => {
         postError('runtime', error);

@@ -30,6 +30,14 @@ function isHTMLElementContainer(value: unknown): value is HTMLElement {
   return typeof ownerHTMLElement === 'function' && value instanceof ownerHTMLElement;
 }
 
+function hideIframeForTeardown(iframe: HTMLIFrameElement): void {
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.visibility = 'hidden';
+  iframe.style.opacity = '0';
+  iframe.style.pointerEvents = 'none';
+  iframe.style.background = 'transparent';
+}
+
 type OfficeEmptyType = (typeof SUPPORTED_EMPTY_TYPES)[number];
 type OfficeEditorStatus = 'opening' | 'ready' | 'destroyed' | 'error';
 export type OfficeEditorMode = 'edit' | 'readonly' | 'preview';
@@ -70,6 +78,7 @@ export interface CreateOfficeEditorOptions {
   onSaveAs?: (file: File, instance: OfficeEditorInstance) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
   onDownload?: (file: File, instance: OfficeEditorInstance) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
+  onStateChange?: (state: OfficeEditorState, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
 }
 
@@ -444,6 +453,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private destroyPromise: Promise<void> | null = null;
   private unsandboxedHostFrameCleanup: (() => void) | null = null;
   private state: OfficeEditorState;
+  private readonly returnsToPreview: boolean;
 
   private constructor(container: HTMLElement, options: CreateOfficeEditorOptions, prepared: PreparedHostInit) {
     this.id = prepared.initialState.id;
@@ -452,6 +462,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     this.prepared = prepared;
     this.hostOrigin = prepared.hostUrl.origin;
     this.state = prepared.initialState;
+    this.returnsToPreview = prepared.initialState.mode === 'preview';
     this.parentWindow = container.ownerDocument.defaultView || window;
   }
 
@@ -594,9 +605,20 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private applyHostState(state: OfficeHostState | OfficeEditorState): void {
     const nextState = toPublicState(state);
     const dirtyChanged = nextState.dirty !== this.state.dirty;
+    const stateChanged =
+      nextState.mode !== this.state.mode ||
+      nextState.readonly !== this.state.readonly ||
+      nextState.status !== this.state.status ||
+      nextState.destroyed !== this.state.destroyed ||
+      nextState.dirty !== this.state.dirty;
     this.state = nextState;
     if (dirtyChanged) {
       void Promise.resolve(this.options.onDirtyChange?.(nextState.dirty, this)).catch((error) => {
+        this.options.onError?.(toError(error), this);
+      });
+    }
+    if (stateChanged) {
+      void Promise.resolve(this.options.onStateChange?.(nextState, this)).catch((error) => {
         this.options.onError?.(toError(error), this);
       });
     }
@@ -823,13 +845,10 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 
   setReadonly(readonly: boolean): void {
-    if (this.state.mode === 'preview' && !readonly) {
-      throw new Error('Preview mode cannot be switched to editing; recreate the editor with mode: "edit".');
-    }
     this.state = {
       ...this.state,
       readonly,
-      mode: this.state.mode === 'preview' ? 'preview' : readonly ? 'readonly' : 'edit',
+      mode: this.returnsToPreview && readonly ? 'preview' : readonly ? 'readonly' : 'edit',
     };
     if (!this.destroyed && this.port) {
       this.postToHost({
@@ -946,6 +965,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     if (!iframe) return;
 
     if (iframe.isConnected) {
+      hideIframeForTeardown(iframe);
       if (!hostResetDone) {
         const resetUrl = this.getHostResetUrl();
         await this.navigateIframeForTeardown(iframe, resetUrl, RESET_NAVIGATION_TIMEOUT_MS);
@@ -963,6 +983,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 
   private async navigateIframeForTeardown(iframe: HTMLIFrameElement, url: string, timeoutMs: number): Promise<void> {
+    hideIframeForTeardown(iframe);
     const loaded = new Promise<void>((resolve) => {
       iframe.addEventListener('load', () => resolve(), { once: true });
     });

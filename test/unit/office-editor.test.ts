@@ -187,6 +187,57 @@ describe('office-editor parent proxy', () => {
     await instance.destroy();
   });
 
+  it('hides the isolated host iframe before teardown navigation to avoid white-frame flashes', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      destroyTimeoutMs: 1,
+    });
+    const { iframe } = await connectHost(container);
+    const instance = await promise;
+    const sourceDescriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+    expect(sourceDescriptor?.get).toEqual(expect.any(Function));
+    expect(sourceDescriptor?.set).toEqual(expect.any(Function));
+    const assignments: Array<{
+      src: string;
+      visibility: string;
+      opacity: string;
+      pointerEvents: string;
+      ariaHidden: string | null;
+    }> = [];
+    Object.defineProperty(iframe, 'src', {
+      configurable: true,
+      get() {
+        return sourceDescriptor!.get!.call(this);
+      },
+      set(value: string) {
+        assignments.push({
+          src: value,
+          visibility: iframe.style.visibility,
+          opacity: iframe.style.opacity,
+          pointerEvents: iframe.style.pointerEvents,
+          ariaHidden: iframe.getAttribute('aria-hidden'),
+        });
+        sourceDescriptor!.set!.call(this, value);
+        iframe.dispatchEvent(new Event('load'));
+      },
+    });
+
+    await instance.destroy();
+
+    expect(assignments.length).toBeGreaterThan(0);
+    expect(assignments.every((assignment) => (
+      assignment.visibility === 'hidden' &&
+      assignment.opacity === '0' &&
+      assignment.pointerEvents === 'none' &&
+      assignment.ariaHidden === 'true'
+    ))).toBe(true);
+  });
+
   it('isolates localhost hostUrl to a per-editor origin', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
