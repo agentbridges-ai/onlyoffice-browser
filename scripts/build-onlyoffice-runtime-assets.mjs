@@ -154,6 +154,7 @@ function isRuntimeAsset(relativePath) {
       'sw.js',
       'themes.json',
       'onlyoffice-browser-font-assets.json',
+      'onlyoffice-browser-font-source-map.json',
     ].includes(relativePath)
   );
 }
@@ -197,6 +198,7 @@ export function getRuntimeAssetPack(relativePath, options = {}) {
       'sw.js',
       'themes.json',
       'onlyoffice-browser-font-assets.json',
+      'onlyoffice-browser-font-source-map.json',
     ].includes(normalized)
   ) {
     return 'core';

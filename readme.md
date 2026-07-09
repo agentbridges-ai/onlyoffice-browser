@@ -6,7 +6,7 @@
 
 A browser-only Office preview/edit component powered by OnlyOffice 9.3 and `onlyoffice-x2t-wasm`.
 
-The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided DOM container. Conversion, editing, saving, and export happen in an independent-origin sandboxed editor host iframe. It does not require OnlyOffice DocumentServer, backend sessions, document uploads, or user accounts.
+The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided DOM container. Conversion, editing, saving, and export happen in an independent-origin editor host iframe. The independent origin is the isolation boundary; do not add an outer `sandbox` attribute, because OnlyOffice native PDF printing needs same-origin script access to its nested print iframe. It does not require OnlyOffice DocumentServer, backend sessions, document uploads, or user accounts.
 
 ## What This Provides
 
@@ -51,14 +51,17 @@ const editor = await createOfficeEditor(document.querySelector('#editor') as HTM
   fileName: file.name,
   mode: 'edit',
   lang: 'en',
+  saveBehavior: 'callback',
   onSave(savedFile) {
-    console.log(savedFile.name, savedFile.size);
+    console.log('write this file to your storage target', savedFile.name, savedFile.size);
   },
   onDirtyChange(dirty) {
-    saveButton.disabled = !dirty;
+    console.log('dirty', dirty);
   },
 });
 
+// Programmatic saves remain available for automation. User-facing UI should use
+// the native OnlyOffice Save button in the editor toolbar.
 const saved = await editor.save('DOCX');
 editor.setReadonly(true);
 editor.setReadonly(false);
@@ -73,7 +76,8 @@ Supported `mode` values:
 
 Spellcheck is disabled by default. Pass `spellcheck: true` only when the host app should open documents with spell checking enabled.
 Word and presentation documents opened in the editor runtime default to fit-to-width zoom so the page/slide uses the available preview area.
-Autosave and force-save are disabled; host applications should expose their own dirty-gated Save command that calls `editor.save()`.
+Autosave and force-save are disabled. User-facing saves should go through the native OnlyOffice Save button; `editor.save()` is kept for programmatic integrations and tests.
+OnlyOffice interface themes are intentionally limited to the modern set. Pass `interfaceTheme: 'system' | 'light' | 'dark'`; the wrapper maps these to `theme-system`, `theme-white`, and `theme-night`, and migrates legacy OnlyOffice theme ids such as `theme-classic-light`, `theme-light`, `theme-gray`, `theme-dark`, and `theme-contrast-dark` to the closest modern theme. Do not remove `sdkjs/slide/themes`; those are presentation document theme assets, not UI skins.
 
 For multiple documents, create one container and one component instance per document. Prefer wildcard DNS/TLS so each instance gets its own host origin, such as `https://<session>.office-host.example.com/office-host.html`; this lets the corresponding subframe task exit when an individual document closes. In local development, `.localhost` hosts are automatically derived into `host-<session>.localhost`.
 
@@ -84,12 +88,14 @@ pnpm install
 pnpm run dev
 pnpm run lint
 pnpm run test
+pnpm run test:e2e:save
+pnpm run test:e2e:print
 pnpm run build:lib
 pnpm run pack:dry
 pnpm run build
 ```
 
-`pnpm run test:real-load` runs the real-file same-page stress test. See the integration guide for Chrome CDP flags and file arguments.
+`pnpm run test:e2e:save` verifies manual native-save routing for existing local files, new documents, and legacy `.doc`/`.xls`/`.ppt` to OOXML output. `pnpm run test:e2e:print` verifies the native print flow for modern and legacy Word/Excel/PowerPoint files. `pnpm run test:real-load` runs the real-file same-page stress test. See the integration guide for Chrome CDP flags and file arguments.
 
 ## Build
 
@@ -128,7 +134,7 @@ The workflow uses GitHub OIDC through `id-token: write`, so it does not need a l
 - No document upload during normal open/edit/save.
 - No `/doc/.../c`, websocket, long-poll, CommandService, or ConvertService dependency.
 - Blob URLs live only for the current tab lifetime.
-- Collaboration, server-side history, and in-place filesystem writeback are out of scope.
+- Collaboration, server-side history, and direct filesystem writes inside the package are out of scope; host apps own `onSave` persistence.
 
 ## Fonts
 
@@ -137,7 +143,8 @@ This project does not ship runtime font files. Generate and mount fonts before o
 ## References
 
 - [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor)
-- [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm)
+- [agentbridges-ai/onlyoffice-x2t-wasm](https://github.com/agentbridges-ai/onlyoffice-x2t-wasm)
+- [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) (source-analysis reference only; do not submit package changes upstream there)
 - [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)
 - [ONLYOFFICE web-apps](https://github.com/ONLYOFFICE/web-apps)
 - [ONLYOFFICE sdkjs](https://github.com/ONLYOFFICE/sdkjs)

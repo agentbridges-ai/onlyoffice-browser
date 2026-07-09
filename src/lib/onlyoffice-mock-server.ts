@@ -35,8 +35,10 @@ export interface OnlyOfficeMockServer {
   buildVersion?: string;
   getInitialChanges?: () => any[];
   getParticipants: () => OnlyOfficeParticipants;
+  getDocumentOpenData?: (documentUrl: string) => Record<string, string>;
   getImageURL?: (name: string) => Promise<string>;
   onAuth?: () => void;
+  onSaveRequest?: () => void | Promise<void>;
   handleMessage?: (msg: OnlyOfficeFromMessage, respond: OnlyOfficeMessageResponder) => boolean;
   onMessage: (msg: OnlyOfficeFromMessage) => void;
   onCorruptionWarning?: (duplicateId: string) => void;
@@ -47,6 +49,7 @@ export interface CreateOnlyOfficeMockServerOptions {
   buildVersion?: string;
   media?: Record<string, string>;
   onAuth?: () => void;
+  onSaveRequest?: () => void | Promise<void>;
   onMessage?: (msg: OnlyOfficeFromMessage) => void;
   onCorruptionWarning?: (duplicateId: string) => void;
 }
@@ -66,6 +69,10 @@ const LOCAL_PARTICIPANT: OnlyOfficeParticipant = {
 
 function stripLeadingDotsAndSlashes(value: string): string {
   return value.replace(/^(\.\/|\/)+/, '');
+}
+
+export function isOnlyOfficeDirectMediaUrl(value: string): boolean {
+  return /^data:image\//i.test(value) || /^blob:/i.test(value) || /^https?:\/\//i.test(value);
 }
 
 export function getOnlyOfficeMediaCandidates(name: string): string[] {
@@ -89,6 +96,11 @@ export function getOnlyOfficeMediaCandidates(name: string): string[] {
 }
 
 export function resolveOnlyOfficeMediaUrl(media: Record<string, string> | undefined, name: string): string {
+  const directUrl = name.trim();
+  if (isOnlyOfficeDirectMediaUrl(directUrl)) {
+    return directUrl;
+  }
+
   if (!media) {
     return '';
   }
@@ -125,10 +137,11 @@ function countSavedChanges(changes: unknown): number {
 }
 
 export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOptions = {}): OnlyOfficeMockServer {
-  const { buildNumber, buildVersion, media, onAuth, onMessage, onCorruptionWarning } = options;
+  const { buildNumber, buildVersion, media, onAuth, onSaveRequest, onMessage, onCorruptionWarning } = options;
   let changesIndex = 0;
   let syncChangesIndex = 0;
   let lastSaveTime = Date.now();
+  let pendingLocalSave = false;
 
   const acknowledgeSaveEnd = (respond: OnlyOfficeMessageResponder) => {
     lastSaveTime = Date.now();
@@ -140,6 +153,23 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
     });
   };
 
+  const runLocalSaveBeforeAck = (respond: OnlyOfficeMessageResponder, acknowledge: () => void) => {
+    if (!onSaveRequest || !pendingLocalSave) {
+      acknowledge();
+      return;
+    }
+
+    void Promise.resolve()
+      .then(() => onSaveRequest())
+      .then(() => {
+        pendingLocalSave = false;
+        acknowledge();
+      })
+      .catch((error) => {
+        console.error('OnlyOffice local save request failed:', error);
+      });
+  };
+
   return {
     buildNumber,
     buildVersion,
@@ -148,8 +178,13 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
       index: 0,
       list: [{ ...LOCAL_PARTICIPANT }],
     }),
+    getDocumentOpenData: (documentUrl: string) => ({
+      'Editor.bin': documentUrl,
+      ...(media || {}),
+    }),
     getImageURL: async (name: string) => resolveOnlyOfficeMediaUrl(media, name),
     onAuth,
+    onSaveRequest,
     handleMessage: (msg, respond) => {
       if (msg.type === 'isSaveLock') {
         respond({
@@ -161,7 +196,9 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
       }
 
       if (msg.type === 'saveChanges') {
-        changesIndex += countSavedChanges(msg.changes);
+        const savedChangeCount = countSavedChanges(msg.changes);
+        changesIndex += savedChangeCount;
+        pendingLocalSave = pendingLocalSave || savedChangeCount > 0;
         if (msg.endSaveChanges === false) {
           respond({
             type: 'savePartChanges',
@@ -171,19 +208,23 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
           return true;
         }
 
-        respond({
-          type: 'saveChanges',
-          changes: [],
-          changesIndex,
-          syncChangesIndex,
-          endSaveChanges: true,
-        });
-        acknowledgeSaveEnd(respond);
+        const acknowledgeSave = () => {
+          respond({
+            type: 'saveChanges',
+            changes: [],
+            changesIndex,
+            syncChangesIndex,
+            endSaveChanges: true,
+          });
+          acknowledgeSaveEnd(respond);
+        };
+
+        runLocalSaveBeforeAck(respond, acknowledgeSave);
         return true;
       }
 
       if (msg.type === 'unLockDocument' || msg.type === 'unSaveLock') {
-        acknowledgeSaveEnd(respond);
+        runLocalSaveBeforeAck(respond, () => acknowledgeSaveEnd(respond));
         return true;
       }
 

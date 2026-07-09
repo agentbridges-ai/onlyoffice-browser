@@ -696,6 +696,7 @@ function writeGeneratedManifest(output, options) {
     generatedAt: new Date().toISOString(),
     allFonts: 'sdkjs/common/AllFonts.js',
     fontSelection: 'server/FileConverter/bin/font_selection.bin',
+    fontSourceMap: GENERATED_FONT_SOURCE_MAP,
     fontThumbnails: listGeneratedFontThumbnailPaths(output),
     fonts: listGeneratedFontAssetPaths(output),
   };

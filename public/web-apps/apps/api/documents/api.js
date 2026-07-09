@@ -207,6 +207,10 @@
     handleAuth(message) {
       const changes = this.server.getInitialChanges ? this.server.getInitialChanges() : [];
       const participants = this.server.getParticipants();
+      const documentOpenData =
+        this.server.getDocumentOpenData && message?.openCmd?.url
+          ? this.server.getDocumentOpenData(message.openCmd.url)
+          : { 'Editor.bin': message?.openCmd?.url };
       if (changes.length > 0) {
         this.sendMessageToOO({ type: 'authChanges', changes });
       }
@@ -228,7 +232,7 @@
         data: {
           type: 'open',
           status: 'ok',
-          data: { 'Editor.bin': message.openCmd.url },
+          data: documentOpenData,
         },
       });
       this.server.onAuth?.();
@@ -271,12 +275,36 @@
       const app = this.getIframe()?.contentWindow?.__onlyOfficeBrowserApplication;
       return app?.getController?.('Main')?.api;
     }
+    getEditorWindow() {
+      return this.getIframe()?.contentWindow || null;
+    }
     asc_nativeGetFile3(...args) {
       const api = this.getEditorApi();
       if (!api || typeof api.asc_nativeGetFile3 !== 'function') {
         throw new Error('OnlyOffice native file API is not ready');
       }
       return api.asc_nativeGetFile3(...args);
+    }
+    asc_nativeGetPDF(...args) {
+      const api = this.getEditorApi();
+      if (!api || typeof api.asc_nativeGetPDF !== 'function') {
+        throw new Error('OnlyOffice native PDF API is not ready');
+      }
+      return api.asc_nativeGetPDF(...args);
+    }
+    asc_nativeCalculateFile(...args) {
+      const api = this.getEditorApi();
+      if (!api || typeof api.asc_nativeCalculateFile !== 'function') {
+        throw new Error('OnlyOffice native calculate API is not ready');
+      }
+      return api.asc_nativeCalculateFile(...args);
+    }
+    asc_nativeGetHtml(...args) {
+      const api = this.getEditorApi();
+      if (!api || typeof api.asc_nativeGetHtml !== 'function') {
+        throw new Error('OnlyOffice native HTML API is not ready');
+      }
+      return api.asc_nativeGetHtml(...args);
     }
     attachMouseEvents(...args) {
       return this.origEditor.attachMouseEvents(...args);
@@ -465,9 +493,9 @@
       } else if (typeof parsed.q === 'string') {
         if (handlers[parsed.q]) {
           if (parsed.txid) postToFrame(JSON.stringify({ txid: parsed.txid, ack: true }));
+          const handlerMessage = parsed;
           handlers[parsed.q].forEach((handler) => {
-            handler(parsed || JSON.parse(eventMessage.data), eventMessage, parsed?.raw);
-            parsed = undefined;
+            handler(handlerMessage, eventMessage, handlerMessage?.raw);
           });
         } else if (parsed.txid) {
           postToFrame(JSON.stringify({ txid: parsed.txid, ack: false }));

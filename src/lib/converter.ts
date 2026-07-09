@@ -1,10 +1,11 @@
 import { X2TConverter } from './document-converter';
-import type { BinConversionResult, ConversionResult, EmscriptenModule } from './document-types';
+import type { BinConversionResult, ConversionResult, DocumentMediaMap, EmscriptenModule } from './document-types';
 
 // Export types
 export type {
   ConversionResult,
   BinConversionResult,
+  DocumentMediaMap,
   EmscriptenModule,
   DocumentType,
   SaveEvent,
@@ -35,10 +36,30 @@ export const convertBinToDocument = (
   bin: Uint8Array,
   fileName: string,
   targetExt?: string,
-): Promise<BinConversionResult> => queueConversion(() => x2tConverter.convertBinToDocument(bin, fileName, targetExt));
+  media?: DocumentMediaMap,
+): Promise<BinConversionResult> =>
+  queueConversion(() => x2tConverter.convertBinToDocument(bin, fileName, targetExt, media));
+export const convertPrintDataToPdf = (
+  printData: Uint8Array,
+  fileName: string,
+  media?: DocumentMediaMap,
+): Promise<BinConversionResult> =>
+  queueConversion(() => x2tConverter.convertPrintDataToPdf(printData, fileName, media));
+export const convertHtmlToDocument = (
+  htmlData: Uint8Array,
+  fileName: string,
+  targetExt: string,
+): Promise<BinConversionResult> => queueConversion(() => x2tConverter.convertHtmlToDocument(htmlData, fileName, targetExt));
+export const convertPdfToImage = (
+  pdfData: Uint8Array,
+  fileName: string,
+  targetExt: string,
+  options?: { allPages?: boolean },
+): Promise<BinConversionResult> => queueConversion(() => x2tConverter.convertPdfToImage(pdfData, fileName, targetExt, options));
 export const convertBinToDocumentAndDownload = (
   bin: Uint8Array,
   fileName: string,
   targetExt?: string,
+  media?: DocumentMediaMap,
 ): Promise<BinConversionResult> =>
-  queueConversion(() => x2tConverter.convertBinToDocumentAndDownload(bin, fileName, targetExt));
+  queueConversion(() => x2tConverter.convertBinToDocumentAndDownload(bin, fileName, targetExt, media));

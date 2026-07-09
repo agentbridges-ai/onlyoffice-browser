@@ -16,11 +16,25 @@ const sessionId = params.get('sessionId') || '';
 const parentOrigin = params.get('parentOrigin') || '';
 const root = document.querySelector<HTMLElement>('#office-host') ?? document.body;
 const HOST_RESET_PATH = '/reset.html';
+const SAVE_ACK_TIMEOUT_MS = 60_000;
 
 let port: MessagePort | null = null;
 let editor: OfficeEditorInstance | null = null;
 let destroyed = false;
 let activeSaveRequestId: string | undefined;
+let nativeSaveRequestSequence = 0;
+
+type PendingSaveAck = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeoutId: number;
+};
+
+const pendingSaveAcks = new Map<string, PendingSaveAck>();
+
+type PrintTitleHostWindow = typeof window & {
+  __onlyOfficeBrowserSetPrintTitle?: (title: string, durationMs?: number) => void;
+};
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -55,6 +69,11 @@ function postPortMessage(message: OfficeHostChildMessage, transfer: Transferable
   port?.postMessage(message, transfer);
 }
 
+function nextNativeSaveRequestId(): string {
+  nativeSaveRequestSequence += 1;
+  return `${sessionId}-native-save-${Date.now()}-${nativeSaveRequestSequence}`;
+}
+
 function postError(
   phase: Extract<OfficeHostChildMessage, { type: 'ERROR' }>['phase'],
   error: unknown,
@@ -70,14 +89,62 @@ function postError(
   });
 }
 
-async function postSavedFile(file: File, requestId?: string): Promise<void> {
+function makeSaveAckError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'OnlyOfficeHostSaveAckError';
+  return error;
+}
+
+function waitForSaveAck(requestId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      pendingSaveAcks.delete(requestId);
+      reject(makeSaveAckError('Timed out waiting for parent save acknowledgement'));
+    }, SAVE_ACK_TIMEOUT_MS);
+    pendingSaveAcks.set(requestId, { resolve, reject, timeoutId });
+  });
+}
+
+async function postSavedFile(file: File, requestId = nextNativeSaveRequestId()): Promise<void> {
   const buffer = await file.arrayBuffer();
+  const ack = waitForSaveAck(requestId);
   postPortMessage(
     {
       protocol: OFFICE_HOST_PROTOCOL,
       type: 'SAVE_RESULT',
       sessionId,
       requestId,
+      buffer,
+      fileName: file.name,
+      mimeType: file.type,
+    },
+    [buffer],
+  );
+  await ack;
+}
+
+async function postDownloadedFile(file: File): Promise<void> {
+  const buffer = await file.arrayBuffer();
+  postPortMessage(
+    {
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'DOWNLOAD_RESULT',
+      sessionId,
+      buffer,
+      fileName: file.name,
+      mimeType: file.type,
+    },
+    [buffer],
+  );
+}
+
+async function postSaveAsFile(file: File): Promise<void> {
+  const buffer = await file.arrayBuffer();
+  postPortMessage(
+    {
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'SAVE_AS_RESULT',
+      sessionId,
       buffer,
       fileName: file.name,
       mimeType: file.type,
@@ -333,6 +400,12 @@ async function destroyRuntime(): Promise<void> {
   if (destroyed) return;
   destroyed = true;
 
+  for (const [requestId, pending] of pendingSaveAcks) {
+    window.clearTimeout(pending.timeoutId);
+    pending.reject(makeSaveAckError(`Editor was destroyed before save acknowledgement completed: ${requestId}`));
+  }
+  pendingSaveAcks.clear();
+
   try {
     await editor?.destroy();
   } catch (error) {
@@ -343,6 +416,7 @@ async function destroyRuntime(): Promise<void> {
   resources.cleanup();
   await clearHostWorkersAndCaches();
   root.replaceChildren();
+  delete (window as PrintTitleHostWindow).__onlyOfficeBrowserSetPrintTitle;
   delete window.APP;
 }
 
@@ -363,13 +437,25 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
   if (destroyed) return;
 
   try {
+    (window as PrintTitleHostWindow).__onlyOfficeBrowserSetPrintTitle = (title, durationMs = 45_000) => {
+      postPortMessage({
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'PRINT_TITLE',
+        sessionId,
+        title,
+        durationMs,
+      });
+    };
+
     const { source } = message.options;
     const runtimeOptions: RuntimeOptions = {
       fileName: message.options.fileName,
       mode: message.options.mode,
       readonly: message.options.readonly,
       spellcheck: message.options.spellcheck ?? false,
+      interfaceTheme: message.options.interfaceTheme,
       lang: message.options.lang,
+      saveBehavior: message.options.saveBehavior,
       onReady: (instance) => {
         postState('STATE', instance.getState());
       },
@@ -380,13 +466,17 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
         postError('runtime', error);
       },
       onSave: (file) => postSavedFile(file, activeSaveRequestId),
+      onSaveAs: (file) => postSaveAsFile(file),
+      onDownload: (file) => postDownloadedFile(file),
     };
 
     if (source.kind === 'empty') {
       runtimeOptions.emptyType = source.emptyType;
+      runtimeOptions.sourceKind = 'new-document';
     } else {
       runtimeOptions.buffer = source.buffer;
       runtimeOptions.fileName = source.fileName;
+      runtimeOptions.sourceKind = source.sourceKind;
     }
 
     editor = await createRuntimeOfficeEditor(root, runtimeOptions);
@@ -394,6 +484,20 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
   } catch (error) {
     postError('init', error, message.requestId);
   }
+}
+
+function handleSaveAck(message: Extract<OfficeHostParentMessage, { type: 'SAVE_ACK' }>): void {
+  const pending = pendingSaveAcks.get(message.requestId);
+  if (!pending) return;
+
+  pendingSaveAcks.delete(message.requestId);
+  window.clearTimeout(pending.timeoutId);
+  if (message.ok) {
+    pending.resolve();
+    return;
+  }
+
+  pending.reject(makeSaveAckError(message.message || 'Parent save acknowledgement failed'));
 }
 
 async function handleSave(message: Extract<OfficeHostParentMessage, { type: 'SAVE' }>): Promise<void> {
@@ -404,9 +508,31 @@ async function handleSave(message: Extract<OfficeHostParentMessage, { type: 'SAV
     activeSaveRequestId = message.requestId;
     await editor.save(message.targetExt);
   } catch (error) {
-    postError('save', error, message.requestId);
+    if (!(error instanceof Error && error.name === 'OnlyOfficeHostSaveAckError')) {
+      postError('save', error, message.requestId);
+    }
   } finally {
     if (activeSaveRequestId === message.requestId) activeSaveRequestId = undefined;
+  }
+}
+
+async function handleConfirmSaveToNewFormat(
+  message: Extract<OfficeHostParentMessage, { type: 'CONFIRM_SAVE_TO_NEW_FORMAT' }>,
+): Promise<void> {
+  try {
+    if (!editor) {
+      throw new Error('Editor is not open');
+    }
+    const confirmed = await editor.confirmSaveToNewFormat(message.options);
+    postPortMessage({
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'CONFIRM_SAVE_TO_NEW_FORMAT_RESULT',
+      sessionId,
+      requestId: message.requestId,
+      confirmed,
+    });
+  } catch (error) {
+    postError('confirm', error, message.requestId);
   }
 }
 
@@ -419,6 +545,17 @@ function handleSetReadonly(message: Extract<OfficeHostParentMessage, { type: 'SE
     postState('STATE', editor.getState());
   } catch (error) {
     postError('setReadonly', error, message.requestId);
+  }
+}
+
+function handleSetInterfaceTheme(message: Extract<OfficeHostParentMessage, { type: 'SET_INTERFACE_THEME' }>): void {
+  try {
+    if (!editor) {
+      throw new Error('Editor is not open');
+    }
+    editor.setInterfaceTheme(message.interfaceTheme);
+  } catch (error) {
+    postError('setInterfaceTheme', error, message.requestId);
   }
 }
 
@@ -443,8 +580,17 @@ function handlePortMessage(event: MessageEvent<OfficeHostParentMessage>): void {
     case 'SAVE':
       void handleSave(event.data);
       return;
+    case 'SAVE_ACK':
+      handleSaveAck(event.data);
+      return;
+    case 'CONFIRM_SAVE_TO_NEW_FORMAT':
+      void handleConfirmSaveToNewFormat(event.data);
+      return;
     case 'SET_READONLY':
       handleSetReadonly(event.data);
+      return;
+    case 'SET_INTERFACE_THEME':
+      handleSetInterfaceTheme(event.data);
       return;
     case 'DESTROY':
       void handleDestroy();
@@ -453,7 +599,10 @@ function handlePortMessage(event: MessageEvent<OfficeHostParentMessage>): void {
 }
 
 function handleConnect(event: MessageEvent): void {
-  if (!parentOrigin || !sessionId || event.origin !== parentOrigin || event.source !== window.parent) {
+  // Detached preview windows can have the opener deliver CONNECT while the
+  // host iframe still reports HOST_READY to its popup parent. The trusted
+  // boundary is the explicit parentOrigin plus the per-editor session id.
+  if (!parentOrigin || !sessionId || event.origin !== parentOrigin) {
     return;
   }
   if (!isOfficeHostMessage(event.data, sessionId)) {

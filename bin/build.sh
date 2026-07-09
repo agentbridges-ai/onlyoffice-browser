@@ -15,6 +15,8 @@ node scripts/build-onlyoffice-runtime-assets.mjs \
     --prune-root \
     --split-output .onlyoffice-runtime-asset-packs
 
+node scripts/patch-onlyoffice-print-fallback.mjs dist
+
 # Inject timestamp into sw.js for versioning
 SW_PATH="dist/sw.js"
 if [ -f "$SW_PATH" ]; then

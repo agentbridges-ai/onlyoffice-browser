@@ -18,13 +18,15 @@ export interface ConversionResult {
   fileName: string;
   type: DocumentType;
   bin: BlobPart;
-  media: Record<string, string>;
+  media: DocumentMediaMap;
 }
 
 export interface BinConversionResult {
   fileName: string;
   data: BlobPart;
 }
+
+export type DocumentMediaMap = Record<string, string>;
 
 export type DocumentType = 'word' | 'cell' | 'slide';
 

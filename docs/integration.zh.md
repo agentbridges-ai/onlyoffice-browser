@@ -1,6 +1,6 @@
 # Browser Office Editor 集成指南
 
-Browser Office Editor 是一个纯浏览器端 Office 预览/编辑组件。宿主应用提供容器 DOM，组件在容器内创建一个轻量 sandbox iframe，指向独立 origin 的 editor host；文档转换、编辑、导出都在这个隔离 host iframe 内完成。
+Browser Office Editor 是一个纯浏览器端 Office 预览/编辑组件。宿主应用提供容器 DOM，组件在容器内创建一个轻量 iframe，指向独立 origin 的 editor host；文档转换、编辑、导出都在这个隔离 host iframe 内完成。独立 origin 是隔离边界。不要给外层 iframe 添加 `sandbox` 属性：原生 PDF 打印链路需要 editor host 对内部打印 iframe 保持同源脚本访问；如果集成层又把 `sandbox` 加回 host iframe，运行时会立即移除。
 
 ## 部署静态资源
 
@@ -51,14 +51,15 @@ const editor = await createOfficeEditor(container, {
   fileName: fileInput.files![0].name,
   mode: 'edit',
   readonly: false,
+  saveBehavior: 'callback',
   onReady(instance) {
     console.log('ready', instance.getState());
   },
   onSave(file) {
-    console.log('saved', file.name, file.size);
+    console.log('把这个文件写入你的最终存储', file.name, file.size);
   },
   onDirtyChange(dirty) {
-    saveButton.disabled = !dirty;
+    console.log('dirty', dirty);
   },
   onError(error) {
     console.error(error);
@@ -101,11 +102,24 @@ OnlyOffice API script 和 x2t WASM 初始化由各自 host iframe 内部完成�
 ## 打开文档
 
 ```ts
-// 新建
-await createOfficeEditor(container, { hostUrl: officeHostUrl, emptyType: 'docx', fileName: 'New_Document.docx' });
+// 新建。OnlyOffice 原生保存按钮默认触发浏览器下载。
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  emptyType: 'docx',
+  fileName: 'New_Document.docx',
+  saveBehavior: 'download',
+});
 
-// File / Blob
-await createOfficeEditor(container, { hostUrl: officeHostUrl, file, fileName: file.name });
+// File / Blob。OnlyOffice 原生保存按钮调用 onSave。
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  file,
+  fileName: file.name,
+  saveBehavior: 'callback',
+  onSave: async (savedFile) => {
+    await uploadOrWriteBack(savedFile);
+  },
+});
 
 // ArrayBuffer / Uint8Array
 await createOfficeEditor(container, { hostUrl: officeHostUrl, buffer, fileName: 'report.xlsx' });
@@ -119,7 +133,7 @@ await createOfficeEditor(container, {
 });
 ```
 
-支持 DOCX、XLSX、PPTX、CSV，也兼容常见旧格式 DOC/XLS/PPT 的打开转换。
+支持 DOCX、XLSX、PPTX、CSV，也兼容常见旧格式 DOC/XLS/PPT 的打开转换。旧格式应视为兼容输入：可编辑输出会统一规范化为 OOXML（`.docx`、`.xlsx`、`.pptx`），不再尝试把编辑结果回写成旧二进制 Office 格式。
 
 ## 保存和上传
 
@@ -132,13 +146,29 @@ await fetch('/api/files/123', {
 });
 ```
 
-`save(targetExt?)` 返回浏览器内生成的 `File`。常用 `targetExt` 为 `DOCX`、`XLSX`、`PPTX`、`CSV`。只读实例会拒绝保存。本包不会自行持久化文件：宿主应用必须把这个 `File` 写入自己的最终存储位置，例如后端上传接口，或 File System Access 的 `createWritable()` 文件句柄。
+`save(targetExt?)` 返回浏览器内生成的 `File`。常用 `targetExt` 为 `DOCX`、`XLSX`、`PPTX`、`CSV`。只读实例会拒绝保存。这个 API 继续保留给程序化集成和测试使用。面向用户的 UI 应使用编辑器工具栏里的 OnlyOffice 原生保存按钮，不要在宿主页面再放一个外置保存按钮。
 
-嵌入的 OnlyOffice 配置会关闭 autosave 和 forcesave，并强制使用 `strict` 协同模式，避免上游 fast mode 自动把 autosave 打开。受支持的持久化入口是宿主应用自己的保存按钮：按钮点击时调用 `editor.save()`。用 `onDirtyChange(dirty)` 或 `editor.getState().dirty` 控制保存按钮，只有文档存在未保存修改时才启用。
+如果请求保存为旧格式 `DOC`、`XLS` 或 `PPT`，结果会转换成对应 OOXML 文件（`DOCX`、`XLSX`、`PPTX`）。宿主应用打开本地旧格式文件后，应以返回的 `File.name` 为准更新存储路径或元数据，不要把 OOXML 字节直接写回 `.doc`、`.xls` 或 `.ppt` 路径。
 
-本包会调用浏览器运行时的 native bin 导出，再用内置 x2t WASM 把 bin 转成目标 Office 文件。用于本地持久化的保存链路不会调用 `downloadAs()`，因此不会弹出浏览器下载流程。
+嵌入的 OnlyOffice 配置会关闭 autosave 和 forcesave，并强制使用 `strict` 协同模式，避免上游 fast mode 自动把 autosave 打开。只有用户手动点击原生保存时，才应持久化或下载编辑内容。
 
-`onSave(file)` 会在 `editor.save()` 过程中被调用，并且保存 Promise 会等待它完成。若 `onSave` 抛错或 reject，`editor.save()` 也会 reject，代理层会保持文档 dirty：
+本包会调用浏览器运行时的 native bin 导出，再用内置 x2t WASM 把 bin 转成目标 Office 文件。用于 callback 本地持久化的保存链路不会调用 `downloadAs()`，因此不会弹出浏览器下载流程。
+
+文档资源必须和 native bin 一起进入转换器。上游 DocumentServer 在运行 FileConverter 前，会把整棵文档 storage 目录下载到 converter 的 `source` 目录，因此 `Editor.bin`、changes，以及 `media/...` 这类侧车文件会一起交给 x2t。本浏览器包没有服务端 storage 目录，所以会保留打开/插入过程中形成的 media object URL 映射，并在保存、打印、下载为转换前重新 materialize 到 x2t 的 `/working/media`。不要把导出链路改回“只传 native bin”；否则可能生成关系仍引用图片、但 `word/media/*`、`xl/media/*` 或 `ppt/media/*` 实际缺失的 OOXML 包。
+
+“下载为”转换应贴近上游 DocumentServer 的 converter 任务形态。运行时必须在 x2t 参数中显式传目标格式号（`m_nFormatTo`），不要只依赖输出文件扩展名推断。Markdown 这类格式尤其依赖这一点：上游 `MD = 92`，x2t 会把 native document bin 先走 DOCX/HTML 中间链路，再由 `HtmlFile2`/`MDWriter` 写出 `.md`。如果浏览器 x2t 拒绝某个目标格式，应暴露转换错误并修正 x2t 参数、资源或 wasm 构建；不要用 SDKJS 文本导出、纯文本渲染或无关包来合成另一个文件作为兜底。
+
+产品转换行为以 [ONLYOFFICE/DocumentServer](https://github.com/ONLYOFFICE/DocumentServer) 为准；浏览器 x2t/WebAssembly 构建变更和发布走 [agentbridges-ai/onlyoffice-x2t-wasm](https://github.com/agentbridges-ai/onlyoffice-x2t-wasm)，[cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 只作为运行时文件系统、测试组织方式和 wasm 打包约束的源码分析参考。本包不修改或发布 CryptPad 上游。只有在 x2t 已经产出目标字节后，才允许做产物后处理，例如把 Markdown 中的 data URI 图片拆成 `.zip` 里的独立资源；后处理不能掩盖转换失败。
+
+x2t-wasm 是本包浏览器端 Office 转换的唯一引擎。不要为“下载为”产物增加第二转换器、Pandoc 链路或 fallback 链路。只有 x2t-wasm 已经产出目标字节后，才允许做 Markdown 图片资源打包这类产物后处理。可见导出格式失败时，应修复 `agentbridges-ai/onlyoffice-x2t-wasm`、x2t 参数或资源 materialize 流程，而不是合成另一个替代文件。
+
+`saveBehavior` 决定 native 导出后的分流：
+
+- `auto`（默认）：已有 `file`/`buffer`/`url` 来源走 `onSave`；缺少 `onSave` 则保存失败。`emptyType` 新建文档默认下载，除非 `onSave` 返回 `true` 表示已处理。
+- `callback`：强制要求 `onSave` 并等待它完成。用于需要通过 File System Access 回写的本地文件。
+- `download`：触发浏览器下载。用于还没有存储路径的空白新建文档。
+
+`onSave(file)` 会被原生保存路径和 `editor.save()` 调用，并且保存确认会等待它完成。若 `onSave` 抛错或 reject，代理层会保持文档 dirty，并把原生保存确认成失败：
 
 ```ts
 await createOfficeEditor(container, {
@@ -153,7 +183,28 @@ await createOfficeEditor(container, {
 });
 ```
 
-OnlyOffice 原生“所有更改已保存”不是本浏览器集成里的最终持久化信号。在上游 ONLYOFFICE DocumentServer 部署里，这个角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer)、[cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 和 [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) 为集成参考。
+OnlyOffice 原生“所有更改已保存”不是本浏览器集成里的最终持久化信号。在上游 ONLYOFFICE DocumentServer 部署里，这个角色通常由 `callbackUrl` 后面的 storage service 实现：编辑器上报保存状态，storage service 下载编辑后的文件 URL，写入最终路径，并返回 `{ "error": 0 }`。本包是纯浏览器集成，没有 server callback endpoint，因此集成方必须提供最后的写回步骤。开发时以 [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)、[ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/)、[ONLYOFFICE/DocumentServer](https://github.com/ONLYOFFICE/DocumentServer)、[ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer) 和 [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) 作为保存/存储集成参考。
+
+## 打印
+
+使用 OnlyOffice 原生打印按钮。上游 DocumentServer 的打印链路是在编辑器 iframe 内调用 `asc_Print()`，生成服务端 PDF URL，把该 URL 加载到隐藏的 `#id-print-frame`，再调用 `iframe.contentWindow.print()`。官方服务端实现中的 URL 是同源 `/printfile/:docid/:filename` 响应，响应头包含 `Content-Type: application/pdf` 和 `Content-Disposition: inline`；文件名会同时放在 URL path 和 disposition 中，因为 Chrome 保存打印结果时会参考资源名。
+
+本浏览器运行时没有服务端 `printfile` endpoint，因此用等价链路模拟：提供编辑器期望的父页面 `APP.printPdf` bridge，从 editor iframe 取得 OnlyOffice native print renderer stream，再通过 x2t `bin2pdf` 以原始非 base64 流方式转换（`m_bIsNoBase64=true`），把生成的 PDF 写入 editor host origin 下的 Cache API，并返回同一个 editor host origin 上 `/__onlyoffice-browser-print__/.../<file>.pdf?filename=<file>.pdf` 形式的临时 PDF URL。editor host service worker 会用接近官方形态的 PDF 响应头把该 PDF 提供给 OnlyOffice 内置隐藏 `#id-print-frame`。URL resource name、`Content-Disposition` 文件名和 PDF 文档 metadata title 必须保持一致；Chrome 的打印/PDF viewer 路径可能从 PDF Title metadata 生成“另存为 PDF”的默认名，所以 runtime 会在缓存生成的 PDF 前追加一段增量 PDF info dictionary，写入 UTF-16BE `/Title`。
+
+这符合隔离 host 下的浏览器约束：`window.print()` 打印当前已加载文档，iframe 的 `contentWindow` 访问受同源策略限制，现代 `blob:` URL 还会受到 storage partitioning / navigation 限制。不要给外层 iframe 加 sandbox，即使带上 `allow-same-origin` 和 `allow-modals` 也不可靠；Chrome 仍可能把嵌套 PDF 打印 iframe 判为不可访问。打包后的 OnlyOffice runtime 会在构建时 patch：保留隐藏打印 iframe，在 PDF document 变得可脚本访问前短暂重试 `contentWindow.print()`，并禁止 `window.open()` / `downloadAs()` fallback。打印不要通过图片、Canvas 或 PDF.js 栅格化绕路。
+
+参考文档：
+
+- [MDN `Window.print()`](https://developer.mozilla.org/en-US/docs/Web/API/Window/print)
+- [MDN `HTMLIFrameElement.contentWindow`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLIFrameElement/contentWindow)
+- [MDN same-origin policy](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Same-origin_policy)
+- [MDN `blob:` URLs and storage partitioning](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Schemes/blob)
+- [MDN service workers](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers)
+- [Chrome sandboxed modal dialogs sample](https://googlechrome.github.io/samples/block-modal-dialogs-sandboxed-iframe/index.html)
+- [ONLYOFFICE/web-apps document print controller](https://github.com/ONLYOFFICE/web-apps/blob/master/apps/documenteditor/main/app/controller/Main.js)
+- [ONLYOFFICE/web-apps print settings controller](https://github.com/ONLYOFFICE/web-apps/blob/master/apps/documenteditor/main/app/controller/Print.js)
+
+打印和保存链路相互独立：不会调用 `downloadAs()`，不会触发 `onSave` 写回，也不会改变 dirty 状态。打印 E2E 矩阵覆盖 `xlsx`、`xls`、`docx`、`doc`、`pptx`、`ppt`。
 
 ## 只读和关闭
 

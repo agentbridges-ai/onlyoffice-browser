@@ -40,6 +40,32 @@ describe('onlyoffice-mock-server', () => {
     await expect(server.getImageURL?.('missing.png')).resolves.toBe('');
   });
 
+  it('includes converted media URLs in the documentOpen URL map', () => {
+    const media = {
+      'media/image1.png': 'blob:image-1',
+      'media/chart.png': 'blob:chart',
+    };
+    const server = createOnlyOfficeMockServer({ media });
+
+    expect(server.getDocumentOpenData?.('blob:document-bin')).toEqual({
+      'Editor.bin': 'blob:document-bin',
+      'media/image1.png': 'blob:image-1',
+      'media/chart.png': 'blob:chart',
+    });
+  });
+
+  it('passes direct image URLs through without requiring a media registry entry', async () => {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const blobUrl = 'blob:http://localhost/image-id';
+    const httpsUrl = 'https://example.test/image.png';
+    const server = createOnlyOfficeMockServer();
+
+    expect(resolveOnlyOfficeMediaUrl(undefined, dataUrl)).toBe(dataUrl);
+    expect(resolveOnlyOfficeMediaUrl(undefined, blobUrl)).toBe(blobUrl);
+    expect(resolveOnlyOfficeMediaUrl(undefined, httpsUrl)).toBe(httpsUrl);
+    await expect(server.getImageURL?.(dataUrl)).resolves.toBe(dataUrl);
+  });
+
   it('passes OnlyOffice messages to the optional observer', () => {
     const onMessage = vi.fn();
     const server = createOnlyOfficeMockServer({ onMessage });
@@ -84,6 +110,88 @@ describe('onlyoffice-mock-server', () => {
       expect.objectContaining({
         type: 'unSaveLock',
         index: 2,
+        syncChangesIndex: 0,
+      }),
+    );
+  });
+
+  it('delays final save acknowledgement until the local save request completes', async () => {
+    let resolveSave!: () => void;
+    const onSaveRequest = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const server = createOnlyOfficeMockServer({ onSaveRequest });
+    const respond = vi.fn();
+
+    expect(
+      server.handleMessage?.(
+        {
+          type: 'saveChanges',
+          changes: JSON.stringify(['change-one']),
+          endSaveChanges: true,
+        },
+        respond,
+      ),
+    ).toBe(true);
+
+    await Promise.resolve();
+    expect(onSaveRequest).toHaveBeenCalledTimes(1);
+    expect(respond).not.toHaveBeenCalled();
+
+    resolveSave();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(respond).toHaveBeenNthCalledWith(1, {
+      type: 'saveChanges',
+      changes: [],
+      changesIndex: 1,
+      syncChangesIndex: 0,
+      endSaveChanges: true,
+    });
+    expect(respond).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        type: 'unSaveLock',
+        index: 1,
+        syncChangesIndex: 0,
+      }),
+    );
+  });
+
+  it('runs the local save request when chunked changes finish on unlock', async () => {
+    const onSaveRequest = vi.fn();
+    const server = createOnlyOfficeMockServer({ onSaveRequest });
+    const respond = vi.fn();
+
+    expect(
+      server.handleMessage?.(
+        {
+          type: 'saveChanges',
+          changes: JSON.stringify(['chunk-one']),
+          endSaveChanges: false,
+        },
+        respond,
+      ),
+    ).toBe(true);
+    expect(onSaveRequest).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith({
+      type: 'savePartChanges',
+      changesIndex: 1,
+      syncChangesIndex: 0,
+    });
+
+    respond.mockClear();
+    expect(server.handleMessage?.({ type: 'unLockDocument' }, respond)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onSaveRequest).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'unSaveLock',
+        index: 1,
         syncChangesIndex: 0,
       }),
     );

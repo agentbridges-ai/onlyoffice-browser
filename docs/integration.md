@@ -1,6 +1,6 @@
 # Browser Office Editor Integration Guide
 
-Browser Office Editor is a browser-only Office preview/edit component. The host application provides a DOM container; the component creates a lightweight sandbox iframe that points at an independent-origin editor host. Conversion, editing, and export happen inside that isolated host iframe.
+Browser Office Editor is a browser-only Office preview/edit component. The host application provides a DOM container; the component creates a lightweight iframe that points at an independent-origin editor host. Conversion, editing, and export happen inside that isolated host iframe. The independent origin is the isolation boundary. Do not add an outer `sandbox` attribute: the editor host relies on same-origin access to its nested print iframe for the native PDF print flow, and the runtime removes a sandbox attribute if an integration mutates it back onto the host iframe.
 
 ## Static Assets
 
@@ -51,14 +51,15 @@ const editor = await createOfficeEditor(container, {
   fileName: fileInput.files![0].name,
   mode: 'edit',
   readonly: false,
+  saveBehavior: 'callback',
   onReady(instance) {
     console.log('ready', instance.getState());
   },
   onSave(file) {
-    console.log('saved', file.name, file.size);
+    console.log('write this file to your storage target', file.name, file.size);
   },
   onDirtyChange(dirty) {
-    saveButton.disabled = !dirty;
+    console.log('dirty', dirty);
   },
   onError(error) {
     console.error(error);
@@ -101,11 +102,24 @@ The OnlyOffice API script and x2t WASM initialization happen inside each host if
 ## Opening Documents
 
 ```ts
-// New document
-await createOfficeEditor(container, { hostUrl: officeHostUrl, emptyType: 'docx', fileName: 'New_Document.docx' });
+// New document. The native OnlyOffice Save button downloads by default.
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  emptyType: 'docx',
+  fileName: 'New_Document.docx',
+  saveBehavior: 'download',
+});
 
-// File / Blob
-await createOfficeEditor(container, { hostUrl: officeHostUrl, file, fileName: file.name });
+// File / Blob. The native OnlyOffice Save button calls onSave.
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  file,
+  fileName: file.name,
+  saveBehavior: 'callback',
+  onSave: async (savedFile) => {
+    await uploadOrWriteBack(savedFile);
+  },
+});
 
 // ArrayBuffer / Uint8Array
 await createOfficeEditor(container, { hostUrl: officeHostUrl, buffer, fileName: 'report.xlsx' });
@@ -119,7 +133,7 @@ await createOfficeEditor(container, {
 });
 ```
 
-DOCX, XLSX, PPTX, and CSV are the primary targets. Common legacy DOC/XLS/PPT files can be opened through conversion.
+DOCX, XLSX, PPTX, and CSV are the primary targets. Common legacy DOC/XLS/PPT files can be opened through conversion. Treat those legacy formats as compatibility inputs: editable output is normalized to OOXML (`.docx`, `.xlsx`, `.pptx`) instead of trying to write the old binary Office format back in place.
 
 ## Saving
 
@@ -132,13 +146,29 @@ await fetch('/api/files/123', {
 });
 ```
 
-`save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests. The package does not persist the file by itself: the host application must write this `File` to its own storage target, such as a backend upload endpoint or a File System Access `createWritable()` handle.
+`save(targetExt?)` returns a browser-generated `File`. Common targets are `DOCX`, `XLSX`, `PPTX`, and `CSV`. Read-only instances reject save requests. This API remains available for programmatic integrations and tests. User-facing UI should use the native OnlyOffice Save button in the editor toolbar, not a duplicate host-side Save button.
 
-Autosave and force-save are disabled in the embedded OnlyOffice config, and co-editing is forced to `strict` mode so upstream fast-mode autosave cannot turn itself back on. The supported persistence entry point is an external Save command in your host UI that calls `editor.save()`. Use `onDirtyChange(dirty)` or `editor.getState().dirty` to enable that Save command only when the document has unsaved edits.
+Requests to save legacy `DOC`, `XLS`, or `PPT` are converted to the matching OOXML result (`DOCX`, `XLSX`, `PPTX`). Host apps that open a local legacy file should treat the returned `File.name` as authoritative and update their storage path or metadata accordingly, rather than writing OOXML bytes into a `.doc`, `.xls`, or `.ppt` path.
 
-The package exports edited bytes by calling the browser runtime's native bin export and converting that bin with the bundled x2t WASM converter. It does not call `downloadAs()` for local persistence, so host-side saves do not open a browser download dialog.
+Autosave and force-save are disabled in the embedded OnlyOffice config, and co-editing is forced to `strict` mode so upstream fast-mode autosave cannot turn itself back on. Only a manual native Save should persist or download edited content.
 
-`onSave(file)` is called during `editor.save()` and is awaited before the save promise resolves. If `onSave` rejects, `editor.save()` rejects and the proxy keeps the document dirty:
+The package exports edited bytes by calling the browser runtime's native bin export and converting that bin with the bundled x2t WASM converter. It does not call `downloadAs()` for local persistence, so callback saves do not open a browser download dialog.
+
+Document resources must travel with that native bin. Upstream DocumentServer downloads the whole document storage directory into the converter `source` folder before running FileConverter, so `Editor.bin`, changes, and sidecar files such as `media/...` are available to x2t together. This browser package has no server storage directory, so it keeps the media object URL map from open/insert operations and materializes those resources back into the x2t `/working/media` folder before Save, Print, or Download as conversion. Do not change export code to pass only the native bin; that can produce OOXML packages whose relationships still reference images while `word/media/*`, `xl/media/*`, or `ppt/media/*` files are missing.
+
+Download-as conversion should follow the upstream DocumentServer converter shape. The runtime must pass the explicit target file type in x2t params (`m_nFormatTo`), rather than relying on output filename extension inference. This matters for formats such as Markdown (`MD = 92`), where upstream x2t routes native document bins through DOCX/HTML intermediate handling before `HtmlFile2`/`MDWriter` writes the `.md` file. If browser x2t rejects a requested format, surface that conversion error and fix the x2t parameters, resources, or wasm build; do not synthesize a different document with SDKJS text export, plain text rendering, or an unrelated package as a fallback.
+
+Use [ONLYOFFICE/DocumentServer](https://github.com/ONLYOFFICE/DocumentServer) for product conversion behavior. Use [agentbridges-ai/onlyoffice-x2t-wasm](https://github.com/agentbridges-ai/onlyoffice-x2t-wasm) for browser x2t/WebAssembly build changes and releases, and [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) only for source analysis of runtime filesystem, test wiring, and wasm packaging constraints. CryptPad is not an upstream to patch from this package. Post-processing is allowed only after x2t has produced the requested target bytes, for example packaging Markdown data-URI images into a `.zip`; it must not hide a failed conversion.
+
+x2t-wasm is the only browser-side Office conversion engine for this package. Do not add another converter, Pandoc path, or fallback path for Download As outputs. Post-processing is allowed only after x2t-wasm has produced the requested target bytes, such as packaging Markdown image resources. If a visible export format cannot be produced, fix `agentbridges-ai/onlyoffice-x2t-wasm`, the x2t params, or resource materialization instead of synthesizing an alternate file.
+
+`saveBehavior` controls what happens after native export:
+
+- `auto` (default): existing `file`/`buffer`/`url` sources use `onSave`; missing `onSave` rejects. `emptyType` new documents download unless `onSave` returns `true`.
+- `callback`: require `onSave` and wait for it. Use this for local files that must be written back through File System Access.
+- `download`: trigger a browser download. Use this for blank documents that do not yet have a storage path.
+
+`onSave(file)` is called by the native Save path and by `editor.save()`, and the save acknowledgement waits for it. If `onSave` throws or rejects, the proxy keeps the document dirty and the native Save is acknowledged as failed:
 
 ```ts
 await createOfficeEditor(container, {
@@ -153,7 +183,28 @@ await createOfficeEditor(container, {
 });
 ```
 
-The native OnlyOffice "All changes saved" status is not a host persistence signal in this browser-only integration. In upstream ONLYOFFICE DocumentServer deployments that role is normally implemented by the storage service behind `callbackUrl`: the editor reports save status, the storage service downloads the edited file URL, writes it to the final path, and returns `{ "error": 0 }`. This package has no server callback endpoint, so the integrator must provide the final write step. Use [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/), [ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/), [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer), [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor), and [cryptpad/onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm) as the integration references.
+The native OnlyOffice "All changes saved" status is not a host persistence signal in this browser-only integration. In upstream ONLYOFFICE DocumentServer deployments that role is normally implemented by the storage service behind `callbackUrl`: the editor reports save status, the storage service downloads the edited file URL, writes it to the final path, and returns `{ "error": 0 }`. This package has no server callback endpoint, so the integrator must provide the final write step. Use [ONLYOFFICE callback handler](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/), [ONLYOFFICE saving file](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/saving-file/), [ONLYOFFICE/DocumentServer](https://github.com/ONLYOFFICE/DocumentServer), [ONLYOFFICE/Docker-DocumentServer](https://github.com/ONLYOFFICE/Docker-DocumentServer), and [cryptpad/onlyoffice-editor](https://github.com/cryptpad/onlyoffice-editor) as the save/storage integration references.
+
+## Printing
+
+Use the native OnlyOffice Print button. Upstream DocumentServer prints from the editor iframe by calling `asc_Print()`, generating a server PDF URL, loading that URL into the hidden `#id-print-frame`, and calling `iframe.contentWindow.print()`. In the official server implementation, the URL is a same-origin `/printfile/:docid/:filename` response with `Content-Type: application/pdf` and `Content-Disposition: inline`; the filename is intentionally included in both the URL path and disposition because Chrome uses the resource name when saving the print result.
+
+The browser runtime mirrors that flow without a server-side `printfile` endpoint: it provides the parent `APP.printPdf` bridge expected by the editor, asks the editor iframe for its native print renderer stream, converts that raw non-base64 stream through x2t `bin2pdf` (`m_bIsNoBase64=true`), stores the resulting PDF in a Cache API entry on the editor host origin, and returns a temporary PDF URL under `/__onlyoffice-browser-print__/.../<file>.pdf?filename=<file>.pdf` on that same editor host origin. The editor host service worker serves that PDF back to OnlyOffice's built-in hidden `#id-print-frame` with PDF response headers matching the official shape. Keep the URL resource name, `Content-Disposition` filename, and PDF document metadata title aligned; Chrome's print/PDF viewer path can derive the "Save as PDF" default name from the PDF title metadata, so the runtime appends an incremental PDF info dictionary with a UTF-16BE `/Title` before caching the generated PDF.
+
+This matches the browser-side constraints for isolated hosts: `window.print()` prints the current loaded document, iframe `contentWindow` access is governed by same-origin policy, and modern `blob:` URLs are subject to storage partitioning/navigation restrictions. Do not use an outer sandbox, even with `allow-same-origin` and `allow-modals`; Chrome can still classify the nested PDF print frame as inaccessible for this native flow. The packaged OnlyOffice runtime is patched at build time to keep the hidden print iframe, retry `contentWindow.print()` briefly while the PDF document becomes script-accessible, and suppress `window.open()` / `downloadAs()` fallbacks. Do not rasterize the document through images, canvas, or PDF.js for printing.
+
+Reference docs:
+
+- [MDN `Window.print()`](https://developer.mozilla.org/en-US/docs/Web/API/Window/print)
+- [MDN `HTMLIFrameElement.contentWindow`](https://developer.mozilla.org/en-US/docs/Web/API/HTMLIFrameElement/contentWindow)
+- [MDN same-origin policy](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Same-origin_policy)
+- [MDN `blob:` URLs and storage partitioning](https://developer.mozilla.org/en-US/docs/Web/URI/Reference/Schemes/blob)
+- [MDN service workers](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers)
+- [Chrome sandboxed modal dialogs sample](https://googlechrome.github.io/samples/block-modal-dialogs-sandboxed-iframe/index.html)
+- [ONLYOFFICE/web-apps document print controller](https://github.com/ONLYOFFICE/web-apps/blob/master/apps/documenteditor/main/app/controller/Main.js)
+- [ONLYOFFICE/web-apps print settings controller](https://github.com/ONLYOFFICE/web-apps/blob/master/apps/documenteditor/main/app/controller/Print.js)
+
+Printing is intentionally independent from saving: it does not call `downloadAs()`, does not write through `onSave`, and does not change dirty state. The print E2E matrix covers `xlsx`, `xls`, `docx`, `doc`, `pptx`, and `ppt`.
 
 ## Readonly and Cleanup
 

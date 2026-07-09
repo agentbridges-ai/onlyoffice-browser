@@ -7,7 +7,6 @@ type DemoRecord = {
   panel: HTMLElement;
   status: HTMLElement;
   readonlyButton: HTMLButtonElement;
-  saveButton: HTMLButtonElement;
   closing: boolean;
 };
 type DemoEditorOptions = Omit<Parameters<typeof createOfficeEditor>[1], 'hostUrl'> & { hostUrl?: string };
@@ -106,14 +105,12 @@ function refreshPanelActions(record: DemoRecord): void {
   const isPreview = state.mode === 'preview';
   record.readonlyButton.disabled = isPreview;
   record.readonlyButton.textContent = state.readonly ? 'Edit' : 'Readonly';
-  record.saveButton.disabled = state.readonly || !state.dirty;
 }
 
 async function removeRecord(record: DemoRecord): Promise<void> {
   if (record.closing) return;
   record.closing = true;
   record.readonlyButton.disabled = true;
-  record.saveButton.disabled = true;
   const closeButton = record.panel.querySelector<HTMLButtonElement>('[data-action="close"]');
   if (closeButton) closeButton.disabled = true;
   setStatus(record, 'closing');
@@ -139,7 +136,6 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
       </div>
       <div class="panel-actions">
         <button type="button" data-action="readonly">Readonly</button>
-        <button type="button" data-action="save">Save</button>
         <button type="button" data-action="close">Close</button>
       </div>
     </header>
@@ -149,12 +145,12 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
   const slot = panel.querySelector<HTMLElement>('.editor-slot')!;
   const status = panel.querySelector<HTMLElement>('[data-role="status"]')!;
   const readonlyButton = panel.querySelector<HTMLButtonElement>('[data-action="readonly"]')!;
-  const saveButton = panel.querySelector<HTMLButtonElement>('[data-action="save"]')!;
   grid.appendChild(panel);
 
   const instance = await createOfficeEditor(slot, {
     ...options,
     hostUrl: getDefaultOfficeHostUrl(),
+    saveBehavior: options.saveBehavior || 'download',
     hardResetOnLastDestroy,
     onReady: (readyInstance) => {
       const state = readyInstance.getState();
@@ -173,21 +169,11 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
     },
   });
 
-  const record: DemoRecord = { id, instance, panel, status, readonlyButton, saveButton, closing: false };
+  const record: DemoRecord = { id, instance, panel, status, readonlyButton, closing: false };
   records.push(record);
   const initialState = instance.getState();
   setStatus(record, `${initialState.fileType.toUpperCase()} ${getModeLabel(initialState.mode)}`);
   refreshPanelActions(record);
-
-  saveButton.addEventListener('click', async () => {
-    try {
-      setStatus(record, 'saving');
-      await instance.save();
-      refreshPanelActions(record);
-    } catch (error) {
-      setStatus(record, `save failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  });
 
   readonlyButton.addEventListener('click', () => {
     const nextReadonly = !instance.getState().readonly;

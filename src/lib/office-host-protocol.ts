@@ -1,5 +1,15 @@
 export const OFFICE_HOST_PROTOCOL = 'onlyoffice-browser-host/v1';
 
+export type OfficeHostSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
+export type OfficeHostSaveBehavior = 'auto' | 'callback' | 'download';
+export type OfficeHostInterfaceTheme = 'system' | 'light' | 'dark';
+
+export type OfficeSaveToNewFormatConfirmationOptions = {
+  title?: string;
+  message?: string;
+  dontshow?: boolean;
+};
+
 export type OfficeHostSource =
   | {
       kind: 'empty';
@@ -10,6 +20,7 @@ export type OfficeHostSource =
       buffer: ArrayBuffer;
       fileName: string;
       mimeType: string;
+      sourceKind: Exclude<OfficeHostSourceKind, 'new-document'>;
     };
 
 export interface OfficeHostInitOptions {
@@ -17,7 +28,9 @@ export interface OfficeHostInitOptions {
   mode?: 'edit' | 'readonly' | 'preview';
   readonly?: boolean;
   spellcheck?: boolean;
+  interfaceTheme?: OfficeHostInterfaceTheme;
   lang?: string;
+  saveBehavior?: OfficeHostSaveBehavior;
   source: OfficeHostSource;
 }
 
@@ -28,6 +41,7 @@ export interface OfficeHostState {
   mode: 'edit' | 'readonly' | 'preview';
   readonly: boolean;
   dirty: boolean;
+  sourceKind: OfficeHostSourceKind;
   status: 'opening' | 'ready' | 'destroyed' | 'error';
   destroyed: boolean;
 }
@@ -59,8 +73,23 @@ export type OfficeHostParentMessage =
       targetExt?: string;
     })
   | (OfficeHostBaseMessage & {
+      type: 'SAVE_ACK';
+      requestId: string;
+      ok: boolean;
+      message?: string;
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'CONFIRM_SAVE_TO_NEW_FORMAT';
+      requestId: string;
+      options?: OfficeSaveToNewFormatConfirmationOptions;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'SET_READONLY';
       readonly: boolean;
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'SET_INTERFACE_THEME';
+      interfaceTheme: OfficeHostInterfaceTheme;
     })
   | (OfficeHostBaseMessage & {
       type: 'DESTROY';
@@ -82,8 +111,30 @@ export type OfficeHostChildMessage =
       mimeType: string;
     })
   | (OfficeHostBaseMessage & {
+      type: 'DOWNLOAD_RESULT';
+      buffer: ArrayBuffer;
+      fileName: string;
+      mimeType: string;
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'SAVE_AS_RESULT';
+      buffer: ArrayBuffer;
+      fileName: string;
+      mimeType: string;
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'PRINT_TITLE';
+      title: string;
+      durationMs: number;
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'CONFIRM_SAVE_TO_NEW_FORMAT_RESULT';
+      requestId: string;
+      confirmed: boolean;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'ERROR';
-      phase: 'handshake' | 'init' | 'save' | 'setReadonly' | 'destroy' | 'runtime';
+      phase: 'handshake' | 'init' | 'save' | 'confirm' | 'setReadonly' | 'setInterfaceTheme' | 'destroy' | 'runtime';
       message: string;
     })
   | (OfficeHostBaseMessage & {
