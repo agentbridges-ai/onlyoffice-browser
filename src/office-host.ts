@@ -17,6 +17,10 @@ const parentOrigin = params.get('parentOrigin') || '';
 const root = document.querySelector<HTMLElement>('#office-host') ?? document.body;
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
+/** Bump whenever already-open host frames must be recreated. */
+const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.28';
+const OFFICE_HOST_BUILD_ID = 'office-host-0.3.28-r1';
+const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 
 let port: MessagePort | null = null;
 let editor: OfficeEditorInstance | null = null;
@@ -40,16 +44,45 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function postWindowMessage(type: OfficeHostWindowMessage['type']): void {
+function postWindowMessage(message: OfficeHostWindowMessage): void {
   if (!parentOrigin || !sessionId) return;
-  window.parent.postMessage(
-    {
+  window.parent.postMessage(message, parentOrigin);
+}
+
+function bytesToHex(bytes: ArrayBuffer): string {
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function loadOfficeHostIdentity() {
+  const response = await fetch(OFFICE_RUNTIME_ASSET_MANIFEST_PATH, {
+    cache: 'no-store',
+    credentials: 'omit',
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to load compact Office runtime manifest (${response.status})`);
+  }
+  const manifest = await response.arrayBuffer();
+  return {
+    packageVersion: OFFICE_BROWSER_PACKAGE_VERSION,
+    hostBuildId: OFFICE_HOST_BUILD_ID,
+    assetManifestDigest: bytesToHex(await crypto.subtle.digest('SHA-256', manifest)),
+  };
+}
+
+async function announceHostReady(): Promise<void> {
+  try {
+    const identity = await loadOfficeHostIdentity();
+    postWindowMessage({
       protocol: OFFICE_HOST_PROTOCOL,
-      type,
+      type: 'HOST_READY',
       sessionId,
-    } satisfies OfficeHostWindowMessage,
-    parentOrigin,
-  );
+      identity,
+    });
+  } catch (error) {
+    // A host whose assets cannot be identified must fail closed. The parent
+    // times out without ever transferring document bytes into this frame.
+    console.error('[onlyoffice-browser] Failed to identify Office host runtime', error);
+  }
 }
 
 function getHostResetUrl(): string {
@@ -636,4 +669,4 @@ window.addEventListener('pagehide', () => {
   void destroyRuntime();
 });
 window.addEventListener('unload', () => undefined);
-postWindowMessage('HOST_READY');
+void announceHostReady();

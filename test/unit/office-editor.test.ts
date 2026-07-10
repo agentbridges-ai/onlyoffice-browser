@@ -4,6 +4,11 @@ import { OFFICE_HOST_PROTOCOL, type OfficeHostParentMessage } from '../../src/li
 import { createOfficeEditor, loadOfficeEditorApi } from '../../src/lib/office-editor';
 
 const HOST_URL = 'http://127.0.0.1:5173/office-host.html';
+const HOST_IDENTITY = {
+  packageVersion: '0.3.28',
+  hostBuildId: 'office-host-0.3.28-r1',
+  assetManifestDigest: 'a'.repeat(64),
+};
 
 function flush(): Promise<void> {
   return Promise.resolve().then(() => undefined);
@@ -76,6 +81,7 @@ async function connectHost(
         protocol: OFFICE_HOST_PROTOCOL,
         type: 'HOST_READY',
         sessionId,
+        identity: HOST_IDENTITY,
       },
     }),
   );
@@ -374,6 +380,7 @@ describe('office-editor parent proxy', () => {
           protocol: OFFICE_HOST_PROTOCOL,
           type: 'HOST_READY',
           sessionId,
+          identity: HOST_IDENTITY,
         },
       }),
     );
@@ -382,6 +389,61 @@ describe('office-editor parent proxy', () => {
 
     await connectHost(container);
     await expect(promise).resolves.toMatchObject({ id: sessionId });
+  });
+
+  it('exposes the verified host identity after the ready handshake', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      expectedHostIdentity: HOST_IDENTITY,
+      destroyTimeoutMs: 1,
+    });
+    await connectHost(container);
+    const instance = await promise;
+
+    expect(instance.getHostIdentity()).toEqual(HOST_IDENTITY);
+    expect(instance.getHostIdentity()).not.toBe(HOST_IDENTITY);
+    await instance.destroy();
+  });
+
+  it('rejects an incompatible host before transferring document bytes', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const expectedHostIdentity = { ...HOST_IDENTITY, hostBuildId: 'newer-host-build' };
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['sensitive'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      expectedHostIdentity,
+      destroyTimeoutMs: 1,
+    });
+    const iframe = await waitForIframe(container);
+    const parentWindow = container.ownerDocument.defaultView || window;
+    const postMessage = vi.spyOn(iframe.contentWindow! as any, 'postMessage');
+    parentWindow.dispatchEvent(
+      new parentWindow.MessageEvent('message', {
+        origin: new URL(iframe.src).origin,
+        source: iframe.contentWindow,
+        data: {
+          protocol: OFFICE_HOST_PROTOCOL,
+          type: 'HOST_READY',
+          sessionId: getSessionId(iframe),
+          identity: HOST_IDENTITY,
+        },
+      }),
+    );
+
+    await expect(promise).rejects.toMatchObject({
+      name: 'OfficeHostIdentityMismatchError',
+      expected: expectedHostIdentity,
+      actual: HOST_IDENTITY,
+    });
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   it('resolves save requests with transferred bytes and calls onSave once', async () => {
