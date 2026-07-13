@@ -33,6 +33,7 @@ export interface OfficeHostInitOptions {
   fileName?: string;
   mode?: 'edit' | 'readonly' | 'preview';
   readonly?: boolean;
+  canReturnToPreview?: boolean;
   spellcheck?: boolean;
   interfaceTheme?: OfficeHostInterfaceTheme;
   lang?: string;

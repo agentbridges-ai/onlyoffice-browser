@@ -69,6 +69,8 @@ export interface CreateOfficeEditorOptions {
   fileName?: string;
   mode?: OfficeEditorMode;
   readonly?: boolean;
+  /** Preserve the viewer origin when restoring a document directly in edit mode. */
+  canReturnToPreview?: boolean;
   spellcheck?: boolean;
   interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
@@ -369,6 +371,7 @@ async function prepareHostInit(
       fileName,
       mode: options.mode,
       readonly: options.readonly,
+      canReturnToPreview: options.canReturnToPreview,
       spellcheck: options.spellcheck ?? false,
       interfaceTheme: options.interfaceTheme,
       lang: options.lang,
@@ -481,7 +484,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     this.prepared = prepared;
     this.hostOrigin = prepared.hostUrl.origin;
     this.state = prepared.initialState;
-    this.returnsToPreview = prepared.initialState.mode === 'preview';
+    this.returnsToPreview = prepared.initialState.mode === 'preview' || options.canReturnToPreview === true;
     this.parentWindow = container.ownerDocument.defaultView || window;
   }
 

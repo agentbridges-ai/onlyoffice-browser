@@ -18,8 +18,8 @@ const root = document.querySelector<HTMLElement>('#office-host') ?? document.bod
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
 /** Bump whenever already-open host frames must be recreated. */
-const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.28';
-const OFFICE_HOST_BUILD_ID = 'office-host-0.3.28-r1';
+const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.29';
+const OFFICE_HOST_BUILD_ID = 'office-host-0.3.29-r1';
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 
 let port: MessagePort | null = null;
@@ -494,6 +494,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       fileName: message.options.fileName,
       mode: message.options.mode,
       readonly: message.options.readonly,
+      canReturnToPreview: message.options.canReturnToPreview,
       spellcheck: message.options.spellcheck ?? false,
       interfaceTheme: message.options.interfaceTheme,
       lang: message.options.lang,

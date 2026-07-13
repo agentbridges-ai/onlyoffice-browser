@@ -11,6 +11,7 @@ export const DEFAULT_FONT_GENERATOR_IMAGE = 'onlyoffice/documentserver:9.3.0';
 export const FONT_GENERATOR_IMAGE_ENV = 'ONLYOFFICE_BROWSER_FONT_GENERATOR_IMAGE';
 export const FONT_SET_ENV = 'ONLYOFFICE_BROWSER_FONT_SET';
 export const GENERATED_FONT_ASSETS_MANIFEST = 'onlyoffice-browser-font-assets.json';
+export const GENERATED_FONT_SOURCE_MAP = 'onlyoffice-browser-font-source-map.json';
 export const DEFAULT_FONT_SET = 'zh-core';
 
 const SUPPORTED_FONT_EXTENSIONS = new Set(['.ttf', '.tte', '.otf', '.otc', '.ttc', '.woff', '.woff2']);
@@ -34,11 +35,15 @@ const ZH_CORE_FONT_FAMILIES = [
   'Times New Roman',
 ];
 const ZH_CORE_HIDDEN_FONT_FAMILIES = [
+  'ASCW3',
   'Bookshelf Symbol 7',
   'Marlett',
   'Monotype Sorts',
   'MS Reference Specialty',
   'MT Extra',
+  'MS Gothic',
+  'MS PGothic',
+  'MS UI Gothic',
   'OpenSymbol',
   'Segoe UI Symbol',
   'Symbol',
@@ -49,6 +54,7 @@ const ZH_CORE_HIDDEN_FONT_FAMILIES = [
   'Wingdings 3',
 ];
 const ZH_CORE_SOURCE_FILE_NAMES = [
+  'ASC.ttf',
   'Aptos-Bold-Italic.ttf',
   'Aptos-Bold.ttf',
   'Aptos-Italic.ttf',
@@ -77,6 +83,7 @@ const ZH_CORE_SOURCE_FILE_NAMES = [
   'monotypesorts.ttf',
   'ms reference specialty.ttf',
   'mtextra.ttf',
+  'msgothic.ttc',
   'seguisym.ttf',
   'simsunb.ttf',
   'symbol.ttf',
@@ -90,11 +97,15 @@ const ZH_CORE_SOURCE_FILE_NAMES = [
   'wingdings.ttf',
 ];
 const ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY = {
+  ASCW3: ['ASC.ttf'],
   'Bookshelf Symbol 7': ['bookshelf symbol 7.ttf'],
   Marlett: ['marlett.ttf'],
   'Monotype Sorts': ['monotypesorts.ttf'],
   'MS Reference Specialty': ['ms reference specialty.ttf'],
   'MT Extra': ['mtextra.ttf'],
+  'MS Gothic': ['msgothic.ttc'],
+  'MS PGothic': ['msgothic.ttc'],
+  'MS UI Gothic': ['msgothic.ttc'],
   'Segoe UI Symbol': ['seguisym.ttf'],
   Symbol: ['symbol.ttf'],
   Webdings: ['webdings.ttf'],
@@ -470,6 +481,12 @@ def exact_source_index_for_family(family_name):
             return source_index
     return -1
 
+def face_index_for_source(info, source_index):
+    for slot_index in range(1, len(info), 2):
+        if info[slot_index] == source_index:
+            return info[slot_index + 1]
+    return 0
+
 def allowed_same_family_source_index(info, slot_index):
     if info[0] in keep_font_families:
         return info[slot_index]
@@ -522,6 +539,7 @@ for original_info in web_infos:
     info = list(original_info)
     keep_actual_font = font_set == "full" or info[0] in kept_family_names
     exact_source_index = exact_source_index_for_family(info[0]) if font_set == "zh-core" and keep_actual_font else -1
+    exact_source_face_index = face_index_for_source(info, exact_source_index) if exact_source_index >= 0 else 0
     for slot_index in range(1, len(info), 2):
         source_index = info[slot_index]
         if source_index < 0:
@@ -529,7 +547,7 @@ for original_info in web_infos:
         if exact_source_index >= 0 and info[0] in zh_core_hidden_font_families:
             source_index = exact_source_index
             info[slot_index] = source_index
-            info[slot_index + 1] = 0
+            info[slot_index + 1] = exact_source_face_index
         if font_set == "zh-core" and keep_actual_font and info[0] not in keep_font_families:
             if source_file_name(source_index) not in zh_core_source_file_names:
                 same_family_source_index = allowed_same_family_source_index(info, slot_index)

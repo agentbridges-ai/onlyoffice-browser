@@ -5,8 +5,8 @@ import { createOfficeEditor, loadOfficeEditorApi } from '../../src/lib/office-ed
 
 const HOST_URL = 'http://127.0.0.1:5173/office-host.html';
 const HOST_IDENTITY = {
-  packageVersion: '0.3.28',
-  hostBuildId: 'office-host-0.3.28-r1',
+  packageVersion: '0.3.29',
+  hostBuildId: 'office-host-0.3.29-r1',
   assetManifestDigest: 'a'.repeat(64),
 };
 
@@ -306,6 +306,7 @@ describe('office-editor parent proxy', () => {
       file: new File(['a'], 'alpha.docx'),
       fileName: 'alpha.docx',
       interfaceTheme: 'dark',
+      canReturnToPreview: true,
       onReady,
     });
     const { iframe, messages } = await connectHost(container);
@@ -320,6 +321,7 @@ describe('office-editor parent proxy', () => {
       options: {
         fileName: 'alpha.docx',
         interfaceTheme: 'dark',
+        canReturnToPreview: true,
         spellcheck: false,
         source: {
           kind: 'buffer',

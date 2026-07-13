@@ -102,6 +102,8 @@ export interface CreateOfficeEditorOptions {
   sourceKind?: OfficeEditorSourceKind;
   mode?: OfficeEditorMode;
   readonly?: boolean;
+  /** Preserve the viewer origin when restoring a document directly in edit mode. */
+  canReturnToPreview?: boolean;
   spellcheck?: boolean;
   interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
@@ -1926,7 +1928,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.editorLang = options.lang || getOnlyOfficeLang();
     const initialMode = resolveInitialMode(options);
     this.editorMode = initialMode;
-    this.previewEditAllowed = initialMode === 'preview' && options.readonly !== true;
+    this.previewEditAllowed = options.readonly !== true
+      && (initialMode === 'preview' || options.canReturnToPreview === true);
     this.readonlyMode = { value: initialMode !== 'edit' };
   }
 

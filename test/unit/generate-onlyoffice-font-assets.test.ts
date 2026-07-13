@@ -174,23 +174,31 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(script).not.toContain('first_source_index(find_font_info("Microsoft YaHei")) or');
   });
 
-  it('keeps Office symbol fonts in zh-core without exposing them in the font picker', () => {
+  it('keeps Office symbol and document compatibility fonts in zh-core without exposing them in the font picker', () => {
     const script = dockerGenerationScript({ fontSet: 'zh-core', keepFonts: [] });
 
     expect(script).toContain('ZH_CORE_HIDDEN_FONT_FAMILIES');
+    expect(script).toContain('ASCW3');
     expect(script).toContain('Wingdings');
     expect(script).toContain('Symbol');
     expect(script).toContain('MT Extra');
     expect(script).toContain('Segoe UI Symbol');
+    expect(script).toContain('MS Gothic');
+    expect(script).toContain('MS PGothic');
+    expect(script).toContain('MS UI Gothic');
     expect(script).toContain('symbol.ttf');
     expect(script).toContain('wingdings.ttf');
     expect(script).toContain('mtextra.ttf');
     expect(script).toContain('seguisym.ttf');
+    expect(script).toContain('msgothic.ttc');
+    expect(script).toContain('ASC.ttf');
     expect(script).toContain('ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY');
     expect(script).toContain('EXTRA_DIR="$EXTRA"');
     expect(script).toContain('extra_source_path');
     expect(script).toContain('exact_source_index_for_family');
+    expect(script).toContain('face_index_for_source');
     expect(script).toContain('source_index = exact_source_index');
+    expect(script).toContain('info[slot_index + 1] = exact_source_face_index');
     expect(script).toContain('info[0] in zh_core_hidden_font_families');
     expect(script).toContain('visible_family_names = {info[0] for info in web_infos');
     expect(script).toContain('"visibleFamilies": sorted(visible_family_names)');

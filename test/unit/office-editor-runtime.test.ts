@@ -820,7 +820,6 @@ describe('office editor runtime', () => {
 
     await instance.destroy();
   });
-
   it('reopens a preview document in edit mode when OnlyOffice requests edit rights', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -966,6 +965,46 @@ describe('office editor runtime', () => {
     await flush();
 
     expect(docEditorConfigs[1].type).toBe('desktop');
+    expect(docEditorConfigs[1].editorConfig.mode).toBe('view');
+    expect(instance.getState()).toMatchObject({ mode: 'preview', readonly: true, status: 'ready' });
+
+    await instance.destroy();
+  });
+
+  it('keeps the return-to-preview action when a preview-derived session is restored directly in edit mode', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+      readonly: false,
+      canReturnToPreview: true,
+      lang: 'zh',
+    });
+    await flush();
+
+    const frame = container.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+    const frameWindow = frame?.contentWindow;
+    const frameDocument = frameWindow?.document;
+    expect(frameWindow).toBeTruthy();
+    expect(frameDocument).toBeTruthy();
+
+    const searchSlot = frameDocument!.createElement('span');
+    searchSlot.id = 'slot-btn-search';
+    searchSlot.className = 'btn-slot';
+    frameDocument!.body.appendChild(searchSlot);
+
+    await waitForCondition(() => !!frameDocument!.querySelector('#onlyoffice-browser-return-preview-mode button'));
+    frameDocument!
+      .querySelector<HTMLButtonElement>('#onlyoffice-browser-return-preview-mode button')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    await waitForCondition(() => docEditorConfigs.length === 2);
+    await flush();
+
+    expect(docEditorConfigs[0].editorConfig.mode).toBe('edit');
     expect(docEditorConfigs[1].editorConfig.mode).toBe('view');
     expect(instance.getState()).toMatchObject({ mode: 'preview', readonly: true, status: 'ready' });
 
