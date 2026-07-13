@@ -12,6 +12,8 @@ export {
   type OfficeEditorState,
   type OfficeHostUrlContext,
   type OfficeHostUrlResolver,
+  type OfficeHostIdentity,
+  OfficeHostIdentityMismatchError,
   type OfficeSaveBehavior,
   type OfficeSaveAsCallbackResult,
   type OfficeSaveCallbackResult,

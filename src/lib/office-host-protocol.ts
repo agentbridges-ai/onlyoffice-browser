@@ -4,6 +4,12 @@ export type OfficeHostSourceKind = 'local-file' | 'new-document' | 'buffer' | 'u
 export type OfficeHostSaveBehavior = 'auto' | 'callback' | 'download';
 export type OfficeHostInterfaceTheme = 'system' | 'light' | 'dark';
 
+export interface OfficeHostIdentity {
+  packageVersion: string;
+  hostBuildId: string;
+  assetManifestDigest: string;
+}
+
 export type OfficeSaveToNewFormatConfirmationOptions = {
   title?: string;
   message?: string;
@@ -27,6 +33,7 @@ export interface OfficeHostInitOptions {
   fileName?: string;
   mode?: 'edit' | 'readonly' | 'preview';
   readonly?: boolean;
+  canReturnToPreview?: boolean;
   spellcheck?: boolean;
   interfaceTheme?: OfficeHostInterfaceTheme;
   lang?: string;
@@ -55,6 +62,7 @@ export interface OfficeHostBaseMessage {
 export type OfficeHostWindowMessage =
   | (OfficeHostBaseMessage & {
       type: 'HOST_READY';
+      identity: OfficeHostIdentity;
     })
   | (OfficeHostBaseMessage & {
       type: 'HOST_RESET_DONE';

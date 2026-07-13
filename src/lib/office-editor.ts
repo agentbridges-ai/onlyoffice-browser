@@ -3,6 +3,7 @@ import {
   OFFICE_HOST_PROTOCOL,
   type OfficeHostChildMessage,
   type OfficeHostInterfaceTheme,
+  type OfficeHostIdentity,
   type OfficeHostInitOptions,
   type OfficeHostParentMessage,
   type OfficeHostSaveBehavior,
@@ -12,6 +13,7 @@ import {
   type OfficeHostState,
   type OfficeHostWindowMessage,
 } from './office-host-protocol';
+import { officeHostIdentitiesEqual } from './office-host-identity';
 
 const DESTROY_TIMEOUT_MS = 5_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
@@ -45,7 +47,7 @@ export type OfficeEditorInput = Blob | ArrayBuffer | Uint8Array;
 export type OfficeEditorSourceKind = OfficeHostSourceKind;
 export type OfficeSaveBehavior = OfficeHostSaveBehavior;
 export type OfficeInterfaceTheme = OfficeHostInterfaceTheme;
-export type { OfficeSaveToNewFormatConfirmationOptions };
+export type { OfficeHostIdentity, OfficeSaveToNewFormatConfirmationOptions };
 export type OfficeSaveCallbackResult = void | boolean;
 export type OfficeSaveAsCallbackResult = void | boolean;
 export type OfficeDownloadCallbackResult = void;
@@ -59,6 +61,7 @@ export type OfficeHostUrlResolver = string | ((context: OfficeHostUrlContext) =>
 
 export interface CreateOfficeEditorOptions {
   hostUrl: OfficeHostUrlResolver;
+  expectedHostIdentity?: OfficeHostIdentity;
   file?: File | Blob;
   buffer?: OfficeEditorInput;
   url?: string;
@@ -66,6 +69,8 @@ export interface CreateOfficeEditorOptions {
   fileName?: string;
   mode?: OfficeEditorMode;
   readonly?: boolean;
+  /** Preserve the viewer origin when restoring a document directly in edit mode. */
+  canReturnToPreview?: boolean;
   spellcheck?: boolean;
   interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
@@ -102,6 +107,21 @@ export interface OfficeEditorInstance {
   setReadonly(readonly: boolean): void;
   destroy(): Promise<void>;
   getState(): OfficeEditorState;
+  getHostIdentity(): OfficeHostIdentity;
+}
+
+export class OfficeHostIdentityMismatchError extends Error {
+  readonly expected: OfficeHostIdentity;
+  readonly actual: OfficeHostIdentity;
+
+  constructor(expected: OfficeHostIdentity, actual: OfficeHostIdentity) {
+    super(
+      `Office host identity mismatch (expected ${expected.packageVersion}/${expected.hostBuildId}/${expected.assetManifestDigest}, received ${actual.packageVersion}/${actual.hostBuildId}/${actual.assetManifestDigest})`,
+    );
+    this.name = 'OfficeHostIdentityMismatchError';
+    this.expected = expected;
+    this.actual = actual;
+  }
 }
 
 type PendingRequest = {
@@ -351,6 +371,7 @@ async function prepareHostInit(
       fileName,
       mode: options.mode,
       readonly: options.readonly,
+      canReturnToPreview: options.canReturnToPreview,
       spellcheck: options.spellcheck ?? false,
       interfaceTheme: options.interfaceTheme,
       lang: options.lang,
@@ -453,6 +474,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private destroyPromise: Promise<void> | null = null;
   private unsandboxedHostFrameCleanup: (() => void) | null = null;
   private state: OfficeEditorState;
+  private hostIdentity: OfficeHostIdentity | null = null;
   private readonly returnsToPreview: boolean;
 
   private constructor(container: HTMLElement, options: CreateOfficeEditorOptions, prepared: PreparedHostInit) {
@@ -462,7 +484,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     this.prepared = prepared;
     this.hostOrigin = prepared.hostUrl.origin;
     this.state = prepared.initialState;
-    this.returnsToPreview = prepared.initialState.mode === 'preview';
+    this.returnsToPreview = prepared.initialState.mode === 'preview' || options.canReturnToPreview === true;
     this.parentWindow = container.ownerDocument.defaultView || window;
   }
 
@@ -510,8 +532,8 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     iframe.src = this.prepared.hostUrl.href;
     activeInstances.set(this.id, this);
 
-    return readyPromise.catch((error) => {
-      this.destroy();
+    return readyPromise.catch(async (error) => {
+      await this.destroy();
       throw error;
     });
   }
@@ -528,6 +550,13 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     if (message.type !== 'HOST_READY') {
       return;
     }
+
+    const expectedIdentity = this.options.expectedHostIdentity;
+    if (expectedIdentity && !officeHostIdentitiesEqual(expectedIdentity, message.identity)) {
+      this.failBeforeReady(new OfficeHostIdentityMismatchError(expectedIdentity, message.identity));
+      return;
+    }
+    this.hostIdentity = message.identity;
 
     this.connected = true;
     this.clearHostReadyTimeout();
@@ -874,6 +903,13 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
   getState(): OfficeEditorState {
     return { ...this.state };
+  }
+
+  getHostIdentity(): OfficeHostIdentity {
+    if (!this.hostIdentity) {
+      throw new Error('Office host identity is unavailable before the host is ready');
+    }
+    return { ...this.hostIdentity };
   }
 
   destroy(): Promise<void> {
