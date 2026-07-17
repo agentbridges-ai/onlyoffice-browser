@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 test.setTimeout(4 * 60_000);
+test.describe.configure({ mode: 'serial' });
 
 type SourceType = 'doc' | 'docx' | 'xls' | 'xlsx' | 'ppt' | 'pptx';
 type DownloadKind =

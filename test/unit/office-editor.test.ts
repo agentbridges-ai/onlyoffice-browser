@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OFFICE_HOST_PROTOCOL, type OfficeHostParentMessage } from '../../src/lib/office-host-protocol';
-import { createOfficeEditor, loadOfficeEditorApi } from '../../src/lib/office-editor';
+import { createOfficeEditor, loadOfficeEditorApi, mountOfficeEditor } from '../../src/lib/office-editor';
 
 const HOST_URL = 'http://127.0.0.1:5173/office-host.html';
 const HOST_IDENTITY = {
@@ -42,15 +42,15 @@ async function connectHost(
   const messages: OfficeHostParentMessage[] = [];
   let childPort: MessagePort | null = null;
 
-  vi.spyOn(iframe.contentWindow! as any, 'postMessage').mockImplementation(
-    (...args: unknown[]) => {
-      const transfer = args[2] as Transferable[] | undefined;
+  vi.spyOn(iframe.contentWindow! as any, 'postMessage').mockImplementation((...args: unknown[]) => {
+    const transfer = args[2] as Transferable[] | undefined;
     childPort = transfer?.[0] as MessagePort;
     childPort.onmessage = (event: MessageEvent<OfficeHostParentMessage>) => {
       messages.push(event.data);
       onChildMessage?.(event.data, childPort!);
       if (event.data.type === 'INIT') {
-        const sourceKind = event.data.options.source.kind === 'empty' ? 'new-document' : event.data.options.source.sourceKind;
+        const sourceKind =
+          event.data.options.source.kind === 'empty' ? 'new-document' : event.data.options.source.sourceKind;
         childPort!.postMessage({
           protocol: OFFICE_HOST_PROTOCOL,
           type: 'READY',
@@ -69,9 +69,8 @@ async function connectHost(
         });
       }
     };
-      childPort.start();
-    },
-  );
+    childPort.start();
+  });
 
   parentWindow.dispatchEvent(
     new parentWindow.MessageEvent('message', {
@@ -109,6 +108,93 @@ describe('office-editor parent proxy', () => {
   it('keeps loadOfficeEditorApi as a parent-side no-op', async () => {
     await expect(loadOfficeEditorApi()).resolves.toBeUndefined();
     expect(document.querySelectorAll('script[data-office-editor-api="true"]')).toHaveLength(0);
+  });
+
+  it('mounts an isolated host synchronously and defers document activation', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const mount = mountOfficeEditor(container, {
+      hostUrl: window.location.origin + '/office-host.html',
+      file: new File(['a'], 'deferred.docx'),
+      fileName: 'deferred.docx',
+      destroyTimeoutMs: 1,
+    });
+
+    const iframe = container.querySelector<HTMLIFrameElement>('iframe');
+    expect(iframe).not.toBeNull();
+    expect(getSessionId(iframe!)).toBe(mount.id);
+    expect(mount.getState()).toMatchObject({ phase: 'host-loading' });
+
+    const connection = await connectHost(container);
+    expect(connection.messages).toEqual([]);
+    expect(mount.getState()).toMatchObject({ phase: 'waiting-for-activation' });
+
+    const activation = mount.activate();
+    await expect(activation).resolves.toMatchObject({ id: mount.id });
+    expect(connection.messages[0]).toMatchObject({ type: 'INIT' });
+    expect(mount.getState()).toMatchObject({ phase: 'ready' });
+
+    await mount.destroy();
+    expect(mount.getState()).toMatchObject({ phase: 'destroyed' });
+  });
+
+  it('routes out-of-order READY messages and destruction to independent mounts', async () => {
+    const firstContainer = document.createElement('div');
+    const secondContainer = document.createElement('div');
+    document.body.append(firstContainer, secondContainer);
+    const options = (fileName: string) => ({
+      hostUrl: window.location.origin + '/office-host.html',
+      file: new File([fileName], fileName),
+      fileName,
+      destroyTimeoutMs: 1,
+    });
+
+    const first = mountOfficeEditor(firstContainer, options('first.docx'));
+    const second = mountOfficeEditor(secondContainer, options('second.xlsx'));
+    const firstFrame = firstContainer.querySelector<HTMLIFrameElement>('iframe')!;
+    const secondFrame = secondContainer.querySelector<HTMLIFrameElement>('iframe')!;
+
+    expect(first.id).not.toBe(second.id);
+    expect(new URL(firstFrame.src).origin).not.toBe(new URL(secondFrame.src).origin);
+
+    const firstReady = first.activate();
+    const secondReady = second.activate();
+    await connectHost(secondContainer);
+    await expect(secondReady).resolves.toMatchObject({ id: second.id });
+    expect(first.getState().phase).not.toBe('ready');
+    await connectHost(firstContainer);
+    await expect(firstReady).resolves.toMatchObject({ id: first.id });
+
+    await first.destroy();
+    expect(firstContainer.querySelector('iframe')).toBeNull();
+    expect(secondContainer.querySelector('iframe')).toBe(secondFrame);
+    expect(second.getState().phase).toBe('ready');
+    await second.destroy();
+  });
+
+  it('rejects two active mounts that resolve to the same host origin', async () => {
+    const firstContainer = document.createElement('div');
+    const secondContainer = document.createElement('div');
+    document.body.append(firstContainer, secondContainer);
+    const options = {
+      hostUrl: 'https://shared.office-host.example.com/office-host.html',
+      file: new File(['a'], 'shared.docx'),
+      fileName: 'shared.docx',
+      destroyTimeoutMs: 1,
+    };
+
+    const first = mountOfficeEditor(firstContainer, options);
+    expect(() => mountOfficeEditor(secondContainer, options)).toThrowError(
+      expect.objectContaining({
+        name: 'OfficeHostIsolationError',
+        origin: 'https://shared.office-host.example.com',
+        existingSessionId: first.id,
+      }),
+    );
+    expect(firstContainer.querySelector('iframe')).not.toBeNull();
+    expect(secondContainer.querySelector('iframe')).toBeNull();
+    await first.destroy();
   });
 
   it('accepts an HTMLElement container from another window', async () => {
@@ -157,10 +243,12 @@ describe('office-editor parent proxy', () => {
     const instance = await promise;
 
     await expect(instance.confirmSaveToNewFormat({ dontshow: true })).resolves.toBe(true);
-    expect(messages).toContainEqual(expect.objectContaining({
-      type: 'CONFIRM_SAVE_TO_NEW_FORMAT',
-      options: { dontshow: true },
-    }));
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: 'CONFIRM_SAVE_TO_NEW_FORMAT',
+        options: { dontshow: true },
+      }),
+    );
 
     await instance.destroy();
   });
@@ -236,12 +324,15 @@ describe('office-editor parent proxy', () => {
     await instance.destroy();
 
     expect(assignments.length).toBeGreaterThan(0);
-    expect(assignments.every((assignment) => (
-      assignment.visibility === 'hidden' &&
-      assignment.opacity === '0' &&
-      assignment.pointerEvents === 'none' &&
-      assignment.ariaHidden === 'true'
-    ))).toBe(true);
+    expect(
+      assignments.every(
+        (assignment) =>
+          assignment.visibility === 'hidden' &&
+          assignment.opacity === '0' &&
+          assignment.pointerEvents === 'none' &&
+          assignment.ariaHidden === 'true',
+      ),
+    ).toBe(true);
   });
 
   it('isolates localhost hostUrl to a per-editor origin', async () => {
@@ -335,10 +426,12 @@ describe('office-editor parent proxy', () => {
 
     instance.setInterfaceTheme('light');
     await waitForMessage();
-    expect(messages).toContainEqual(expect.objectContaining({
-      type: 'SET_INTERFACE_THEME',
-      interfaceTheme: 'light',
-    }));
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: 'SET_INTERFACE_THEME',
+        interfaceTheme: 'light',
+      }),
+    );
   });
 
   it('removes sandbox if an integration mutates the host iframe after mount', async () => {
@@ -480,11 +573,13 @@ describe('office-editor parent proxy', () => {
     await expect(instance.save('DOCX')).resolves.toMatchObject({ name: 'alpha.docx', size: 3 });
     expect(onSave).toHaveBeenCalledTimes(1);
     await waitForMessage();
-    expect(messages).toContainEqual(expect.objectContaining({
-      type: 'SAVE_ACK',
-      requestId: expect.any(String),
-      ok: true,
-    }));
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: 'SAVE_ACK',
+        requestId: expect.any(String),
+        ok: true,
+      }),
+    );
   });
 
   it('handles native save results without a pending programmatic save request', async () => {
@@ -519,11 +614,13 @@ describe('office-editor parent proxy', () => {
 
     expect(instance.getState().status).toBe('ready');
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(messages).toContainEqual(expect.objectContaining({
-      type: 'SAVE_ACK',
-      requestId,
-      ok: true,
-    }));
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: 'SAVE_ACK',
+        requestId,
+        ok: true,
+      }),
+    );
   });
 
   it('downloads host-exported files from the parent page', async () => {
@@ -730,12 +827,14 @@ describe('office-editor parent proxy', () => {
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(instance.getState().dirty).toBe(true);
     await waitForMessage();
-    expect(messages).toContainEqual(expect.objectContaining({
-      type: 'SAVE_ACK',
-      requestId: expect.any(String),
-      ok: false,
-      message: 'write failed',
-    }));
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: 'SAVE_ACK',
+        requestId: expect.any(String),
+        ok: false,
+        message: 'write failed',
+      }),
+    );
   });
 
   it('destroys idempotently and force-removes the host iframe without an ack', async () => {

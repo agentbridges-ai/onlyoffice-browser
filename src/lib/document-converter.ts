@@ -32,6 +32,21 @@ function getExtensions(mimeType = ''): string[] {
 }
 
 function loadScriptOnce(src: string): Promise<void> {
+  if (typeof document === 'undefined') {
+    const workerGlobal = globalThis as typeof globalThis & {
+      importScripts?: (...urls: string[]) => void;
+    };
+    if (typeof workerGlobal.importScripts !== 'function') {
+      return Promise.reject(new Error(`Unable to load classic script outside a document or worker: ${src}`));
+    }
+    try {
+      workerGlobal.importScripts(src);
+      return Promise.resolve();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
   const existing = Array.from(document.scripts).find((script) => script.src === src);
   if (existing) {
     return Promise.resolve();
@@ -144,7 +159,11 @@ function blobPartStartsWith(data: BlobPart, signature: number[]): boolean {
 }
 
 function getExtensionFileNameSuffix(fileName: string): string {
-  const extension = fileName.split(/[\\/]/).pop()?.match(/\.([^.]+)$/)?.[1] || '';
+  const extension =
+    fileName
+      .split(/[\\/]/)
+      .pop()
+      ?.match(/\.([^.]+)$/)?.[1] || '';
   const normalized = extension.toLowerCase().replace(/[^a-z0-9]+/g, '');
   return normalized ? `_${normalized}` : '';
 }
@@ -199,7 +218,7 @@ export class X2TConverter {
     if (this.hasScriptLoaded) return;
 
     try {
-      const absolutePath = new URL(this.SCRIPT_PATH, window.location.href).href;
+      const absolutePath = new URL(this.SCRIPT_PATH, globalThis.location.href).href;
       await loadScriptOnce(absolutePath);
       this.hasScriptLoaded = true;
       console.log('X2T WASM script loaded successfully');
@@ -230,8 +249,8 @@ export class X2TConverter {
   private async doInitialize(): Promise<EmscriptenModule> {
     try {
       await this.loadScript();
-      return new Promise((resolve, reject) => {
-        const x2t = window.Module;
+      return await new Promise((resolve, reject) => {
+        const x2t = (globalThis as typeof globalThis & { Module?: EmscriptenModule }).Module;
         if (!x2t) {
           reject(new Error('X2T module not found after script loading'));
           return;
@@ -243,6 +262,11 @@ export class X2TConverter {
             reject(new Error(`X2T initialization timeout after ${this.INIT_TIMEOUT}ms`));
           }
         }, this.INIT_TIMEOUT);
+
+        x2t.onAbort = (reason) => {
+          clearTimeout(timeoutId);
+          reject(new Error(`X2T initialization aborted: ${String(reason)}`));
+        };
 
         x2t.onRuntimeInitialized = () => {
           void (async () => {
@@ -776,9 +800,19 @@ export class X2TConverter {
    * converter; they go through native OnlyOffice bytes and x2t-wasm only.
    */
   private async loadXlsxLibrary(): Promise<any> {
+    const runtimeGlobal = globalThis as typeof globalThis & {
+      XLSX?: unknown;
+      importScripts?: (...urls: string[]) => void;
+    };
     // Check if xlsx is already loaded
-    if (typeof window !== 'undefined' && (window as any).XLSX) {
-      return (window as any).XLSX;
+    if (runtimeGlobal.XLSX) {
+      return runtimeGlobal.XLSX;
+    }
+
+    if (typeof document === 'undefined' && typeof runtimeGlobal.importScripts === 'function') {
+      runtimeGlobal.importScripts(new URL(`${BASE_PATH}libs/sheetjs/xlsx.full.min.js`, globalThis.location.href).href);
+      if (runtimeGlobal.XLSX) return runtimeGlobal.XLSX;
+      throw new Error('Failed to load xlsx library in conversion worker');
     }
 
     return new Promise((resolve, reject) => {
@@ -1034,7 +1068,9 @@ export class X2TConverter {
         data: result,
       };
     } catch (error) {
-      throw new Error(`HTML to document conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(
+        `HTML to document conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
     } finally {
       this.clearConversionWorkspace();
     }

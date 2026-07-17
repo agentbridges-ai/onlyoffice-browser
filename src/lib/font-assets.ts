@@ -35,7 +35,7 @@ function normalizeAssetPath(assetPath: string): string {
 }
 
 export function getRuntimeAssetUrl(assetPath: string): string {
-  const baseUrl = new URL(BASE_PATH, window.location.href);
+  const baseUrl = new URL(BASE_PATH, globalThis.location.href);
   return new URL(normalizeAssetPath(assetPath), baseUrl).href;
 }
 
@@ -121,14 +121,13 @@ export async function fetchGeneratedFontSourceMap(assetPath?: string): Promise<G
 
   if (!value || !Array.isArray(value.fonts)) return null;
   return {
-    fonts: value.fonts.filter(
-      (font): font is GeneratedFontSourceMapEntry =>
-        Boolean(
-          font &&
-            typeof font === 'object' &&
-            typeof (font as GeneratedFontSourceMapEntry).source === 'string' &&
-            typeof (font as GeneratedFontSourceMapEntry).file === 'string',
-        ),
+    fonts: value.fonts.filter((font): font is GeneratedFontSourceMapEntry =>
+      Boolean(
+        font &&
+        typeof font === 'object' &&
+        typeof (font as GeneratedFontSourceMapEntry).source === 'string' &&
+        typeof (font as GeneratedFontSourceMapEntry).file === 'string',
+      ),
     ),
   };
 }

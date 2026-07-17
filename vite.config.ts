@@ -171,6 +171,13 @@ export default defineConfig({
   base: './',
   publicDir: resolve(__dirname, 'public'),
   plugins: [serveGeneratedFontAssets(), serveWorkspaceSrc()],
+  worker: {
+    rollupOptions: {
+      output: {
+        entryFileNames: 'wasm/x2t/[name]-[hash].js',
+      },
+    },
+  },
   server: {
     fs: {
       // Allow Vite to serve src/ which lives outside the pages/ root
@@ -183,6 +190,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'pages/index.html'),
+        burstE2E: resolve(__dirname, 'pages/burst-e2e.html'),
         officeHost: resolve(__dirname, 'pages/office-host.html'),
         saveE2E: resolve(__dirname, 'pages/save-e2e.html'),
       },

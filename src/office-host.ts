@@ -1,9 +1,13 @@
-import { createOfficeEditor as createRuntimeOfficeEditor, type OfficeEditorInstance } from './lib/office-editor-runtime';
+import {
+  createOfficeEditor as createRuntimeOfficeEditor,
+  type OfficeEditorInstance,
+} from './lib/office-editor-runtime';
 import {
   isOfficeHostMessage,
   OFFICE_HOST_PROTOCOL,
   type OfficeHostChildMessage,
   type OfficeHostParentMessage,
+  type OfficeHostStartupPhase,
   type OfficeHostState,
   type OfficeHostWindowMessage,
 } from './lib/office-host-protocol';
@@ -18,13 +22,18 @@ const root = document.querySelector<HTMLElement>('#office-host') ?? document.bod
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
 /** Bump whenever already-open host frames must be recreated. */
-const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.29';
-const OFFICE_HOST_BUILD_ID = 'office-host-0.3.29-r1';
+const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.30';
+const OFFICE_HOST_BUILD_ID = 'office-host-0.3.30-r1';
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
+const STARTUP_HEARTBEAT_INTERVAL_MS = 5_000;
 
 let port: MessagePort | null = null;
 let editor: OfficeEditorInstance | null = null;
 let destroyed = false;
+let initStarted = false;
+let startupPhase: OfficeHostStartupPhase = 'connected';
+let startupHeartbeatInterval: number | null = null;
+let startupHeartbeatWorker: Worker | null = null;
 let activeSaveRequestId: string | undefined;
 let nativeSaveRequestSequence = 0;
 
@@ -100,6 +109,70 @@ function hardResetHostPage(): void {
 
 function postPortMessage(message: OfficeHostChildMessage, transfer: Transferable[] = []): void {
   port?.postMessage(message, transfer);
+}
+
+function postStartupMessage(type: 'STARTUP_PHASE' | 'STARTUP_HEARTBEAT'): void {
+  postPortMessage({
+    protocol: OFFICE_HOST_PROTOCOL,
+    type,
+    sessionId,
+    phase: startupPhase,
+  });
+}
+
+function setStartupPhase(phase: OfficeHostStartupPhase): void {
+  startupPhase = phase;
+  postStartupMessage('STARTUP_PHASE');
+  startupHeartbeatWorker?.postMessage({ type: 'PHASE', phase });
+}
+
+function startStartupHeartbeat(): void {
+  if (startupHeartbeatWorker || startupHeartbeatInterval !== null) return;
+  if (typeof Worker !== 'undefined' && typeof MessageChannel !== 'undefined') {
+    try {
+      const worker = new Worker(new URL('./startup-heartbeat-worker.ts', import.meta.url), { type: 'module' });
+      const channel = new MessageChannel();
+      startupHeartbeatWorker = worker;
+      postPortMessage(
+        {
+          protocol: OFFICE_HOST_PROTOCOL,
+          type: 'STARTUP_HEARTBEAT_PORT',
+          sessionId,
+        },
+        [channel.port2],
+      );
+      worker.postMessage(
+        {
+          type: 'START',
+          sessionId,
+          phase: startupPhase,
+          intervalMs: STARTUP_HEARTBEAT_INTERVAL_MS,
+          port: channel.port1,
+        },
+        [channel.port1],
+      );
+      return;
+    } catch (error) {
+      startupHeartbeatWorker?.terminate();
+      startupHeartbeatWorker = null;
+      console.warn('[onlyoffice-browser] Falling back to main-thread startup heartbeat', error);
+    }
+  }
+  postStartupMessage('STARTUP_HEARTBEAT');
+  startupHeartbeatInterval = window.setInterval(() => {
+    postStartupMessage('STARTUP_HEARTBEAT');
+  }, STARTUP_HEARTBEAT_INTERVAL_MS);
+}
+
+function stopStartupHeartbeat(): void {
+  if (startupHeartbeatWorker) {
+    startupHeartbeatWorker.postMessage({ type: 'STOP' });
+    startupHeartbeatWorker.terminate();
+    startupHeartbeatWorker = null;
+  }
+  if (startupHeartbeatInterval === null) return;
+  window.clearInterval(startupHeartbeatInterval);
+  startupHeartbeatInterval = null;
 }
 
 function nextNativeSaveRequestId(): string {
@@ -208,7 +281,8 @@ function createResourceTracker() {
   const OriginalWebSocket = window.WebSocket;
   const OriginalMessageChannel = window.MessageChannel;
   const OriginalAudioContext = window.AudioContext;
-  const OriginalWebkitAudioContext = (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  const OriginalWebkitAudioContext = (window as Window & { webkitAudioContext?: typeof AudioContext })
+    .webkitAudioContext;
 
   const timeouts = new Set<number>();
   const intervals = new Set<number>();
@@ -379,26 +453,25 @@ function hideIframeForTeardown(frame: HTMLIFrameElement): void {
 async function blankAndRemoveEditorIframes(): Promise<void> {
   const frames = Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe'));
   await Promise.all(
-    frames.map(
-      (frame) =>
-        new Promise<void>((resolve) => {
-          hideIframeForTeardown(frame);
-          cleanupFrameWindow(frame);
-          if (!frame.isConnected) {
+    frames.map((frame) =>
+      new Promise<void>((resolve) => {
+        hideIframeForTeardown(frame);
+        cleanupFrameWindow(frame);
+        if (!frame.isConnected) {
+          resolve();
+          return;
+        }
+        const timeout = window.setTimeout(resolve, 250);
+        frame.addEventListener(
+          'load',
+          () => {
+            window.clearTimeout(timeout);
             resolve();
-            return;
-          }
-          const timeout = window.setTimeout(resolve, 250);
-          frame.addEventListener(
-            'load',
-            () => {
-              window.clearTimeout(timeout);
-              resolve();
-            },
-            { once: true },
-          );
-          frame.src = 'about:blank';
-        }).then(() => frame.remove()),
+          },
+          { once: true },
+        );
+        frame.src = 'about:blank';
+      }).then(() => frame.remove()),
     ),
   );
 }
@@ -441,6 +514,7 @@ function cleanupFrameWindow(frame: HTMLIFrameElement): void {
 async function destroyRuntime(): Promise<void> {
   if (destroyed) return;
   destroyed = true;
+  stopStartupHeartbeat();
 
   for (const [requestId, pending] of pendingSaveAcks) {
     window.clearTimeout(pending.timeoutId);
@@ -477,6 +551,13 @@ async function clearHostWorkersAndCaches(): Promise<void> {
 
 async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INIT' }>): Promise<void> {
   if (destroyed) return;
+  if (initStarted || editor) {
+    postError('init', new Error('Duplicate INIT is not allowed for an Office host session'), message.requestId);
+    return;
+  }
+  initStarted = true;
+  setStartupPhase('reading-source');
+  startStartupHeartbeat();
 
   try {
     (window as PrintTitleHostWindow).__onlyOfficeBrowserSetPrintTitle = (title, durationMs = 45_000) => {
@@ -525,9 +606,13 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       runtimeOptions.sourceKind = source.sourceKind;
     }
 
+    setStartupPhase('loading-runtime');
+    setStartupPhase('creating-editor');
     editor = await createRuntimeOfficeEditor(root, runtimeOptions);
+    stopStartupHeartbeat();
     postState('READY', editor.getState());
   } catch (error) {
+    stopStartupHeartbeat();
     postError('init', error, message.requestId);
   }
 }
@@ -663,6 +748,7 @@ function handleConnect(event: MessageEvent): void {
   port = event.ports[0];
   port.onmessage = handlePortMessage;
   port.start();
+  setStartupPhase('connected');
 }
 
 window.addEventListener('message', handleConnect);

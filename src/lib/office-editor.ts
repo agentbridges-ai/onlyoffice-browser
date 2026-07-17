@@ -19,6 +19,8 @@ const DESTROY_TIMEOUT_MS = 5_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
 const RESET_NAVIGATION_TIMEOUT_MS = 750;
 const HOST_READY_TIMEOUT_MS = 30_000;
+const STARTUP_HEARTBEAT_TIMEOUT_MS = 30_000;
+const STARTUP_TOTAL_TIMEOUT_MS = 5 * 60_000;
 const HOST_SELF_RESET_PATH = '/reset.html?stay=1&officeHostReset=1';
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
 const OUTER_IFRAME_ALLOW = 'clipboard-read; clipboard-write; fullscreen';
@@ -80,8 +82,14 @@ export interface CreateOfficeEditorOptions {
   onReady?: (instance: OfficeEditorInstance) => void;
   saveBehavior?: OfficeSaveBehavior;
   onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
-  onSaveAs?: (file: File, instance: OfficeEditorInstance) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
-  onDownload?: (file: File, instance: OfficeEditorInstance) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
+  onSaveAs?: (
+    file: File,
+    instance: OfficeEditorInstance,
+  ) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
+  onDownload?: (
+    file: File,
+    instance: OfficeEditorInstance,
+  ) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onStateChange?: (state: OfficeEditorState, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
@@ -110,6 +118,28 @@ export interface OfficeEditorInstance {
   getHostIdentity(): OfficeHostIdentity;
 }
 
+export type OfficeEditorMountPhase =
+  | 'host-loading'
+  | 'waiting-for-activation'
+  | 'runtime-loading'
+  | 'ready'
+  | 'error'
+  | 'destroyed';
+
+export interface OfficeEditorMountState {
+  id: string;
+  origin: string;
+  phase: OfficeEditorMountPhase;
+  error?: Error;
+}
+
+export interface OfficeEditorMount {
+  readonly id: string;
+  activate(): Promise<OfficeEditorInstance>;
+  destroy(): Promise<void>;
+  getState(): OfficeEditorMountState;
+}
+
 export class OfficeHostIdentityMismatchError extends Error {
   readonly expected: OfficeHostIdentity;
   readonly actual: OfficeHostIdentity;
@@ -124,6 +154,32 @@ export class OfficeHostIdentityMismatchError extends Error {
   }
 }
 
+export class OfficeHostIsolationError extends Error {
+  readonly origin: string;
+  readonly existingSessionId: string;
+  readonly requestedSessionId: string;
+
+  constructor(origin: string, existingSessionId: string, requestedSessionId: string) {
+    super(`Office host origin ${origin} is already owned by active session ${existingSessionId}`);
+    this.name = 'OfficeHostIsolationError';
+    this.origin = origin;
+    this.existingSessionId = existingSessionId;
+    this.requestedSessionId = requestedSessionId;
+  }
+}
+
+export class OfficeEditorStartupError extends Error {
+  readonly phase: string;
+  readonly retryable: boolean;
+
+  constructor(phase: string, message: string, retryable = true) {
+    super(message);
+    this.name = 'OfficeEditorStartupError';
+    this.phase = phase;
+    this.retryable = retryable;
+  }
+}
+
 type PendingRequest = {
   resolve: (file: File) => void;
   reject: (error: Error) => void;
@@ -135,17 +191,24 @@ type PendingConfirmationRequest = {
 };
 
 type PreparedHostInit = {
-  hostUrl: URL;
   options: OfficeHostInitOptions;
   transfer: Transferable[];
   initialState: OfficeEditorState;
 };
 
+type InitialHostDescriptor = {
+  hostUrl: URL;
+  initialState: OfficeEditorState;
+};
+
 let nextEditorId = 1;
 const activeInstances = new Map<string, BrowserOfficeEditorProxy>();
+const activeOrigins = new Map<string, BrowserOfficeEditorProxy>();
 const debugStats = {
   hostResetDoneCount: 0,
   hostResetTimeoutCount: 0,
+  startupHeartbeatPortCount: 0,
+  startupHeartbeatCount: 0,
 };
 let temporaryDocumentTitleOriginal: string | null = null;
 let temporaryDocumentTitleTimeout: number | null = null;
@@ -243,7 +306,10 @@ function resolveInitialMode(options: CreateOfficeEditorOptions): OfficeEditorMod
 }
 
 function makeSessionId(): string {
-  return `office-editor-${nextEditorId++}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid
+    ? `office-editor-${uuid}`
+    : `office-editor-${nextEditorId++}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function maybeHardResetPage(): void {
@@ -254,16 +320,25 @@ function maybeHardResetPage(): void {
 }
 
 function makeHostSessionLabel(sessionId: string): string {
-  return sessionId.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 48);
+  return sessionId
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 48);
 }
 
 function isolateLocalhostHostUrl(resolved: URL, sessionId: string): void {
   if (resolved.hostname === 'localhost' || resolved.hostname.endsWith('.localhost')) {
-    resolved.hostname = `host-${makeHostSessionLabel(sessionId)}.localhost`;
+    resolved.hostname = `host-${makeHostSessionLabel(sessionId)}.office.localhost`;
   }
 }
 
-function resolveHostUrl(options: CreateOfficeEditorOptions, sessionId: string, fileName: string, fileType: string): URL {
+function resolveHostUrl(
+  options: CreateOfficeEditorOptions,
+  sessionId: string,
+  fileName: string,
+  fileType: string,
+): URL {
   const mode = resolveInitialMode(options);
   const hostUrl =
     typeof options.hostUrl === 'function'
@@ -304,17 +379,69 @@ async function toTransferableBuffer(input: OfficeEditorInput | Blob): Promise<Ar
   return copyArrayBuffer(input);
 }
 
+function describeHostInit(options: CreateOfficeEditorOptions, sessionId: string): InitialHostDescriptor {
+  const initialMode = resolveInitialMode(options);
+  const initialReadonly = initialMode !== 'edit';
+  const emptyType = options.emptyType ? (normalizeExtension(options.emptyType, 'docx') as OfficeEmptyType) : undefined;
+  if (emptyType && !SUPPORTED_EMPTY_TYPES.includes(emptyType)) {
+    throw new Error(`Unsupported empty document type: ${options.emptyType}`);
+  }
+  const input = options.file || options.buffer;
+  let urlFileName: string | undefined;
+  if (options.url) {
+    try {
+      urlFileName = new URL(options.url, window.location.href).pathname.split('/').pop() || 'document.docx';
+    } catch {
+      urlFileName = 'document.docx';
+    }
+  }
+  const fileName =
+    options.fileName ||
+    (emptyType ? getDefaultFileName(emptyType) : undefined) ||
+    (input instanceof File ? input.name : undefined) ||
+    urlFileName ||
+    'document.docx';
+  const fileType = emptyType || getFileExtension(fileName);
+  const sourceKind: OfficeEditorSourceKind = emptyType
+    ? 'new-document'
+    : options.url
+      ? 'url'
+      : options.file
+        ? 'local-file'
+        : 'buffer';
+
+  if (!emptyType && !options.url && !input) {
+    throw new Error('createOfficeEditor requires file, buffer, url, or emptyType');
+  }
+
+  return {
+    hostUrl: resolveHostUrl(options, sessionId, fileName, fileType),
+    initialState: {
+      id: sessionId,
+      fileName,
+      fileType,
+      mode: initialMode,
+      readonly: initialReadonly,
+      dirty: false,
+      sourceKind,
+      status: 'opening',
+      destroyed: false,
+    },
+  };
+}
+
 async function prepareHostInit(
   options: CreateOfficeEditorOptions,
-  sessionId: string,
+  descriptor: InitialHostDescriptor,
 ): Promise<PreparedHostInit> {
+  const sessionId = descriptor.initialState.id;
   const initialMode = resolveInitialMode(options);
   const initialReadonly = initialMode !== 'edit';
 
   let source: OfficeHostSource;
-  let fileName = options.fileName || 'document.docx';
-  let fileType = getFileExtension(fileName);
-  let sourceKind: OfficeEditorSourceKind = 'buffer';
+  let fileName = descriptor.initialState.fileName;
+  let fileType = descriptor.initialState.fileType;
+  let sourceKind: OfficeEditorSourceKind = descriptor.initialState.sourceKind;
   const transfer: Transferable[] = [];
 
   if (options.emptyType) {
@@ -363,10 +490,7 @@ async function prepareHostInit(
     };
   }
 
-  const hostUrl = resolveHostUrl(options, sessionId, fileName, fileType);
-
   return {
-    hostUrl,
     options: {
       fileName,
       mode: options.mode,
@@ -455,55 +579,81 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private readonly container: HTMLElement;
   private readonly options: CreateOfficeEditorOptions;
   private readonly hostOrigin: string;
-  private readonly prepared: PreparedHostInit;
+  private readonly descriptor: InitialHostDescriptor;
+  private prepared: PreparedHostInit | null = null;
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly pendingConfirmationRequests = new Map<string, PendingConfirmationRequest>();
   private readonly parentWindow: Window;
+  private readonly readyPromise: Promise<BrowserOfficeEditorProxy>;
   private iframe: HTMLIFrameElement | null = null;
   private port: MessagePort | null = null;
+  private startupHeartbeatPort: MessagePort | null = null;
   private hostWindow: Window | null = null;
   private windowMessageListener: ((event: MessageEvent) => void) | null = null;
   private hostReadyTimeout: number | null = null;
+  private startupHeartbeatTimeout: number | null = null;
+  private startupTotalTimeout: number | null = null;
   private readyResolve: ((instance: BrowserOfficeEditorProxy) => void) | null = null;
   private readyReject: ((error: Error) => void) | null = null;
   private destroyAckResolve: (() => void) | null = null;
   private connected = false;
+  private activationStarted = false;
+  private initSent = false;
   private mounted = false;
   private readyNotified = false;
   private destroyed = false;
   private destroyPromise: Promise<void> | null = null;
   private unsandboxedHostFrameCleanup: (() => void) | null = null;
   private state: OfficeEditorState;
+  private mountPhase: OfficeEditorMountPhase = 'host-loading';
+  private mountError: Error | undefined;
+  private activationPromise: Promise<OfficeEditorInstance> | null = null;
   private hostIdentity: OfficeHostIdentity | null = null;
   private readonly returnsToPreview: boolean;
 
-  private constructor(container: HTMLElement, options: CreateOfficeEditorOptions, prepared: PreparedHostInit) {
-    this.id = prepared.initialState.id;
+  private constructor(container: HTMLElement, options: CreateOfficeEditorOptions, descriptor: InitialHostDescriptor) {
+    this.id = descriptor.initialState.id;
     this.container = container;
     this.options = options;
-    this.prepared = prepared;
-    this.hostOrigin = prepared.hostUrl.origin;
-    this.state = prepared.initialState;
-    this.returnsToPreview = prepared.initialState.mode === 'preview' || options.canReturnToPreview === true;
+    this.descriptor = descriptor;
+    this.hostOrigin = descriptor.hostUrl.origin;
+    this.state = descriptor.initialState;
+    this.returnsToPreview = descriptor.initialState.mode === 'preview' || options.canReturnToPreview === true;
     this.parentWindow = container.ownerDocument.defaultView || window;
+    this.readyPromise = new Promise<BrowserOfficeEditorProxy>((resolve, reject) => {
+      this.readyResolve = resolve;
+      this.readyReject = reject;
+    });
+    void this.readyPromise.catch(() => undefined);
   }
 
-  static async create(container: HTMLElement, options: CreateOfficeEditorOptions): Promise<BrowserOfficeEditorProxy> {
+  static mount(container: HTMLElement, options: CreateOfficeEditorOptions): BrowserOfficeEditorProxy {
     const sessionId = makeSessionId();
-    const prepared = await prepareHostInit(options, sessionId);
-    const instance = new BrowserOfficeEditorProxy(container, options, prepared);
-    await instance.mount();
+    const descriptor = describeHostInit(options, sessionId);
+    const existing = activeOrigins.get(descriptor.hostUrl.origin);
+    if (existing && existing.isActiveOriginOwner()) {
+      throw new OfficeHostIsolationError(descriptor.hostUrl.origin, existing.id, sessionId);
+    }
+    if (existing) activeOrigins.delete(descriptor.hostUrl.origin);
+
+    const instance = new BrowserOfficeEditorProxy(container, options, descriptor);
+    activeOrigins.set(descriptor.hostUrl.origin, instance);
+    instance.mountHost();
     return instance;
   }
 
-  private mount(): Promise<BrowserOfficeEditorProxy> {
+  private isActiveOriginOwner(): boolean {
+    return !this.destroyed && Boolean(this.iframe?.isConnected);
+  }
+
+  private mountHost(): void {
     this.container.replaceChildren();
     this.container.classList.add('office-editor-host');
     applyFillContainerDefaults(this.container);
 
     const iframe = this.container.ownerDocument.createElement('iframe');
     iframe.className = 'office-editor-host-frame';
-    iframe.title = this.prepared.options.fileName || 'Office editor';
+    iframe.title = this.descriptor.initialState.fileName || 'Office editor';
     // Do not sandbox: native PDF printing needs same-origin script access inside
     // the independent editor host's nested print iframe.
     iframe.removeAttribute('sandbox');
@@ -515,31 +665,65 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     this.iframe = iframe;
     this.hostWindow = iframe.contentWindow;
 
-    const readyPromise = new Promise<BrowserOfficeEditorProxy>((resolve, reject) => {
-      this.readyResolve = resolve;
-      this.readyReject = reject;
-    });
-
     this.windowMessageListener = (event) => this.handleWindowMessage(event);
     this.parentWindow.addEventListener('message', this.windowMessageListener);
 
     this.hostReadyTimeout = this.parentWindow.setTimeout(() => {
-      this.failBeforeReady(new Error('Timed out waiting for the office host to become ready'));
+      this.failBeforeReady(
+        new OfficeEditorStartupError('host-connect', 'Timed out waiting for the office host to become ready'),
+      );
     }, HOST_READY_TIMEOUT_MS);
 
     this.container.appendChild(iframe);
     this.hostWindow = iframe.contentWindow;
-    iframe.src = this.prepared.hostUrl.href;
+    iframe.src = this.descriptor.hostUrl.href;
     activeInstances.set(this.id, this);
+  }
 
-    return readyPromise.catch(async (error) => {
-      await this.destroy();
-      throw error;
-    });
+  activate(): Promise<OfficeEditorInstance> {
+    if (this.activationPromise) return this.activationPromise;
+    if (this.mountError) return Promise.reject(this.mountError);
+    if (this.destroyed) return Promise.reject(new Error('Editor was destroyed before activation'));
+
+    this.activationStarted = true;
+    if (this.connected) this.mountPhase = 'runtime-loading';
+    this.startStartupWatchdogs();
+    this.activationPromise = (async () => {
+      try {
+        const prepared = await prepareHostInit(this.options, this.descriptor);
+        if (this.destroyed) throw new Error('Editor was destroyed before activation completed');
+        this.prepared = prepared;
+        this.state = prepared.initialState;
+        this.maybeStartRuntime();
+        return await this.readyPromise;
+      } catch (error) {
+        const normalized = toError(error);
+        if (!this.mountError) this.failBeforeReady(normalized);
+        await this.destroy();
+        this.mountPhase = 'error';
+        this.mountError = normalized;
+        throw normalized;
+      }
+    })();
+    return this.activationPromise;
+  }
+
+  getMountState(): OfficeEditorMountState {
+    return {
+      id: this.id,
+      origin: this.hostOrigin,
+      phase: this.mountPhase,
+      ...(this.mountError ? { error: this.mountError } : {}),
+    };
   }
 
   private handleWindowMessage(event: MessageEvent): void {
-    if (this.destroyed || this.connected || event.origin !== this.hostOrigin || event.source !== this.iframe?.contentWindow) {
+    if (
+      this.destroyed ||
+      this.connected ||
+      event.origin !== this.hostOrigin ||
+      event.source !== this.iframe?.contentWindow
+    ) {
       return;
     }
     if (!isOfficeHostMessage(event.data, this.id)) {
@@ -561,6 +745,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     this.connected = true;
     this.clearHostReadyTimeout();
     this.removeWindowMessageListener();
+    this.mountPhase = this.activationStarted ? 'runtime-loading' : 'waiting-for-activation';
 
     const channel = new MessageChannel();
     this.port = channel.port1;
@@ -577,6 +762,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       [channel.port2],
     );
 
+    this.maybeStartRuntime();
+  }
+
+  private maybeStartRuntime(): void {
+    if (!this.activationStarted || !this.connected || !this.prepared || this.initSent || this.destroyed) return;
+    this.initSent = true;
+    this.mountPhase = 'runtime-loading';
+    this.resetStartupHeartbeatTimeout();
     this.postToHost(
       {
         protocol: OFFICE_HOST_PROTOCOL,
@@ -594,9 +787,18 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
     const message = event.data;
     switch (message.type) {
+      case 'STARTUP_HEARTBEAT_PORT':
+        this.installStartupHeartbeatPort(event.ports[0]);
+        return;
+      case 'STARTUP_PHASE':
+      case 'STARTUP_HEARTBEAT':
+        if (!this.mounted) this.resetStartupHeartbeatTimeout();
+        return;
       case 'READY':
         this.applyHostState(message.state);
         this.mounted = true;
+        this.mountPhase = 'ready';
+        this.clearStartupWatchdogs();
         this.readyResolve?.(this);
         this.readyResolve = null;
         this.readyReject = null;
@@ -668,11 +870,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private async invokeSaveCallback(file: File): Promise<boolean> {
     const behavior = this.getSaveBehavior();
     const shouldCallCallback =
-      behavior === 'callback' || (behavior === 'auto' && (this.state.sourceKind !== 'new-document' || Boolean(this.options.onSave)));
+      behavior === 'callback' ||
+      (behavior === 'auto' && (this.state.sourceKind !== 'new-document' || Boolean(this.options.onSave)));
 
     if (!shouldCallCallback) return false;
     if (!this.options.onSave) {
-      throw new Error('A save callback is required for this document source. Provide onSave or use saveBehavior: "download".');
+      throw new Error(
+        'A save callback is required for this document source. Provide onSave or use saveBehavior: "download".',
+      );
     }
 
     const handled = await this.options.onSave(file, this);
@@ -683,7 +888,10 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     const behavior = this.getSaveBehavior();
     const handledByCallback = await this.invokeSaveCallback(file);
 
-    if (behavior === 'download' || (behavior === 'auto' && this.state.sourceKind === 'new-document' && !handledByCallback)) {
+    if (
+      behavior === 'download' ||
+      (behavior === 'auto' && this.state.sourceKind === 'new-document' && !handledByCallback)
+    ) {
       downloadFile(file);
     }
   }
@@ -716,7 +924,9 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 
   private async handleSaveResult(message: Extract<OfficeHostChildMessage, { type: 'SAVE_RESULT' }>): Promise<void> {
-    const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
+    const file = new File([message.buffer], message.fileName, {
+      type: message.mimeType || getSavedFileMimeType(message.fileName),
+    });
     const requestId = message.requestId;
     const request = requestId ? this.pendingRequests.get(requestId) : undefined;
     if (requestId && request) {
@@ -741,8 +951,12 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
   }
 
-  private async handleDownloadResult(message: Extract<OfficeHostChildMessage, { type: 'DOWNLOAD_RESULT' }>): Promise<void> {
-    const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
+  private async handleDownloadResult(
+    message: Extract<OfficeHostChildMessage, { type: 'DOWNLOAD_RESULT' }>,
+  ): Promise<void> {
+    const file = new File([message.buffer], message.fileName, {
+      type: message.mimeType || getSavedFileMimeType(message.fileName),
+    });
 
     try {
       await this.persistDownloadedFile(file);
@@ -752,8 +966,12 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
   }
 
-  private async handleSaveAsResult(message: Extract<OfficeHostChildMessage, { type: 'SAVE_AS_RESULT' }>): Promise<void> {
-    const file = new File([message.buffer], message.fileName, { type: message.mimeType || getSavedFileMimeType(message.fileName) });
+  private async handleSaveAsResult(
+    message: Extract<OfficeHostChildMessage, { type: 'SAVE_AS_RESULT' }>,
+  ): Promise<void> {
+    const file = new File([message.buffer], message.fileName, {
+      type: message.mimeType || getSavedFileMimeType(message.fileName),
+    });
 
     try {
       await this.persistSaveAsFile(file);
@@ -764,7 +982,9 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 
   private handleHostError(message: Extract<OfficeHostChildMessage, { type: 'ERROR' }>): void {
-    const error = new Error(message.message);
+    const error = this.mounted
+      ? new Error(message.message)
+      : new OfficeEditorStartupError(message.phase, message.message);
     if (message.requestId) {
       const confirmRequest = this.pendingConfirmationRequests.get(message.requestId);
       if (confirmRequest) {
@@ -802,12 +1022,22 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 
   private failBeforeReady(error: Error): void {
+    if (this.mountError) return;
     this.state = { ...this.state, status: 'error' };
+    this.mountPhase = 'error';
+    this.mountError = error;
     this.clearHostReadyTimeout();
+    this.clearStartupWatchdogs();
     this.readyReject?.(error);
     this.readyResolve = null;
     this.readyReject = null;
     this.options.onError?.(error, this);
+    if (!this.activationStarted) {
+      void this.destroy().finally(() => {
+        this.mountPhase = 'error';
+        this.mountError = error;
+      });
+    }
   }
 
   private maybeNotifyReady(): void {
@@ -824,6 +1054,58 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     if (this.hostReadyTimeout !== null) {
       this.parentWindow.clearTimeout(this.hostReadyTimeout);
       this.hostReadyTimeout = null;
+    }
+  }
+
+  private startStartupWatchdogs(): void {
+    if (this.startupTotalTimeout === null) {
+      this.startupTotalTimeout = this.parentWindow.setTimeout(() => {
+        this.failBeforeReady(
+          new OfficeEditorStartupError('startup-total', 'Office editor startup exceeded five minutes'),
+        );
+      }, STARTUP_TOTAL_TIMEOUT_MS);
+    }
+    if (this.initSent) this.resetStartupHeartbeatTimeout();
+  }
+
+  private installStartupHeartbeatPort(port: MessagePort | undefined): void {
+    if (!port || this.destroyed) {
+      port?.close();
+      return;
+    }
+    this.startupHeartbeatPort?.close();
+    this.startupHeartbeatPort = port;
+    debugStats.startupHeartbeatPortCount += 1;
+    port.onmessage = (event: MessageEvent<OfficeHostChildMessage>) => {
+      if (!isOfficeHostMessage(event.data, this.id)) return;
+      if (event.data.type === 'STARTUP_HEARTBEAT' && !this.mounted) {
+        debugStats.startupHeartbeatCount += 1;
+        this.resetStartupHeartbeatTimeout();
+      }
+    };
+    port.start();
+    this.resetStartupHeartbeatTimeout();
+  }
+
+  private resetStartupHeartbeatTimeout(): void {
+    if (this.startupHeartbeatTimeout !== null) {
+      this.parentWindow.clearTimeout(this.startupHeartbeatTimeout);
+    }
+    this.startupHeartbeatTimeout = this.parentWindow.setTimeout(() => {
+      this.failBeforeReady(
+        new OfficeEditorStartupError('startup-heartbeat', 'Office editor startup heartbeat timed out'),
+      );
+    }, STARTUP_HEARTBEAT_TIMEOUT_MS);
+  }
+
+  private clearStartupWatchdogs(): void {
+    if (this.startupHeartbeatTimeout !== null) {
+      this.parentWindow.clearTimeout(this.startupHeartbeatTimeout);
+      this.startupHeartbeatTimeout = null;
+    }
+    if (this.startupTotalTimeout !== null) {
+      this.parentWindow.clearTimeout(this.startupTotalTimeout);
+      this.startupTotalTimeout = null;
     }
   }
 
@@ -890,7 +1172,8 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 
   setInterfaceTheme(theme: OfficeInterfaceTheme): void {
-    this.prepared.options.interfaceTheme = theme;
+    this.options.interfaceTheme = theme;
+    if (this.prepared) this.prepared.options.interfaceTheme = theme;
     if (!this.destroyed && this.port) {
       this.postToHost({
         protocol: OFFICE_HOST_PROTOCOL,
@@ -913,6 +1196,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 
   destroy(): Promise<void> {
+    this.mountPhase = 'destroyed';
     if (this.destroyPromise) return this.destroyPromise;
     this.destroyed = true;
     this.mounted = false;
@@ -923,6 +1207,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     };
 
     this.clearHostReadyTimeout();
+    this.clearStartupWatchdogs();
     this.removeWindowMessageListener();
     this.readyReject?.(new Error('Editor was destroyed before it became ready'));
     this.readyResolve = null;
@@ -937,6 +1222,9 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
     this.pendingConfirmationRequests.clear();
     activeInstances.delete(this.id);
+    if (activeOrigins.get(this.hostOrigin) === this) {
+      activeOrigins.delete(this.hostOrigin);
+    }
 
     this.destroyPromise = this.destroyHost();
     return this.destroyPromise;
@@ -984,9 +1272,13 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       this.port.close();
     }
     this.port = null;
+    if (this.startupHeartbeatPort) {
+      this.startupHeartbeatPort.onmessage = null;
+      this.startupHeartbeatPort.close();
+    }
+    this.startupHeartbeatPort = null;
     this.hostWindow = null;
     this.destroyAckResolve = null;
-    this.container.replaceChildren();
 
     if (this.options.hardResetOnLastDestroy && activeInstances.size === 0) {
       maybeHardResetPage();
@@ -1012,9 +1304,12 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 
   private getHostResetUrl(): string {
-    const resetUrl = new URL(HOST_SELF_RESET_PATH, this.prepared.hostUrl.href);
+    const resetUrl = new URL(HOST_SELF_RESET_PATH, this.descriptor.hostUrl.href);
     resetUrl.searchParams.set('sessionId', this.id);
-    resetUrl.searchParams.set('parentOrigin', this.prepared.hostUrl.searchParams.get('parentOrigin') || this.parentWindow.location.origin);
+    resetUrl.searchParams.set(
+      'parentOrigin',
+      this.descriptor.hostUrl.searchParams.get('parentOrigin') || this.parentWindow.location.origin,
+    );
     return resetUrl.href;
   }
 
@@ -1028,20 +1323,36 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   }
 }
 
-export async function createOfficeEditor(
-  container: HTMLElement,
-  options: CreateOfficeEditorOptions,
-): Promise<OfficeEditorInstance> {
+export function mountOfficeEditor(container: HTMLElement, options: CreateOfficeEditorOptions): OfficeEditorMount {
   if (!isHTMLElementContainer(container)) {
-    throw new Error('createOfficeEditor requires an HTMLElement container');
+    throw new Error('mountOfficeEditor requires an HTMLElement container');
   }
 
   try {
-    return await BrowserOfficeEditorProxy.create(container, options);
+    const proxy = BrowserOfficeEditorProxy.mount(container, options);
+    return {
+      id: proxy.id,
+      activate: () => proxy.activate(),
+      destroy: () => proxy.destroy(),
+      getState: () => proxy.getMountState(),
+    };
   } catch (error) {
     const normalized = toError(error);
     options.onError?.(normalized);
     throw normalized;
+  }
+}
+
+export async function createOfficeEditor(
+  container: HTMLElement,
+  options: CreateOfficeEditorOptions,
+): Promise<OfficeEditorInstance> {
+  const mount = mountOfficeEditor(container, options);
+  try {
+    return await mount.activate();
+  } catch (error) {
+    await mount.destroy();
+    throw toError(error);
   }
 }
 

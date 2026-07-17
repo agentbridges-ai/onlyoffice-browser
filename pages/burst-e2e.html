@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="OnlyOffice multi-instance burst E2E page." />
+    <title>OnlyOffice Burst E2E</title>
+    <style>
+      body {
+        margin: 0;
+        background: #111;
+        color: #fff;
+        font-family: sans-serif;
+      }
+      #burst-status {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        padding: 8px;
+        background: #111;
+      }
+      #burst-grid {
+        position: relative;
+        width: 1280px;
+        height: 720px;
+        overflow: hidden;
+      }
+      .burst-editor {
+        position: absolute;
+        inset: 0;
+        width: 1280px;
+        height: 720px;
+        background: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="burst-status">idle</div>
+    <main id="burst-grid"></main>
+    <script type="module" src="../src/burst-e2e.ts"></script>
+  </body>
+</html>

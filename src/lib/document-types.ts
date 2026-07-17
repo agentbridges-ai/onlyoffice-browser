@@ -12,6 +12,7 @@ export interface EmscriptenModule {
   FS: EmscriptenFileSystem;
   ccall: (funcName: string, returnType: string, argTypes: string[], args: any[]) => number;
   onRuntimeInitialized: () => void;
+  onAbort?: (reason: unknown) => void;
 }
 
 export interface ConversionResult {

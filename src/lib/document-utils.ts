@@ -6,11 +6,11 @@ import type { DocumentType } from './document-types';
  * - Same-origin app deployments usually use root path /
  */
 export const getBasePath = (): string => {
-  if (typeof window === 'undefined') {
+  if (typeof globalThis.location === 'undefined') {
     return '/';
   }
 
-  const pathname = window.location.pathname;
+  const pathname = globalThis.location.pathname;
   const projectSiteNames = ['onlyoffice-browser', 'document'];
   const firstSegment = pathname.split('/').filter(Boolean)[0];
   if (firstSegment && projectSiteNames.includes(firstSegment)) {

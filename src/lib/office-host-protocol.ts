@@ -3,6 +3,12 @@ export const OFFICE_HOST_PROTOCOL = 'onlyoffice-browser-host/v1';
 export type OfficeHostSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
 export type OfficeHostSaveBehavior = 'auto' | 'callback' | 'download';
 export type OfficeHostInterfaceTheme = 'system' | 'light' | 'dark';
+export type OfficeHostStartupPhase =
+  | 'connected'
+  | 'reading-source'
+  | 'loading-runtime'
+  | 'converting'
+  | 'creating-editor';
 
 export interface OfficeHostIdentity {
   packageVersion: string;
@@ -104,6 +110,17 @@ export type OfficeHostParentMessage =
     });
 
 export type OfficeHostChildMessage =
+  | (OfficeHostBaseMessage & {
+      type: 'STARTUP_HEARTBEAT_PORT';
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'STARTUP_PHASE';
+      phase: OfficeHostStartupPhase;
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'STARTUP_HEARTBEAT';
+      phase: OfficeHostStartupPhase;
+    })
   | (OfficeHostBaseMessage & {
       type: 'READY';
       state: OfficeHostState;
