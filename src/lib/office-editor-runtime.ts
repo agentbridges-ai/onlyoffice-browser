@@ -81,6 +81,10 @@ export type OfficeEditorMode = 'edit' | 'readonly' | 'preview';
 export type OfficeEditorSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
 export type OfficeSaveBehavior = 'auto' | 'callback' | 'download';
 export type OfficeInterfaceTheme = 'system' | 'light' | 'dark';
+export type OfficePluginOptions = {
+  configUrls: string[];
+  autostart?: string[];
+};
 type OnlyOfficeUiTheme = 'theme-system' | 'theme-white' | 'theme-night';
 export type OfficeSaveToNewFormatConfirmationOptions = {
   title?: string;
@@ -107,6 +111,7 @@ export interface CreateOfficeEditorOptions {
   spellcheck?: boolean;
   interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
+  plugins?: OfficePluginOptions;
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
   onReady?: (instance: OfficeEditorInstance) => void;
@@ -2013,7 +2018,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             spellcheck: this.options.spellcheck ?? false,
             autosave: false,
             forcesave: false,
-            plugins: false,
+            plugins: Boolean(this.options.plugins?.configUrls.length),
             features: {
               featuresTips: false,
               spellcheck: {
@@ -2025,6 +2030,14 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
               label: LOCAL_ONLYOFFICE_USER_NAME,
             },
           },
+          plugins: this.options.plugins?.configUrls.length
+            ? {
+                pluginsData: this.options.plugins.configUrls.map(
+                  (url) => new URL(url, window.location.origin).href,
+                ),
+                autostart: this.options.plugins.autostart,
+              }
+            : undefined,
         },
         events: {
           onAppReady: () => {
