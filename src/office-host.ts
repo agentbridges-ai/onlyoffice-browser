@@ -11,6 +11,11 @@ import {
   type OfficeHostState,
   type OfficeHostWindowMessage,
 } from './lib/office-host-protocol';
+import {
+  isOfficePluginResultForRuntime,
+  resolveOfficePluginReady,
+  type OfficePluginRuntime,
+} from './lib/office-plugin-runtime';
 import './styles/base.css';
 
 type RuntimeOptions = Parameters<typeof createRuntimeOfficeEditor>[1];
@@ -22,10 +27,11 @@ const root = document.querySelector<HTMLElement>('#office-host') ?? document.bod
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
 /** Bump whenever already-open host frames must be recreated. */
-const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.32';
-const OFFICE_HOST_BUILD_ID = 'office-host-0.3.33-r1';
+const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.34';
+const OFFICE_HOST_BUILD_ID = 'office-host-0.3.34-r1';
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const STARTUP_HEARTBEAT_INTERVAL_MS = 5_000;
+const PLUGIN_REQUEST_TIMEOUT_MS = 30_000;
 const OFFICE_PLUGIN_PROTOCOL = 'onlyoffice-browser-plugin/v1';
 
 let port: MessagePort | null = null;
@@ -37,13 +43,15 @@ let startupHeartbeatInterval: number | null = null;
 let startupHeartbeatWorker: Worker | null = null;
 let activeSaveRequestId: string | undefined;
 let nativeSaveRequestSequence = 0;
-const pluginWindows = new Map<string, Window>();
+const pluginRuntimes = new Map<string, OfficePluginRuntime<Window>>();
 const configuredPluginGuids = new Set<string>();
+const pendingPluginRequests = new Map<string, { runtime: OfficePluginRuntime<Window>; timeoutId: number }>();
 
 type OfficePluginWindowMessage = {
   protocol: typeof OFFICE_PLUGIN_PROTOCOL;
   type: 'READY' | 'RESULT';
   pluginGuid: string;
+  pluginInstanceId: string;
   editorType?: string;
   requestId?: string;
   ok?: boolean;
@@ -535,6 +543,8 @@ async function destroyRuntime(): Promise<void> {
     pending.reject(makeSaveAckError(`Editor was destroyed before save acknowledgement completed: ${requestId}`));
   }
   pendingSaveAcks.clear();
+  rejectPendingPluginRequests(undefined, 'Editor was destroyed before plugin operation completed');
+  pluginRuntimes.clear();
 
   try {
     await editor?.destroy();
@@ -641,13 +651,33 @@ function handlePluginWindowMessage(event: MessageEvent<OfficePluginWindowMessage
     !message ||
     message.protocol !== OFFICE_PLUGIN_PROTOCOL ||
     !configuredPluginGuids.has(message.pluginGuid) ||
+    typeof message.pluginInstanceId !== 'string' ||
+    !message.pluginInstanceId ||
     !event.source
   ) {
     return;
   }
 
   if (message.type === 'READY') {
-    pluginWindows.set(message.pluginGuid, event.source as Window);
+    const currentRuntime = pluginRuntimes.get(message.pluginGuid);
+    const decision = resolveOfficePluginReady(currentRuntime, {
+      pluginGuid: message.pluginGuid,
+      pluginInstanceId: message.pluginInstanceId,
+      source: event.source as Window,
+    });
+    if (decision.kind === 'ignored' || decision.kind === 'duplicate') return;
+    if (decision.kind === 'replaced') {
+      console.warn('[onlyoffice-browser] Office plugin runtime changed', {
+        pluginGuid: message.pluginGuid,
+        previousInstanceId: currentRuntime?.pluginInstanceId,
+        nextInstanceId: decision.runtime.pluginInstanceId,
+      });
+      rejectPendingPluginRequests(
+        message.pluginGuid,
+        `Office plugin reloaded before operation completed: ${message.pluginGuid}`,
+      );
+    }
+    pluginRuntimes.set(message.pluginGuid, decision.runtime);
     postPortMessage({
       protocol: OFFICE_HOST_PROTOCOL,
       type: 'PLUGIN_READY',
@@ -658,13 +688,21 @@ function handlePluginWindowMessage(event: MessageEvent<OfficePluginWindowMessage
     return;
   }
 
+  if (message.type !== 'RESULT' || !message.requestId) return;
+  const pending = pendingPluginRequests.get(message.requestId);
   if (
-    message.type !== 'RESULT' ||
-    !message.requestId ||
-    pluginWindows.get(message.pluginGuid) !== event.source
+    !pending ||
+    !isOfficePluginResultForRuntime(
+      pending.runtime,
+      message.pluginGuid,
+      message.pluginInstanceId,
+      event.source as Window,
+    )
   ) {
     return;
   }
+  window.clearTimeout(pending.timeoutId);
+  pendingPluginRequests.delete(message.requestId);
   postPortMessage({
     protocol: OFFICE_HOST_PROTOCOL,
     type: 'PLUGIN_RESULT',
@@ -677,24 +715,37 @@ function handlePluginWindowMessage(event: MessageEvent<OfficePluginWindowMessage
   });
 }
 
-function handleInvokePlugin(
-  message: Extract<OfficeHostParentMessage, { type: 'INVOKE_PLUGIN' }>,
-): void {
-  const pluginWindow = pluginWindows.get(message.pluginGuid);
-  if (!pluginWindow) {
+function handleInvokePlugin(message: Extract<OfficeHostParentMessage, { type: 'INVOKE_PLUGIN' }>): void {
+  const runtime = pluginRuntimes.get(message.pluginGuid);
+  if (!runtime) {
     postError('plugin', new Error(`Office plugin is not ready: ${message.pluginGuid}`), message.requestId);
     return;
   }
-  pluginWindow.postMessage(
+  const timeoutId = window.setTimeout(() => {
+    pendingPluginRequests.delete(message.requestId);
+    postError('plugin', new Error(`Office plugin operation timed out: ${message.pluginGuid}`), message.requestId);
+  }, PLUGIN_REQUEST_TIMEOUT_MS);
+  pendingPluginRequests.set(message.requestId, { runtime, timeoutId });
+  runtime.source.postMessage(
     {
       protocol: OFFICE_PLUGIN_PROTOCOL,
       type: 'INVOKE',
       pluginGuid: message.pluginGuid,
+      pluginInstanceId: runtime.pluginInstanceId,
       requestId: message.requestId,
       payload: message.payload,
     },
     window.location.origin,
   );
+}
+
+function rejectPendingPluginRequests(pluginGuid: string | undefined, reason: string): void {
+  for (const [requestId, pending] of pendingPluginRequests) {
+    if (pluginGuid && pending.runtime.pluginGuid !== pluginGuid) continue;
+    window.clearTimeout(pending.timeoutId);
+    pendingPluginRequests.delete(requestId);
+    postError('plugin', new Error(reason), requestId);
+  }
 }
 
 function handleSaveAck(message: Extract<OfficeHostParentMessage, { type: 'SAVE_ACK' }>): void {

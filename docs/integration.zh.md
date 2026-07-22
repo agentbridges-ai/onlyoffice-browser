@@ -78,6 +78,38 @@ const editor = await createOfficeEditor(container, {
 拼写检查默认关闭。只有宿主应用确实需要默认打开拼写检查时，才传入 `spellcheck: true`。
 Word 和演示文稿在编辑器运行态中默认使用适合宽度缩放，让页面/幻灯片优先占满可用预览区域。
 
+## OnlyOffice 插件
+
+插件文件继续由宿主应用持有和提供。把插件标准的 OnlyOffice `config.json`、HTML 和 JavaScript 部署到 editor-host origin，然后在创建编辑器时传入配置地址和可选的自启动 GUID：
+
+```ts
+import type { OfficeEditorInstance } from '@agentbridges-ai/onlyoffice-browser';
+
+const pluginGuid = 'asc.{YOUR-PLUGIN-GUID}';
+let pluginEditor: OfficeEditorInstance | undefined;
+
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  file,
+  fileName: file.name,
+  plugins: {
+    configUrls: ['/plugins/my-plugin/config.json'],
+    autostart: [pluginGuid],
+  },
+  onPluginReady(guid, editorType, instance) {
+    if (guid === pluginGuid) pluginEditor = instance;
+  },
+});
+
+const result = await pluginEditor?.invokePlugin(pluginGuid, {
+  type: 'read_document_state',
+});
+```
+
+`configUrls` 会基于隔离的 editor-host origin 解析。本包只把它们作为 OnlyOffice 的 `pluginsData` 传入，不会把插件源码打包或硬注入编辑器运行时。
+
+如果插件需要接收宿主调用，插件 iframe 使用 `onlyoffice-browser-plugin/v1` 协议向 `window.parent.parent` 宣告 `READY`，接收 `INVOKE` 消息，并以相同 request ID 返回 `RESULT`。每次插件加载都必须生成新的 `pluginInstanceId`。请求会绑定到准确的 iframe 和实例 ID，替换后的插件不能替旧实例完成请求；无响应请求会在 bridge 超时后 reject，销毁编辑器也会拒绝全部待处理调用。
+
 ## 多文档同时打开
 
 组件不内置标签栏。宿主应用为每个文档创建一个容器，并保存返回的实例：

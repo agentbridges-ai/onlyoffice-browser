@@ -91,6 +91,7 @@ async function connectHost(
 
 describe('office-editor parent proxy', () => {
   beforeEach(() => {
+    vi.useRealTimers();
     document.head.innerHTML = '';
     document.body.innerHTML = '';
     vi.restoreAllMocks();
@@ -483,6 +484,25 @@ describe('office-editor parent proxy', () => {
     await expect(instance.invokePlugin('asc.test-plugin', { type: 'get_range_values' })).resolves.toEqual({
       values: [[42]],
     });
+  });
+
+  it('rejects a plugin operation that never receives a host response', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'sheet.xlsx'),
+      fileName: 'sheet.xlsx',
+    });
+    await connectHost(container);
+    const instance = await promise;
+
+    vi.useFakeTimers();
+    const operation = instance.invokePlugin('asc.test-plugin', { type: 'get_range_values' });
+    const rejection = expect(operation).rejects.toThrow('Office plugin operation timed out: asc.test-plugin');
+    await vi.advanceTimersByTimeAsync(45_000);
+
+    await rejection;
   });
 
   it('removes sandbox if an integration mutates the host iframe after mount', async () => {

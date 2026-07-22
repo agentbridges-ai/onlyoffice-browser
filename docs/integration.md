@@ -78,6 +78,38 @@ const editor = await createOfficeEditor(container, {
 Spellcheck is disabled by default. Pass `spellcheck: true` only when the host app should open documents with spell checking enabled.
 Word and presentation documents opened in the editor runtime default to fit-to-width zoom so the page/slide uses the available preview area.
 
+## OnlyOffice Plugins
+
+Plugin files remain owned and served by the host application. Deploy each plugin's standard OnlyOffice `config.json`, HTML, and JavaScript on the editor-host origin, then pass its config URL and optional autostart GUID when creating the editor:
+
+```ts
+import type { OfficeEditorInstance } from '@agentbridges-ai/onlyoffice-browser';
+
+const pluginGuid = 'asc.{YOUR-PLUGIN-GUID}';
+let pluginEditor: OfficeEditorInstance | undefined;
+
+await createOfficeEditor(container, {
+  hostUrl: officeHostUrl,
+  file,
+  fileName: file.name,
+  plugins: {
+    configUrls: ['/plugins/my-plugin/config.json'],
+    autostart: [pluginGuid],
+  },
+  onPluginReady(guid, editorType, instance) {
+    if (guid === pluginGuid) pluginEditor = instance;
+  },
+});
+
+const result = await pluginEditor?.invokePlugin(pluginGuid, {
+  type: 'read_document_state',
+});
+```
+
+`configUrls` are resolved against the isolated editor-host origin. The package passes them to OnlyOffice as `pluginsData`; it does not bundle or inject plugin source into the editor runtime.
+
+For host-driven calls, the plugin iframe announces `READY` to `window.parent.parent` using the `onlyoffice-browser-plugin/v1` protocol, receives `INVOKE` messages, and returns `RESULT` messages with the same request ID. Each plugin load must include a new `pluginInstanceId`. Requests are bound to that exact iframe and instance ID, so a replacement plugin cannot complete an older instance's request. Unanswered requests reject after the bridge timeout, and destroying the editor rejects all pending calls.
+
 ## Multiple Documents
 
 The component does not include tabs. The host creates one container per document and stores the returned instances:

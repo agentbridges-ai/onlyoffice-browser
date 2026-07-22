@@ -22,6 +22,7 @@ const RESET_NAVIGATION_TIMEOUT_MS = 750;
 const HOST_READY_TIMEOUT_MS = 30_000;
 const STARTUP_HEARTBEAT_TIMEOUT_MS = 30_000;
 const STARTUP_TOTAL_TIMEOUT_MS = 5 * 60_000;
+const PLUGIN_REQUEST_TIMEOUT_MS = 45_000;
 const HOST_SELF_RESET_PATH = '/reset.html?stay=1&officeHostReset=1';
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
 const OUTER_IFRAME_ALLOW = 'clipboard-read; clipboard-write; fullscreen';
@@ -198,6 +199,7 @@ type PendingConfirmationRequest = {
 type PendingPluginRequest = {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
+  timeoutId: number;
 };
 
 type PreparedHostInit = {
@@ -1023,6 +1025,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       const pluginRequest = this.pendingPluginRequests.get(message.requestId);
       if (pluginRequest) {
         this.pendingPluginRequests.delete(message.requestId);
+        window.clearTimeout(pluginRequest.timeoutId);
         pluginRequest.reject(error);
         this.options.onError?.(error, this);
         return;
@@ -1047,12 +1050,11 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     request.resolve(message.confirmed);
   }
 
-  private handlePluginResult(
-    message: Extract<OfficeHostChildMessage, { type: 'PLUGIN_RESULT' }>,
-  ): void {
+  private handlePluginResult(message: Extract<OfficeHostChildMessage, { type: 'PLUGIN_RESULT' }>): void {
     const request = this.pendingPluginRequests.get(message.requestId);
     if (!request) return;
     this.pendingPluginRequests.delete(message.requestId);
+    window.clearTimeout(request.timeoutId);
     if (message.ok) request.resolve(message.result);
     else request.reject(new Error(message.error || 'Office plugin operation failed'));
   }
@@ -1183,7 +1185,11 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
     const requestId = nextRequestId(this.id);
     return new Promise<unknown>((resolve, reject) => {
-      this.pendingPluginRequests.set(requestId, { resolve, reject });
+      const timeoutId = window.setTimeout(() => {
+        this.pendingPluginRequests.delete(requestId);
+        reject(new Error(`Office plugin operation timed out: ${pluginGuid}`));
+      }, PLUGIN_REQUEST_TIMEOUT_MS);
+      this.pendingPluginRequests.set(requestId, { resolve, reject, timeoutId });
       this.postToHost({
         protocol: OFFICE_HOST_PROTOCOL,
         type: 'INVOKE_PLUGIN',
@@ -1280,6 +1286,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
     this.pendingConfirmationRequests.clear();
     for (const request of this.pendingPluginRequests.values()) {
+      window.clearTimeout(request.timeoutId);
       request.reject(new Error('Editor was destroyed before plugin operation completed'));
     }
     this.pendingPluginRequests.clear();
