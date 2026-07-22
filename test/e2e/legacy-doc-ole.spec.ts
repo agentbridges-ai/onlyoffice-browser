@@ -1,9 +1,10 @@
 import { expect, type Frame, type Page, test } from '@playwright/test';
 
-const FIXTURE_URL = '/fixtures/regressions/example-document-title-ole.doc';
-const FIXTURE_NAME = 'Example Document Title.doc';
+const FIXTURE_URL = '/fixtures/regressions/example-title.doc';
+const FIXTURE_NAME = 'Example Title.doc';
 const FIXTURE_SHA256 = 'd85e44ae5368ccbbe57ded8533ced05a250c30cfa15da10f19fdaf63f080238c';
-const ODT_FIXTURE_URL = '/fixtures/regressions/example-document-title.odt';
+const ODT_FIXTURE_URL = '/fixtures/regressions/example-title.odt';
+const ODP_FIXTURE_URL = '/fixtures/regressions/example-title.odp';
 
 type SaveE2EStatus = {
   type: string;
@@ -114,7 +115,7 @@ test('ODT chart retains five distinct gradient series in the editor document mod
     scenario: 'local-file',
     type: 'odt',
     fixtureUrl: ODT_FIXTURE_URL,
-    fixtureName: 'Example Document Title.odt',
+    fixtureName: 'Example Title.odt',
   });
 
   await page.goto(`/save-e2e.html?${params}`);
@@ -209,8 +210,8 @@ test('DOCX source retains readable body text and five chart series in the editor
   const params = new URLSearchParams({
     scenario: 'local-file',
     type: 'docx',
-    fixtureUrl: '/fixtures/regressions/example-document-title.docx',
-    fixtureName: 'Example Document Title.docx',
+    fixtureUrl: '/fixtures/regressions/example-title.docx',
+    fixtureName: 'Example Title.docx',
   });
   await page.goto(`/save-e2e.html?${params}`);
   await page.waitForFunction(
@@ -224,7 +225,7 @@ test('DOCX source retains readable body text and five chart series in the editor
   expect((await getStatus(page)).error).toBe('');
   const editorFrame = await getWordEditorFrame(page);
   const model = await editorFrame.evaluate(() => {
-    const scope = globalThis as typeof globalThis & { editor: any };
+    const scope = globalThis as typeof globalThis & { editor: any; AscCommon?: any };
     const document = scope.editor.WordControl.m_oLogicDocument;
     const chart = (document.DrawingObjects?.drawingObjects || [])
       .map((drawing: any) => drawing.GraphicObj)
@@ -252,13 +253,13 @@ test('DOCX source retains readable body text and five chart series in the editor
   expect(failures).toEqual([]);
 });
 
-test('RTF source retains the complete readable document body instead of only reaching READY', async ({ page }) => {
+test('RTF source retains readable content without an empty drawing placeholder', async ({ page }) => {
   const failures = collectPageFailures(page);
   const params = new URLSearchParams({
     scenario: 'local-file',
     type: 'rtf',
-    fixtureUrl: '/fixtures/regressions/example-document-title.rtf',
-    fixtureName: 'Example Document Title.rtf',
+    fixtureUrl: '/fixtures/regressions/example-title.rtf',
+    fixtureName: 'Example Title.rtf',
   });
   await page.goto(`/save-e2e.html?${params}`);
   await page.waitForFunction(
@@ -272,7 +273,7 @@ test('RTF source retains the complete readable document body instead of only rea
   expect((await getStatus(page)).error).toBe('');
   const editorFrame = await getWordEditorFrame(page);
   const body = await editorFrame.evaluate(() => {
-    const scope = globalThis as typeof globalThis & { editor: any };
+    const scope = globalThis as typeof globalThis & { editor: any; AscCommon?: any };
     const document = scope.editor.WordControl.m_oLogicDocument;
     const paragraphs = document.GetAllParagraphs?.() || [];
     const drawingText = (document.DrawingObjects?.drawingObjects || [])
@@ -283,14 +284,81 @@ test('RTF source retains the complete readable document body instead of only rea
         return shapeParagraphs.map((paragraph: any) => paragraph.GetText?.() || '');
       })
       .join('\n');
+    const drawings = document.DrawingObjects?.drawingObjects || [];
     return {
       paragraphCount: paragraphs.length,
       text: `${paragraphs.map((paragraph: any) => paragraph.GetText?.() || '').join('\n')}\n${drawingText}`,
+      drawings: drawings.map((drawing: any) => {
+        const graphic = drawing.GraphicObj;
+        const imageName = graphic?.getImageUrl?.() || '';
+        const resourceUrl = scope.AscCommon?.g_oDocumentUrls?.urls?.[`media/${imageName}`];
+        const image = resourceUrl
+          ? (scope.editor?.ImageLoader?.map_image_index?.[resourceUrl] ||
+              scope.AscCommon?.g_image_loader?.map_image_index?.[resourceUrl])?.Image
+          : undefined;
+        return {
+          graphicType: graphic?.constructor?.name || '',
+          imageName,
+          decoded: image ? image.complete && image.naturalWidth > 0 && image.naturalHeight > 0 : false,
+        };
+      }),
     };
   });
   expect(body.paragraphCount).toBeGreaterThan(10);
   expect(body.text).toContain('Welcome to ONLYOFFICE Online Editors');
   expect(body.text).toContain('Click here to see the video comparison');
+  expect(
+    body.drawings.every(
+      (drawing: { imageName: string; decoded: boolean }) => !drawing.imageName || drawing.decoded,
+    ),
+  ).toBe(true);
+  expect(failures).toEqual([]);
+});
+
+test('ODP regenerated from the PPTX source retains all slides and authored content', async ({ page }) => {
+  const failures = collectPageFailures(page);
+  const params = new URLSearchParams({
+    scenario: 'local-file',
+    type: 'odp',
+    fixtureUrl: ODP_FIXTURE_URL,
+    fixtureName: 'Example Title.odp',
+  });
+  await page.goto(`/save-e2e.html?${params}`);
+  await page.waitForFunction(
+    () => {
+      const status = window.__ONLYOFFICE_SAVE_E2E__?.getStatus();
+      return status?.ready === true || Boolean(status?.error);
+    },
+    null,
+    { timeout: 25_000 },
+  );
+  expect((await getStatus(page)).error).toBe('');
+  const editorFrame = await getPresentationEditorFrame(page);
+  const model = await editorFrame.evaluate(() => {
+    const scope = globalThis as typeof globalThis & { editor: any };
+    const presentation = scope.editor.WordControl.m_oLogicDocument;
+    const slides = presentation.Slides || [];
+    let text = '';
+    let shapeCount = 0;
+    const visit = (shape: any) => {
+      shapeCount += 1;
+      const paragraphs =
+        shape?.txBody?.content?.GetAllParagraphs?.() ||
+        shape?.textBoxContent?.GetAllParagraphs?.() ||
+        [];
+      text += `\n${paragraphs.map((paragraph: any) => paragraph.GetText?.() || '').join('\n')}`;
+      for (const child of shape?.spTree || []) visit(child);
+    };
+    for (const slide of slides) {
+      for (const shape of slide?.cSld?.spTree || []) visit(shape);
+    }
+    return { slideCount: slides.length, shapeCount, text };
+  });
+  const normalizedText = model.text.replace(/[·\s]+/g, ' ').trim();
+  expect(model.slideCount).toBe(8);
+  expect(model.shapeCount).toBeGreaterThan(10);
+  expect(normalizedText).toContain('How They Throw Out');
+  expect(normalizedText).toContain('ONLYOFFICE stands for Peace');
   expect(failures).toEqual([]);
 });
 
@@ -300,6 +368,14 @@ async function getWordEditorFrame(page: Page): Promise<Frame> {
     .toContain('/documenteditor/main/index.html');
   const frame = page.frames().find((candidate) => candidate.url().includes('/documenteditor/main/index.html'));
   if (!frame) throw new Error('Word editor frame was not created');
+  return frame;
+}
+
+async function getPresentationEditorFrame(page: Page): Promise<Frame> {
+  const path = '/presentationeditor/main/index.html';
+  await expect.poll(() => page.frames().find((frame) => frame.url().includes(path))?.url()).toContain(path);
+  const frame = page.frames().find((candidate) => candidate.url().includes(path));
+  if (!frame) throw new Error('Presentation editor frame was not created');
   return frame;
 }
 

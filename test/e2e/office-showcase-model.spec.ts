@@ -123,15 +123,15 @@ test('Spreadsheet showcase exposes sheets, formulas, charts and native-object sh
       ),
       overviewTitle: readCell(sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Overview'), 1, 1),
       overviewFormula: readCell(sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Overview'), 6, 1),
-      nativeTitle: readCell(sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Native Objects'), 0, 0),
+      nativeTitle: readCell(sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Native PivotTable and Slicer'), 0, 0),
     };
   });
 
-  expect(model.sheetNames).toEqual(['Overview', 'Data', 'Formats', 'Charts', 'Sparklines', 'RTL & CJK', 'Reference', 'Native Objects']);
+  expect(model.sheetNames).toEqual(['Overview', 'Data', 'Formats', 'Charts', 'Sparklines', 'RTL & CJK', 'Reference', 'Native PivotTable and Slicer']);
   expect(model.hiddenSheets).toContain('Reference');
   expect(model.overviewTitle.value).toContain('Spreadsheet Preview Showcase');
   expect(model.overviewFormula.formula).toContain('SUM');
-  expect(model.nativeTitle.value).toContain('S21 · Native PivotTable and Slicer');
+  expect(model.nativeTitle.value).toBe('Status');
   expect(model.chartCount).toBe(6);
   expect(model.drawingCounts.reduce((sum: number, count: number) => sum + count, 0)).toBeGreaterThanOrEqual(9);
   expect(failures).toEqual([]);
