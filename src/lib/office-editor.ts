@@ -5,6 +5,7 @@ import {
   type OfficeHostInterfaceTheme,
   type OfficeHostIdentity,
   type OfficeHostInitOptions,
+  type OfficeHostPluginOptions,
   type OfficeHostParentMessage,
   type OfficeHostSaveBehavior,
   type OfficeHostSource,
@@ -21,6 +22,7 @@ const RESET_NAVIGATION_TIMEOUT_MS = 750;
 const HOST_READY_TIMEOUT_MS = 30_000;
 const STARTUP_HEARTBEAT_TIMEOUT_MS = 30_000;
 const STARTUP_TOTAL_TIMEOUT_MS = 5 * 60_000;
+const PLUGIN_REQUEST_TIMEOUT_MS = 45_000;
 const HOST_SELF_RESET_PATH = '/reset.html?stay=1&officeHostReset=1';
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
 const OUTER_IFRAME_ALLOW = 'clipboard-read; clipboard-write; fullscreen';
@@ -49,6 +51,7 @@ export type OfficeEditorInput = Blob | ArrayBuffer | Uint8Array;
 export type OfficeEditorSourceKind = OfficeHostSourceKind;
 export type OfficeSaveBehavior = OfficeHostSaveBehavior;
 export type OfficeInterfaceTheme = OfficeHostInterfaceTheme;
+export type OfficePluginOptions = OfficeHostPluginOptions;
 export type { OfficeHostIdentity, OfficeSaveToNewFormatConfirmationOptions };
 export type OfficeSaveCallbackResult = void | boolean;
 export type OfficeSaveAsCallbackResult = void | boolean;
@@ -76,10 +79,12 @@ export interface CreateOfficeEditorOptions {
   spellcheck?: boolean;
   interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
+  plugins?: OfficePluginOptions;
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
   destroyTimeoutMs?: number;
   onReady?: (instance: OfficeEditorInstance) => void;
+  onPluginReady?: (pluginGuid: string, editorType: string, instance: OfficeEditorInstance) => void;
   saveBehavior?: OfficeSaveBehavior;
   onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
   onSaveAs?: (
@@ -109,6 +114,7 @@ export interface OfficeEditorState {
 
 export interface OfficeEditorInstance {
   readonly id: string;
+  invokePlugin(pluginGuid: string, payload: unknown): Promise<unknown>;
   save(targetExt?: string): Promise<File>;
   confirmSaveToNewFormat(options?: OfficeSaveToNewFormatConfirmationOptions): Promise<boolean>;
   setInterfaceTheme(theme: OfficeInterfaceTheme): void;
@@ -188,6 +194,12 @@ type PendingRequest = {
 type PendingConfirmationRequest = {
   resolve: (confirmed: boolean) => void;
   reject: (error: Error) => void;
+};
+
+type PendingPluginRequest = {
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+  timeoutId: number;
 };
 
 type PreparedHostInit = {
@@ -499,6 +511,7 @@ async function prepareHostInit(
       spellcheck: options.spellcheck ?? false,
       interfaceTheme: options.interfaceTheme,
       lang: options.lang,
+      plugins: options.plugins,
       saveBehavior: options.saveBehavior,
       source,
     },
@@ -583,6 +596,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private prepared: PreparedHostInit | null = null;
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly pendingConfirmationRequests = new Map<string, PendingConfirmationRequest>();
+  private readonly pendingPluginRequests = new Map<string, PendingPluginRequest>();
   private readonly parentWindow: Window;
   private readonly readyPromise: Promise<BrowserOfficeEditorProxy>;
   private iframe: HTMLIFrameElement | null = null;
@@ -823,6 +837,12 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       case 'CONFIRM_SAVE_TO_NEW_FORMAT_RESULT':
         this.handleConfirmSaveToNewFormatResult(message);
         return;
+      case 'PLUGIN_READY':
+        this.options.onPluginReady?.(message.pluginGuid, message.editorType, this);
+        return;
+      case 'PLUGIN_RESULT':
+        this.handlePluginResult(message);
+        return;
       case 'ERROR':
         this.handleHostError(message);
         return;
@@ -1001,6 +1021,15 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
         this.options.onError?.(error, this);
         return;
       }
+
+      const pluginRequest = this.pendingPluginRequests.get(message.requestId);
+      if (pluginRequest) {
+        this.pendingPluginRequests.delete(message.requestId);
+        window.clearTimeout(pluginRequest.timeoutId);
+        pluginRequest.reject(error);
+        this.options.onError?.(error, this);
+        return;
+      }
     }
 
     if (!this.mounted) {
@@ -1019,6 +1048,15 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     if (!request) return;
     this.pendingConfirmationRequests.delete(message.requestId);
     request.resolve(message.confirmed);
+  }
+
+  private handlePluginResult(message: Extract<OfficeHostChildMessage, { type: 'PLUGIN_RESULT' }>): void {
+    const request = this.pendingPluginRequests.get(message.requestId);
+    if (!request) return;
+    this.pendingPluginRequests.delete(message.requestId);
+    window.clearTimeout(request.timeoutId);
+    if (message.ok) request.resolve(message.result);
+    else request.reject(new Error(message.error || 'Office plugin operation failed'));
   }
 
   private failBeforeReady(error: Error): void {
@@ -1137,6 +1175,32 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     });
   }
 
+  invokePlugin(pluginGuid: string, payload: unknown): Promise<unknown> {
+    if (this.destroyed || !this.port) {
+      return Promise.reject(new Error('Editor is not open'));
+    }
+    if (!pluginGuid.trim()) {
+      return Promise.reject(new Error('A plugin GUID is required'));
+    }
+
+    const requestId = nextRequestId(this.id);
+    return new Promise<unknown>((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        this.pendingPluginRequests.delete(requestId);
+        reject(new Error(`Office plugin operation timed out: ${pluginGuid}`));
+      }, PLUGIN_REQUEST_TIMEOUT_MS);
+      this.pendingPluginRequests.set(requestId, { resolve, reject, timeoutId });
+      this.postToHost({
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'INVOKE_PLUGIN',
+        sessionId: this.id,
+        requestId,
+        pluginGuid,
+        payload,
+      });
+    });
+  }
+
   confirmSaveToNewFormat(options?: OfficeSaveToNewFormatConfirmationOptions): Promise<boolean> {
     if (this.destroyed || !this.port) {
       return Promise.reject(new Error('Editor is not open'));
@@ -1221,6 +1285,11 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       request.reject(new Error('Editor was destroyed before confirmation completed'));
     }
     this.pendingConfirmationRequests.clear();
+    for (const request of this.pendingPluginRequests.values()) {
+      window.clearTimeout(request.timeoutId);
+      request.reject(new Error('Editor was destroyed before plugin operation completed'));
+    }
+    this.pendingPluginRequests.clear();
     activeInstances.delete(this.id);
     if (activeOrigins.get(this.hostOrigin) === this) {
       activeOrigins.delete(this.hostOrigin);

@@ -3,6 +3,10 @@ export const OFFICE_HOST_PROTOCOL = 'onlyoffice-browser-host/v1';
 export type OfficeHostSourceKind = 'local-file' | 'new-document' | 'buffer' | 'url';
 export type OfficeHostSaveBehavior = 'auto' | 'callback' | 'download';
 export type OfficeHostInterfaceTheme = 'system' | 'light' | 'dark';
+export interface OfficeHostPluginOptions {
+  configUrls: string[];
+  autostart?: string[];
+}
 export type OfficeHostStartupPhase =
   | 'connected'
   | 'reading-source'
@@ -44,6 +48,7 @@ export interface OfficeHostInitOptions {
   interfaceTheme?: OfficeHostInterfaceTheme;
   lang?: string;
   saveBehavior?: OfficeHostSaveBehavior;
+  plugins?: OfficeHostPluginOptions;
   source: OfficeHostSource;
 }
 
@@ -106,6 +111,12 @@ export type OfficeHostParentMessage =
       interfaceTheme: OfficeHostInterfaceTheme;
     })
   | (OfficeHostBaseMessage & {
+      type: 'INVOKE_PLUGIN';
+      requestId: string;
+      pluginGuid: string;
+      payload: unknown;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'DESTROY';
     });
 
@@ -158,8 +169,21 @@ export type OfficeHostChildMessage =
       confirmed: boolean;
     })
   | (OfficeHostBaseMessage & {
+      type: 'PLUGIN_READY';
+      pluginGuid: string;
+      editorType: string;
+    })
+  | (OfficeHostBaseMessage & {
+      type: 'PLUGIN_RESULT';
+      requestId: string;
+      pluginGuid: string;
+      ok: boolean;
+      result?: unknown;
+      error?: string;
+    })
+  | (OfficeHostBaseMessage & {
       type: 'ERROR';
-      phase: 'handshake' | 'init' | 'save' | 'confirm' | 'setReadonly' | 'setInterfaceTheme' | 'destroy' | 'runtime';
+      phase: 'handshake' | 'init' | 'save' | 'confirm' | 'plugin' | 'setReadonly' | 'setInterfaceTheme' | 'destroy' | 'runtime';
       message: string;
     })
   | (OfficeHostBaseMessage & {
