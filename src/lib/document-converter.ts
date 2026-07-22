@@ -18,6 +18,31 @@ function createObjectURL(blob: Blob): string {
   return URL.createObjectURL(blob);
 }
 
+function getConvertedMediaMimeType(fileName: string): string {
+  const extension = fileName.split('.').pop()?.toLowerCase();
+  switch (extension) {
+    case 'svg':
+      return 'image/svg+xml';
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'bmp':
+      return 'image/bmp';
+    case 'emf':
+      return 'image/emf';
+    case 'wmf':
+      return 'image/wmf';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
 function getExtensions(mimeType = ''): string[] {
   const map: Record<string, string[]> = {
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['docx'],
@@ -735,7 +760,10 @@ export class X2TConverter {
                 encoding: 'binary',
               }) as BlobPart;
 
-              const blob = new Blob([fileData]);
+              // SVG object previews are not reliably MIME-sniffed from blob URLs.
+              // Preserve the media type produced by x2t so the editor image loader
+              // can decode OLE fallback previews instead of completing at 0x0.
+              const blob = new Blob([fileData], { type: getConvertedMediaMimeType(file) });
               const mediaUrl = createObjectURL(blob);
               media[key] = mediaUrl;
             } catch (error) {

@@ -370,6 +370,32 @@ describe('X2TConverter', () => {
     expect(globalThis.fetch).toHaveBeenCalledWith('blob:image-1');
   });
 
+  it('preserves converted SVG media as image/svg+xml for editor image decoding', async () => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const createdBlobs: Blob[] = [];
+
+    x2tModule.files.set(
+      '/working/media/display6image1.svg',
+      Uint8Array.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>', (char) =>
+        char.charCodeAt(0),
+      ),
+    );
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.mocked(URL.createObjectURL).mockImplementation((blob) => {
+      createdBlobs.push(blob as Blob);
+      return 'blob:display6image1.svg';
+    });
+
+    const media = await (
+      converter as unknown as { readMediaFiles: () => Promise<Record<string, string>> }
+    ).readMediaFiles();
+
+    expect(media).toEqual({ 'media/display6image1.svg': 'blob:display6image1.svg' });
+    expect(createdBlobs).toHaveLength(1);
+    expect(createdBlobs[0].type).toBe('image/svg+xml');
+  });
+
   it('restores media files into the x2t workspace before native print export', async () => {
     const converter = new X2TConverter();
     const x2tModule = createFakeX2TModule();
