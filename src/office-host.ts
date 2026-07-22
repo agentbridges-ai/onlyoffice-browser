@@ -22,8 +22,8 @@ const root = document.querySelector<HTMLElement>('#office-host') ?? document.bod
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
 /** Bump whenever already-open host frames must be recreated. */
-const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.30';
-const OFFICE_HOST_BUILD_ID = 'office-host-0.3.30-r1';
+const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.31';
+const OFFICE_HOST_BUILD_ID = 'office-host-0.3.31-r1';
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const STARTUP_HEARTBEAT_INTERVAL_MS = 5_000;
 
