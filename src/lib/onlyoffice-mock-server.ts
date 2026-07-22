@@ -136,12 +136,36 @@ function countSavedChanges(changes: unknown): number {
   return 0;
 }
 
+function getImageUploadCommand(msg: OnlyOfficeFromMessage): OnlyOfficeFromMessage | undefined {
+  if (msg.type === 'imgurls' || msg.c === 'imgurls') return msg;
+  if (msg.type !== 'message') return undefined;
+  if (msg.message && typeof msg.message === 'object' && msg.message.c === 'imgurls') return msg.message;
+  if (typeof msg.message === 'string') {
+    try {
+      const command = JSON.parse(msg.message) as OnlyOfficeFromMessage;
+      return command.c === 'imgurls' ? command : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function getImageExtension(url: string): string {
+  const dataMime = /^data:image\/([a-z0-9.+-]+);/i.exec(url)?.[1]?.toLowerCase();
+  if (dataMime) return dataMime === 'jpeg' ? 'jpg' : dataMime.replace('svg+xml', 'svg');
+  const pathname = url.split(/[?#]/, 1)[0];
+  const extension = /\.([a-z0-9]+)$/i.exec(pathname)?.[1]?.toLowerCase();
+  return extension || 'png';
+}
+
 export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOptions = {}): OnlyOfficeMockServer {
   const { buildNumber, buildVersion, media, onAuth, onSaveRequest, onMessage, onCorruptionWarning } = options;
   let changesIndex = 0;
   let syncChangesIndex = 0;
   let lastSaveTime = Date.now();
   let pendingLocalSave = false;
+  let imageUploadIndex = 0;
 
   const acknowledgeSaveEnd = (respond: OnlyOfficeMessageResponder) => {
     lastSaveTime = Date.now();
@@ -186,6 +210,24 @@ export function createOnlyOfficeMockServer(options: CreateOnlyOfficeMockServerOp
     onAuth,
     onSaveRequest,
     handleMessage: (msg, respond) => {
+      const imageCommand = getImageUploadCommand(msg);
+      if (imageCommand) {
+        const images = Array.isArray(imageCommand.data) ? imageCommand.data : [];
+        const urls = images.map((value: unknown) => {
+          const url = typeof value === 'string' ? value : '';
+          imageUploadIndex += 1;
+          const path = `media/browser-image-${imageUploadIndex}.${getImageExtension(url)}`;
+          if (url && media) media[path] = url;
+          return url ? { url, path } : { url: 'error', path: 'error' };
+        });
+        respond({
+          type: 'imgurls',
+          status: 'ok',
+          data: { urls, error: 0 },
+        });
+        return true;
+      }
+
       if (msg.type === 'isSaveLock') {
         respond({
           type: 'saveLock',

@@ -76,6 +76,40 @@ describe('onlyoffice-mock-server', () => {
     expect(onMessage).toHaveBeenCalledWith(msg);
   });
 
+  it('acknowledges image uploads used by nested OLE editors', () => {
+    const media: Record<string, string> = {};
+    const server = createOnlyOfficeMockServer({ media });
+    const respond = vi.fn();
+    const image = 'data:image/png;base64,iVBORw0KGgo=';
+
+    expect(server.handleMessage?.({ c: 'imgurls', data: [image] }, respond)).toBe(true);
+    expect(respond).toHaveBeenCalledWith({
+      type: 'imgurls',
+      status: 'ok',
+      data: {
+        urls: [{ url: image, path: 'media/browser-image-1.png' }],
+        error: 0,
+      },
+    });
+    expect(media['media/browser-image-1.png']).toBe(image);
+  });
+
+  it('accepts the wrapped imgurls command shape used by the coauthoring transport', () => {
+    const server = createOnlyOfficeMockServer();
+    const respond = vi.fn();
+    const image = 'data:image/svg+xml;base64,PHN2Zy8+';
+
+    expect(
+      server.handleMessage?.({ type: 'message', message: JSON.stringify({ c: 'imgurls', data: [image] }) }, respond),
+    ).toBe(true);
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'imgurls',
+        data: { urls: [{ url: image, path: 'media/browser-image-1.svg' }], error: 0 },
+      }),
+    );
+  });
+
   it('acknowledges local save protocol messages without emitting remote changes', () => {
     const server = createOnlyOfficeMockServer();
     const respond = vi.fn();

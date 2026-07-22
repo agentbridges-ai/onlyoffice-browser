@@ -296,10 +296,39 @@ test('RTF source retains readable content without an empty drawing placeholder',
           ? (scope.editor?.ImageLoader?.map_image_index?.[resourceUrl] ||
               scope.AscCommon?.g_image_loader?.map_image_index?.[resourceUrl])?.Image
           : undefined;
+        let sampledColorCount = 0;
+        let nonWhitePixelCount = 0;
+        let darkPixelCount = 0;
+        if (image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0) {
+          const canvas = globalThis.document.createElement('canvas');
+          canvas.width = 96;
+          canvas.height = 48;
+          const context = canvas.getContext('2d', { willReadFrequently: true });
+          if (context) {
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            const colors = new Set<string>();
+            const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+            for (let index = 0; index < pixels.length; index += 16) {
+              const red = pixels[index];
+              const green = pixels[index + 1];
+              const blue = pixels[index + 2];
+              const alpha = pixels[index + 3];
+              if (alpha < 32 || (red > 245 && green > 245 && blue > 245)) continue;
+              nonWhitePixelCount += 1;
+              if (red < 32 && green < 32 && blue < 32) darkPixelCount += 1;
+              colors.add(`${red >> 4},${green >> 4},${blue >> 4}`);
+            }
+            sampledColorCount = colors.size;
+          }
+        }
         return {
           graphicType: graphic?.constructor?.name || '',
+          isOleObject: Boolean(graphic?.isOleObject?.()),
           imageName,
           decoded: image ? image.complete && image.naturalWidth > 0 && image.naturalHeight > 0 : false,
+          sampledColorCount,
+          nonWhitePixelCount,
+          darkPixelCount,
         };
       }),
     };
@@ -307,9 +336,17 @@ test('RTF source retains readable content without an empty drawing placeholder',
   expect(body.paragraphCount).toBeGreaterThan(10);
   expect(body.text).toContain('Welcome to ONLYOFFICE Online Editors');
   expect(body.text).toContain('Click here to see the video comparison');
+  expect(body.drawings.length).toBeGreaterThan(0);
   expect(
-    body.drawings.every(
-      (drawing: { imageName: string; decoded: boolean }) => !drawing.imageName || drawing.decoded,
+    body.drawings.some((drawing: { imageName: string; decoded: boolean }) => drawing.imageName && drawing.decoded),
+  ).toBe(true);
+  expect(body.drawings.every((drawing: { isOleObject: boolean }) => !drawing.isOleObject)).toBe(true);
+  expect(
+    body.drawings.some(
+      (drawing: { sampledColorCount: number; nonWhitePixelCount: number; darkPixelCount: number }) =>
+        drawing.sampledColorCount > 5 &&
+        drawing.nonWhitePixelCount > 20 &&
+        drawing.darkPixelCount < drawing.nonWhitePixelCount * 0.8,
     ),
   ).toBe(true);
   expect(failures).toEqual([]);
