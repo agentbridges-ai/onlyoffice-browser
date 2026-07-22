@@ -72,11 +72,56 @@ function writeFixture(root: string): void {
     path.join(root, 'onlyoffice-browser-font-assets.json'),
     JSON.stringify({
       version: 1,
-      fontSet: 'zh-core',
+      fontSet: 'full',
       allFonts: 'sdkjs/common/AllFonts.js',
       fontSelection: 'server/FileConverter/bin/font_selection.bin',
       fontThumbnails: ['sdkjs/common/Images/fonts_thumbnail.png'],
       fonts: ['fonts/000.ttf'],
+    }),
+  );
+}
+
+function writeZhCoreFallbackFixture(root: string): void {
+  writeFixture(root);
+  const files = ['000.ttf', '001.ttc', '002.ttf', '003.ttf', '004.ttf'];
+  const infos = [
+    ['Arial', 0, 0, -1, -1, -1, -1, -1, -1],
+    ['Microsoft YaHei', 1, 0, -1, -1, -1, -1, -1, -1],
+    ['DejaVu Sans', 2, 0, -1, -1, -1, -1, -1, -1],
+    ['OpenSymbol', 3, 0, -1, -1, -1, -1, -1, -1],
+    ['Symbola', 4, 0, -1, -1, -1, -1, -1, -1],
+  ];
+  writeAllFonts(root, {
+    files,
+    infos,
+    ranges: [0x21bb, 0x21bb, 2, 0x2248, 0x2248, 2, 0x2726, 0x2726, 2, 0x4e00, 0x9fff, 1],
+    visibleNames: ['Arial', 'Microsoft YaHei'],
+  });
+  for (const file of files.slice(1)) fs.writeFileSync(path.join(root, 'fonts', file), '');
+  fs.writeFileSync(path.join(root, 'sdkjs/common/Images/fonts_thumbnail.png'), makePngHeader(300, 140));
+  fs.writeFileSync(
+    path.join(root, 'onlyoffice-browser-font-source-map.json'),
+    JSON.stringify({
+      fontSet: 'zh-core',
+      fonts: [
+        { file: 'fonts/000.ttf', source: '/fonts/Arial.ttf' },
+        { file: 'fonts/001.ttc', source: '/fonts/msyh.ttc' },
+        { file: 'fonts/002.ttf', source: '/core-fonts/dejavu/DejaVuSans.ttf' },
+        { file: 'fonts/003.ttf', source: '/core-fonts/openoffice/opens___.ttf' },
+        { file: 'fonts/004.ttf', source: '/core-fonts/ancient-scripts/Symbola_hint.ttf' },
+      ],
+    }),
+  );
+  fs.writeFileSync(
+    path.join(root, 'onlyoffice-browser-font-assets.json'),
+    JSON.stringify({
+      version: 1,
+      fontSet: 'zh-core',
+      allFonts: 'sdkjs/common/AllFonts.js',
+      fontSelection: 'server/FileConverter/bin/font_selection.bin',
+      fontSourceMap: 'onlyoffice-browser-font-source-map.json',
+      fontThumbnails: ['sdkjs/common/Images/fonts_thumbnail.png'],
+      fonts: files.map((file) => `fonts/${file}`),
     }),
   );
 }
@@ -99,7 +144,7 @@ describe('verify-onlyoffice-font-assets', () => {
 
     expect(verifyOnlyOfficeFontAssets(root)).toEqual({
       root,
-      fontSet: 'zh-core',
+      fontSet: 'full',
       fonts: 1,
       thumbnails: 1,
     });
@@ -140,6 +185,47 @@ describe('verify-onlyoffice-font-assets', () => {
 
     expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
       'Generated font thumbnail row height is too small for __fonts_infos',
+    );
+  });
+
+  it('enforces the real Unicode fallback chain shared by Word, PowerPoint and Spreadsheet', () => {
+    const root = makeTempDir();
+    writeZhCoreFallbackFixture(root);
+
+    expect(verifyOnlyOfficeFontAssets(root)).toMatchObject({ fontSet: 'zh-core', fonts: 5 });
+  });
+
+  it('rejects a zh-core fallback family that was remapped to a Latin default font', () => {
+    const root = makeTempDir();
+    writeZhCoreFallbackFixture(root);
+    const sourceMapPath = path.join(root, 'onlyoffice-browser-font-source-map.json');
+    const sourceMap = JSON.parse(fs.readFileSync(sourceMapPath, 'utf8'));
+    sourceMap.fonts[2].source = '/fonts/Calibri.ttf';
+    fs.writeFileSync(sourceMapPath, JSON.stringify(sourceMap));
+
+    expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
+      'Generated zh-core fallback DejaVu Sans does not reference its real font source',
+    );
+  });
+
+  it('rejects Office symbol ranges that no longer use the official Unicode fallback', () => {
+    const root = makeTempDir();
+    writeZhCoreFallbackFixture(root);
+    writeAllFonts(root, {
+      files: ['000.ttf', '001.ttc', '002.ttf', '003.ttf', '004.ttf'],
+      infos: [
+        ['Arial', 0, 0, -1, -1, -1, -1, -1, -1],
+        ['Microsoft YaHei', 1, 0, -1, -1, -1, -1, -1, -1],
+        ['DejaVu Sans', 2, 0, -1, -1, -1, -1, -1, -1],
+        ['OpenSymbol', 3, 0, -1, -1, -1, -1, -1, -1],
+        ['Symbola', 4, 0, -1, -1, -1, -1, -1, -1],
+      ],
+      ranges: [0x21bb, 0x21bb, 0, 0x2248, 0x2248, 2, 0x2726, 0x2726, 2, 0x4e00, 0x9fff, 1],
+      visibleNames: ['Arial', 'Microsoft YaHei'],
+    });
+
+    expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
+      'Generated zh-core Office glyph U+21BB maps to Arial instead of DejaVu Sans',
     );
   });
 });

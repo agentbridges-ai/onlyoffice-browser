@@ -7,6 +7,18 @@ import { pathToFileURL } from 'node:url';
 export const FONT_ASSETS_DIR_ENV = 'ONLYOFFICE_BROWSER_FONT_ASSETS_DIR';
 export const GENERATED_FONT_ASSETS_MANIFEST = 'onlyoffice-browser-font-assets.json';
 
+const ZH_CORE_REQUIRED_FALLBACK_SOURCES = new Map([
+  ['DejaVu Sans', /(?:^|\/)DejaVuSans(?:-Bold|-Oblique|-BoldOblique)?\.ttf$/i],
+  ['OpenSymbol', /(?:^|\/)opens___\.ttf$/i],
+  ['Symbola', /(?:^|\/)Symbola_hint\.ttf$/i],
+]);
+
+const ZH_CORE_OFFICE_GLYPH_RANGES = new Map([
+  [0x21bb, 'DejaVu Sans'], // clockwise open circle arrow
+  [0x2248, 'DejaVu Sans'], // almost equal
+  [0x2726, 'DejaVu Sans'], // black four pointed star
+]);
+
 function usage() {
   return `Usage:
   npm run fonts:verify -- --input .onlyoffice-font-assets
@@ -273,6 +285,44 @@ function verifyAllFonts(root, allFontsRelativePath, thumbnails) {
   }
 }
 
+function verifyZhCoreFallbackChain(root, source, sourceMapRelativePath) {
+  if (!sourceMapRelativePath) {
+    throw new Error('Generated zh-core font assets require fontSourceMap');
+  }
+
+  const fontFiles = parseJsArray(source, '__fonts_files');
+  const fontInfos = parseJsArray(source, '__fonts_infos');
+  const fontRanges = parseJsArray(source, '__fonts_ranges');
+  const sourceMap = JSON.parse(fs.readFileSync(path.resolve(root, sourceMapRelativePath), 'utf8'));
+  const sourceByPackedFile = new Map(
+    (sourceMap.fonts || []).map((entry) => [String(entry.file || '').replace(/^fonts\//, ''), String(entry.source || '')]),
+  );
+
+  for (const [familyName, expectedSource] of ZH_CORE_REQUIRED_FALLBACK_SOURCES) {
+    const info = fontInfos.find((entry) => entry?.[0] === familyName);
+    const packedFile = info?.[1] >= 0 ? fontFiles[info[1]] : '';
+    const originalSource = sourceByPackedFile.get(packedFile) || '';
+    if (!expectedSource.test(originalSource)) {
+      throw new Error(`Generated zh-core fallback ${familyName} does not reference its real font source`);
+    }
+  }
+
+  for (const [codePoint, expectedFamily] of ZH_CORE_OFFICE_GLYPH_RANGES) {
+    let actualFamily = '';
+    for (let index = 0; index < fontRanges.length; index += 3) {
+      if (fontRanges[index] <= codePoint && codePoint <= fontRanges[index + 1]) {
+        actualFamily = fontInfos[fontRanges[index + 2]]?.[0] || '';
+        break;
+      }
+    }
+    if (actualFamily !== expectedFamily) {
+      throw new Error(
+        `Generated zh-core Office glyph U+${codePoint.toString(16).toUpperCase()} maps to ${actualFamily || 'no font'} instead of ${expectedFamily}`,
+      );
+    }
+  }
+}
+
 export function verifyOnlyOfficeFontAssets(input) {
   if (!input) {
     throw new Error(`Missing required --input <dir> or ${FONT_ASSETS_DIR_ENV}`);
@@ -313,6 +363,10 @@ export function verifyOnlyOfficeFontAssets(input) {
   for (const thumbnail of manifest.fontThumbnails) assertFile(root, thumbnail);
   for (const font of manifest.fonts) assertFile(root, font);
   verifyAllFonts(root, manifest.allFonts, manifest.fontThumbnails);
+  if (manifest.fontSet === 'zh-core') {
+    const source = fs.readFileSync(path.resolve(root, manifest.allFonts), 'utf8');
+    verifyZhCoreFallbackChain(root, source, manifest.fontSourceMap);
+  }
 
   return {
     root,

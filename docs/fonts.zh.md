@@ -62,7 +62,10 @@ npx onlyoffice-browser-generate-font-assets \
 - `Segoe UI Symbol`
 - `OpenSymbol`
 - `Symbola`
+- `DejaVu Sans`（`AllFonts.js` 用于 Unicode 箭头、几何符号和装饰符号的回退字体）
 - `Cambria Math`
+
+精简配置仍必须保留完整的分层兜底链：DejaVu Sans 负责常用 Unicode，Symbola/OpenSymbol 负责广泛符号，选定的 CJK 字体负责中文。单个字体无法覆盖全部 Unicode，因此精简时不得再把这些回退源重映射到拉丁默认字体。
 
 已踩过的坑：
 

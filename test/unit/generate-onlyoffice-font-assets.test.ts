@@ -179,6 +179,9 @@ describe('generate-onlyoffice-font-assets options', () => {
 
     expect(script).toContain('ZH_CORE_HIDDEN_FONT_FAMILIES');
     expect(script).toContain('ASCW3');
+    expect(script).toContain('DejaVu Sans');
+    expect(script).toContain('OpenSymbol');
+    expect(script).toContain('Symbola');
     expect(script).toContain('Wingdings');
     expect(script).toContain('Symbol');
     expect(script).toContain('MT Extra');
@@ -198,6 +201,9 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(script).toContain('exact_source_index_for_family');
     expect(script).toContain('face_index_for_source');
     expect(script).toContain('source_index = exact_source_index');
+    expect(script).not.toContain(
+      'candidate_index >= 0 and source_file_name(candidate_index) in zh_core_source_file_names',
+    );
     expect(script).toContain('info[slot_index + 1] = exact_source_face_index');
     expect(script).toContain('info[0] in zh_core_hidden_font_families');
     expect(script).toContain('visible_family_names = {info[0] for info in web_infos');

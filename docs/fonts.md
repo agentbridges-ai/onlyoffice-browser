@@ -62,7 +62,10 @@ These hidden fonts must remain registered but should stay out of the font picker
 - `Segoe UI Symbol`
 - `OpenSymbol`
 - `Symbola`
+- `DejaVu Sans` (Unicode arrows and geometric/dingbat fallback used by `AllFonts.js`)
 - `Cambria Math`
+
+This compact profile still keeps a mandatory fallback chain: DejaVu Sans for common Unicode, Symbola/OpenSymbol for broad symbol coverage, and the selected CJK families for Chinese characters. A single font cannot cover all of Unicode, so compaction must never remap these fallback sources to the Latin default.
 
 Known pitfalls:
 

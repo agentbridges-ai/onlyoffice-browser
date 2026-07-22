@@ -9,6 +9,7 @@ type SaveE2EStatus = {
 test('Word showcase exposes its authored content and drawing objects in the editor model', async ({ page }) => {
   const failures = collectPageFailures(page);
   await openFixture(page, 'docx', '/fixtures/regressions/office-preview-showcase.docx', 'ONLYOFFICE Word Preview Showcase.docx');
+  await expectSharedUnicodeFallbackChain(page);
   const frame = await getEditorFrame(page, '/documenteditor/main/index.html');
   const model = await frame.evaluate(() => {
     const scope = globalThis as typeof globalThis & { editor?: any; AscCommon?: any };
@@ -61,6 +62,7 @@ test('Word showcase exposes its authored content and drawing objects in the edit
 test('PowerPoint showcase exposes every slide, marker and native object class in the editor model', async ({ page }) => {
   const failures = collectPageFailures(page);
   await openFixture(page, 'pptx', '/fixtures/regressions/office-preview-showcase.pptx', 'ONLYOFFICE Presentation Preview Showcase.pptx');
+  await expectSharedUnicodeFallbackChain(page);
   const frame = await getEditorFrame(page, '/presentationeditor/main/index.html');
   const model = await frame.evaluate(() => {
     const scope = globalThis as typeof globalThis & { editor?: any };
@@ -103,6 +105,7 @@ test('PowerPoint showcase exposes every slide, marker and native object class in
 test('Spreadsheet showcase exposes sheets, formulas, charts and native-object sheet in the workbook model', async ({ page }) => {
   const failures = collectPageFailures(page);
   await openFixture(page, 'xlsx', '/fixtures/regressions/office-preview-showcase.xlsx', 'ONLYOFFICE Spreadsheet Preview Showcase.xlsx');
+  await expectSharedUnicodeFallbackChain(page);
   const frame = await getEditorFrame(page, '/spreadsheeteditor/main/index.html');
   const model = await frame.evaluate(() => {
     const scope = globalThis as typeof globalThis & { Asc?: { editor?: any }; editor?: any };
@@ -172,4 +175,51 @@ function collectPageFailures(page: Page): string[] {
     await dialog.dismiss().catch(() => undefined);
   });
   return failures;
+}
+
+async function expectSharedUnicodeFallbackChain(page: Page): Promise<void> {
+  const result = await page.evaluate(async () => {
+    const source = await fetch('/sdkjs/common/AllFonts.js').then((response) => {
+      if (!response.ok) throw new Error(`AllFonts.js request failed: ${response.status}`);
+      return response.text();
+    });
+    const parse = (name: string) => {
+      const match = source.match(new RegExp(`window\\["${name}"\\]\\s*=\\s*(\\[[\\s\\S]*?\\]);`));
+      if (!match) throw new Error(`AllFonts.js is missing ${name}`);
+      return JSON.parse(match[1]);
+    };
+    const files = parse('__fonts_files');
+    const infos = parse('__fonts_infos');
+    const ranges = parse('__fonts_ranges');
+    const required = [0x21bb, 0x2248, 0x2726].map((codePoint) => {
+      let family = '';
+      for (let index = 0; index < ranges.length; index += 3) {
+        if (ranges[index] <= codePoint && codePoint <= ranges[index + 1]) {
+          family = infos[ranges[index + 2]]?.[0] || '';
+          break;
+        }
+      }
+      return { codePoint, family };
+    });
+    const fallbackFiles = ['DejaVu Sans', 'OpenSymbol', 'Symbola'].map((family) => {
+      const info = infos.find((entry: unknown[]) => entry?.[0] === family);
+      return { family, file: info?.[1] >= 0 ? files[info[1]] : '' };
+    });
+    const responses = await Promise.all(
+      fallbackFiles.map(({ file }) => fetch(`/fonts/${file}`, { cache: 'no-store' })),
+    );
+    return {
+      required,
+      fallbackFiles,
+      loaded: responses.map((response) => response.ok),
+    };
+  });
+
+  expect(result.required).toEqual([
+    { codePoint: 0x21bb, family: 'DejaVu Sans' },
+    { codePoint: 0x2248, family: 'DejaVu Sans' },
+    { codePoint: 0x2726, family: 'DejaVu Sans' },
+  ]);
+  expect(result.fallbackFiles.every(({ file }) => Boolean(file))).toBe(true);
+  expect(result.loaded).toEqual([true, true, true]);
 }

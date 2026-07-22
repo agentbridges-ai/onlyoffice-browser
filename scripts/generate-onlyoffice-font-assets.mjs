@@ -37,6 +37,7 @@ const ZH_CORE_FONT_FAMILIES = [
 const ZH_CORE_HIDDEN_FONT_FAMILIES = [
   'ASCW3',
   'Bookshelf Symbol 7',
+  'DejaVu Sans',
   'Marlett',
   'Monotype Sorts',
   'MS Reference Specialty',
@@ -499,7 +500,7 @@ def allowed_same_family_source_index(info, slot_index):
     }
     for candidate_slot in slot_priority.get(slot_index, [1, 5, 3, 7]):
         candidate_index = info[candidate_slot]
-        if candidate_index >= 0 and source_file_name(candidate_index) in zh_core_source_file_names:
+        if candidate_index >= 0:
             return candidate_index
     return -1
 
