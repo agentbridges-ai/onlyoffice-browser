@@ -10,6 +10,7 @@ export {
   type OfficeEditorMountPhase,
   type OfficeEditorMountState,
   type OfficeInterfaceTheme,
+  type OfficePluginOptions,
   type OfficeDownloadCallbackResult,
   type OfficeEditorMode,
   type OfficeEditorSourceKind,

@@ -1,9 +1,3 @@
-interface PluginConfig {
-  name: string;
-  url: string;
-  config?: Record<string, any>;
-}
-
 interface DocEditorConfig {
   height?: string | number;
   type?: 'desktop' | 'mobile' | 'embedded';
@@ -72,7 +66,8 @@ interface DocEditorConfig {
     };
     /** Plugin configuration. Can specify a list of plugins to load */
     plugins?: {
-      pluginsData?: PluginConfig[];
+      pluginsData?: string[];
+      autostart?: string[];
     };
   };
   events: {

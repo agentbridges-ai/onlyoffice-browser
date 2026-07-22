@@ -26,6 +26,7 @@ const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.32';
 const OFFICE_HOST_BUILD_ID = 'office-host-0.3.33-r1';
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const STARTUP_HEARTBEAT_INTERVAL_MS = 5_000;
+const OFFICE_PLUGIN_PROTOCOL = 'onlyoffice-browser-plugin/v1';
 
 let port: MessagePort | null = null;
 let editor: OfficeEditorInstance | null = null;
@@ -36,6 +37,19 @@ let startupHeartbeatInterval: number | null = null;
 let startupHeartbeatWorker: Worker | null = null;
 let activeSaveRequestId: string | undefined;
 let nativeSaveRequestSequence = 0;
+const pluginWindows = new Map<string, Window>();
+const configuredPluginGuids = new Set<string>();
+
+type OfficePluginWindowMessage = {
+  protocol: typeof OFFICE_PLUGIN_PROTOCOL;
+  type: 'READY' | 'RESULT';
+  pluginGuid: string;
+  editorType?: string;
+  requestId?: string;
+  ok?: boolean;
+  result?: unknown;
+  error?: string;
+};
 
 type PendingSaveAck = {
   resolve: () => void;
@@ -556,6 +570,8 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
     return;
   }
   initStarted = true;
+  configuredPluginGuids.clear();
+  for (const guid of message.options.plugins?.autostart ?? []) configuredPluginGuids.add(guid);
   setStartupPhase('reading-source');
   startStartupHeartbeat();
 
@@ -579,6 +595,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       spellcheck: message.options.spellcheck ?? false,
       interfaceTheme: message.options.interfaceTheme,
       lang: message.options.lang,
+      plugins: message.options.plugins,
       saveBehavior: message.options.saveBehavior,
       onReady: (instance) => {
         postState('STATE', instance.getState());
@@ -615,6 +632,69 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
     stopStartupHeartbeat();
     postError('init', error, message.requestId);
   }
+}
+
+function handlePluginWindowMessage(event: MessageEvent<OfficePluginWindowMessage>): void {
+  const message = event.data;
+  if (
+    event.origin !== window.location.origin ||
+    !message ||
+    message.protocol !== OFFICE_PLUGIN_PROTOCOL ||
+    !configuredPluginGuids.has(message.pluginGuid) ||
+    !event.source
+  ) {
+    return;
+  }
+
+  if (message.type === 'READY') {
+    pluginWindows.set(message.pluginGuid, event.source as Window);
+    postPortMessage({
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'PLUGIN_READY',
+      sessionId,
+      pluginGuid: message.pluginGuid,
+      editorType: message.editorType || '',
+    });
+    return;
+  }
+
+  if (
+    message.type !== 'RESULT' ||
+    !message.requestId ||
+    pluginWindows.get(message.pluginGuid) !== event.source
+  ) {
+    return;
+  }
+  postPortMessage({
+    protocol: OFFICE_HOST_PROTOCOL,
+    type: 'PLUGIN_RESULT',
+    sessionId,
+    requestId: message.requestId,
+    pluginGuid: message.pluginGuid,
+    ok: message.ok === true,
+    result: message.result,
+    error: message.error,
+  });
+}
+
+function handleInvokePlugin(
+  message: Extract<OfficeHostParentMessage, { type: 'INVOKE_PLUGIN' }>,
+): void {
+  const pluginWindow = pluginWindows.get(message.pluginGuid);
+  if (!pluginWindow) {
+    postError('plugin', new Error(`Office plugin is not ready: ${message.pluginGuid}`), message.requestId);
+    return;
+  }
+  pluginWindow.postMessage(
+    {
+      protocol: OFFICE_PLUGIN_PROTOCOL,
+      type: 'INVOKE',
+      pluginGuid: message.pluginGuid,
+      requestId: message.requestId,
+      payload: message.payload,
+    },
+    window.location.origin,
+  );
 }
 
 function handleSaveAck(message: Extract<OfficeHostParentMessage, { type: 'SAVE_ACK' }>): void {
@@ -723,6 +803,9 @@ function handlePortMessage(event: MessageEvent<OfficeHostParentMessage>): void {
     case 'SET_INTERFACE_THEME':
       handleSetInterfaceTheme(event.data);
       return;
+    case 'INVOKE_PLUGIN':
+      handleInvokePlugin(event.data);
+      return;
     case 'DESTROY':
       void handleDestroy();
       return;
@@ -752,6 +835,7 @@ function handleConnect(event: MessageEvent): void {
 }
 
 window.addEventListener('message', handleConnect);
+window.addEventListener('message', handlePluginWindowMessage);
 window.addEventListener('pagehide', () => {
   void destroyRuntime();
 });

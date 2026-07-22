@@ -434,6 +434,57 @@ describe('office-editor parent proxy', () => {
     );
   });
 
+  it('forwards plugin configuration and resolves plugin operations over the host port', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onPluginReady = vi.fn();
+    const promise = createOfficeEditor(container, {
+      hostUrl: HOST_URL,
+      file: new File(['a'], 'sheet.xlsx'),
+      fileName: 'sheet.xlsx',
+      plugins: {
+        configUrls: ['/onlyoffice-plugin/config.json'],
+        autostart: ['asc.test-plugin'],
+      },
+      onPluginReady,
+    });
+    const { childPort, messages } = await connectHost(container, (message, port) => {
+      if (message.type !== 'INVOKE_PLUGIN') return;
+      port.postMessage({
+        protocol: OFFICE_HOST_PROTOCOL,
+        type: 'PLUGIN_RESULT',
+        sessionId: message.sessionId,
+        requestId: message.requestId,
+        pluginGuid: message.pluginGuid,
+        ok: true,
+        result: { values: [[42]] },
+      });
+    });
+    const instance = await promise;
+    expect(messages[0]).toMatchObject({
+      type: 'INIT',
+      options: {
+        plugins: {
+          configUrls: ['/onlyoffice-plugin/config.json'],
+          autostart: ['asc.test-plugin'],
+        },
+      },
+    });
+
+    childPort.postMessage({
+      protocol: OFFICE_HOST_PROTOCOL,
+      type: 'PLUGIN_READY',
+      sessionId: instance.id,
+      pluginGuid: 'asc.test-plugin',
+      editorType: 'cell',
+    });
+    await waitForMessage();
+    expect(onPluginReady).toHaveBeenCalledWith('asc.test-plugin', 'cell', instance);
+    await expect(instance.invokePlugin('asc.test-plugin', { type: 'get_range_values' })).resolves.toEqual({
+      values: [[42]],
+    });
+  });
+
   it('removes sandbox if an integration mutates the host iframe after mount', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
