@@ -9,6 +9,7 @@ type SaveButtonState = {
 };
 
 type SaveE2EStatus = {
+  type: string;
   ready: boolean;
   dirty: boolean;
   writeCount: number;
@@ -17,6 +18,7 @@ type SaveE2EStatus = {
   initialHash: string;
   initialSize: number;
   error: string;
+  state: { status: string } | null;
 };
 
 type SaveE2EResult = {
@@ -249,6 +251,22 @@ for (const [type, outputType] of Object.entries(legacySaveOutputs) as Array<
     expect(result.firstBytes.slice(0, 4)).toEqual([0x50, 0x4b, 0x03, 0x04]);
     expect((await getStatus(page)).writeCount).toBe(1);
     expect(downloads).toEqual([]);
+    expect(failures).toEqual([]);
+  });
+}
+
+for (const type of ['doc', 'docx', 'odt', 'rtf', 'xls', 'xlsx', 'ods', 'csv', 'ppt', 'pptx', 'odp'] as const) {
+  test(`local ${type} opens in its matching OnlyOffice editor`, async ({ page }) => {
+    const failures = collectPageFailures(page);
+
+    await page.goto(`/save-e2e.html?scenario=local-file&type=${type}`);
+    await waitForReady(page);
+
+    const status = await getStatus(page);
+    expect(status.type).toBe(type);
+    expect(status.state?.status).toBe('ready');
+    expect(status.error).toBe('');
+    expect(status.initialSize).toBeGreaterThan(0);
     expect(failures).toEqual([]);
   });
 }

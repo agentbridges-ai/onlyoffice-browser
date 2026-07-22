@@ -8,10 +8,16 @@ import {
 
 describe('document utils', () => {
   it('classifies common document extensions', () => {
-    expect(getDocumentType('docx')).toBe('word');
-    expect(getDocumentType('xlsx')).toBe('cell');
-    expect(getDocumentType('csv')).toBe('cell');
-    expect(getDocumentType('pptx')).toBe('slide');
+    for (const extension of ['doc', 'docx', 'odt', 'rtf', 'txt']) {
+      expect(getDocumentType(extension)).toBe('word');
+    }
+    for (const extension of ['xls', 'xlsx', 'ods', 'csv']) {
+      expect(getDocumentType(extension)).toBe('cell');
+    }
+    for (const extension of ['ppt', 'pptx', 'odp']) {
+      expect(getDocumentType(extension)).toBe('slide');
+    }
+    expect(getDocumentType('pdf')).toBeNull();
   });
 
   it('normalizes image extension casing for MIME lookup', () => {

@@ -27,11 +27,11 @@ export const BASE_PATH = getBasePath();
  */
 export function getDocumentType(fileType: string): string | null {
   const type = fileType.toLowerCase();
-  if (type === 'docx' || type === 'doc') {
+  if (type === 'docx' || type === 'doc' || type === 'odt' || type === 'rtf' || type === 'txt') {
     return 'word';
-  } else if (type === 'xlsx' || type === 'xls' || type === 'csv') {
+  } else if (type === 'xlsx' || type === 'xls' || type === 'ods' || type === 'csv') {
     return 'cell';
-  } else if (type === 'pptx' || type === 'ppt') {
+  } else if (type === 'pptx' || type === 'ppt' || type === 'odp') {
     return 'slide';
   }
   return null;

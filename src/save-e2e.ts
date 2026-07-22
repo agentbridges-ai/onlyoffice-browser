@@ -4,7 +4,7 @@ import { g_sEmpty_bin } from './lib/empty_bin';
 import './styles/base.css';
 
 type SaveScenario = 'local-file' | 'new-document';
-type OfficeTestType = 'xlsx' | 'xls' | 'docx' | 'doc' | 'pptx' | 'ppt';
+type OfficeTestType = 'xlsx' | 'xls' | 'ods' | 'csv' | 'docx' | 'doc' | 'odt' | 'rtf' | 'pptx' | 'ppt' | 'odp';
 
 type SaveE2EResult = {
   fileName: string;
@@ -42,7 +42,19 @@ declare global {
   }
 }
 
-const supportedTypes: OfficeTestType[] = ['xlsx', 'xls', 'docx', 'doc', 'pptx', 'ppt'];
+const supportedTypes: OfficeTestType[] = [
+  'xlsx',
+  'xls',
+  'ods',
+  'csv',
+  'docx',
+  'doc',
+  'odt',
+  'rtf',
+  'pptx',
+  'ppt',
+  'odp',
+];
 const rootElement = document.querySelector<HTMLElement>('#save-e2e-root');
 const statusElement = document.querySelector<HTMLElement>('#save-e2e-status');
 const editorElement = document.querySelector<HTMLElement>('#save-e2e-editor');
@@ -115,15 +127,20 @@ function getDefaultOfficeHostUrl(): string {
 function mimeTypeForType(fileType: OfficeTestType): string {
   if (fileType === 'docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   if (fileType === 'doc') return 'application/msword';
+  if (fileType === 'odt') return 'application/vnd.oasis.opendocument.text';
+  if (fileType === 'rtf') return 'application/rtf';
   if (fileType === 'pptx') return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
   if (fileType === 'ppt') return 'application/vnd.ms-powerpoint';
+  if (fileType === 'odp') return 'application/vnd.oasis.opendocument.presentation';
   if (fileType === 'xls') return 'application/vnd.ms-excel';
+  if (fileType === 'ods') return 'application/vnd.oasis.opendocument.spreadsheet';
+  if (fileType === 'csv') return 'text/csv';
   return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 }
 
 function templateTypeForType(fileType: OfficeTestType): 'xlsx' | 'docx' | 'pptx' {
-  if (fileType === 'doc' || fileType === 'docx') return 'docx';
-  if (fileType === 'ppt' || fileType === 'pptx') return 'pptx';
+  if (fileType === 'doc' || fileType === 'docx' || fileType === 'odt' || fileType === 'rtf') return 'docx';
+  if (fileType === 'ppt' || fileType === 'pptx' || fileType === 'odp') return 'pptx';
   return 'xlsx';
 }
 
