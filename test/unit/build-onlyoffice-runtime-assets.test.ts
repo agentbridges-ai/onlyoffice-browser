@@ -83,6 +83,7 @@ describe('build-onlyoffice-runtime-assets', () => {
     expect(mod.getRuntimeAssetPack('sdkjs/cell/sdk-all.js')).toBe('cell');
     expect(mod.getRuntimeAssetPack('web-apps/apps/presentationeditor/main/app.js')).toBe('slide');
     expect(mod.getRuntimeAssetPack('sdkjs/slide/sdk-all.js')).toBe('slide');
+    expect(mod.getRuntimeAssetPack('sw.js')).toBeNull();
   });
 
   it('excludes low-frequency assets from the compact default profile', async () => {
@@ -136,6 +137,7 @@ describe('build-onlyoffice-runtime-assets', () => {
     touch(input, 'web-apps/apps/api/documents/api.js');
     touch(input, 'web-apps/apps/documenteditor/main/app.js');
     touch(input, 'web-apps/apps/spreadsheeteditor/main/app.js');
+    touch(input, 'sw.js');
     const emptySprite = 'web-apps/apps/spreadsheeteditor/main/resources/img/iconshuge.png';
     fs.mkdirSync(path.dirname(path.join(input, emptySprite)), { recursive: true });
     fs.writeFileSync(path.join(input, emptySprite), '');
@@ -171,6 +173,8 @@ describe('build-onlyoffice-runtime-assets', () => {
     expect(manifest.assets.every((asset) => /^[a-f0-9]{16}$/.test(asset.revision))).toBe(true);
     expect(manifest.assets).toEqual([...manifest.assets].sort((left, right) => left.path.localeCompare(right.path)));
     expect(exists(input, 'web-apps/apps/api/documents/api.js')).toBe(true);
+    expect(exists(input, 'sw.js')).toBe(true);
+    expect(manifest.assets.some((asset) => asset.path === 'sw.js')).toBe(false);
     expect(exists(input, 'sdkjs/pdf/src/engine/drawingfile.wasm')).toBe(false);
     expect(exists(input, 'dictionaries/fr_FR/fr_FR.dic')).toBe(false);
     expect(exists(input, emptySprite)).toBe(false);
@@ -178,5 +182,16 @@ describe('build-onlyoffice-runtime-assets', () => {
     expect(exists(splitOutput, 'core/web-apps/apps/api/documents/api.js')).toBe(true);
     expect(exists(splitOutput, 'word/sdkjs/word/sdk-all.js')).toBe(true);
     expect(exists(splitOutput, 'cell/sdkjs/cell/sdk-all.js')).toBe(true);
+  });
+
+  it('hashes the runtime only after all build-time content patches', () => {
+    const buildScript = fs.readFileSync(path.resolve('bin/build.sh'), 'utf8');
+    const patchIndex = buildScript.indexOf('node scripts/patch-onlyoffice-print-fallback.mjs dist');
+    const timestampIndex = buildScript.indexOf('s/SW_VERSION_PLACEHOLDER/$TIMESTAMP/g');
+    const manifestIndex = buildScript.indexOf('node scripts/build-onlyoffice-runtime-assets.mjs');
+
+    expect(patchIndex).toBeGreaterThanOrEqual(0);
+    expect(timestampIndex).toBeGreaterThan(patchIndex);
+    expect(manifestIndex).toBeGreaterThan(timestampIndex);
   });
 });

@@ -14,13 +14,7 @@ ONLYOFFICE_SW_OUT_DIR=.onlyoffice-sw ./node_modules/.bin/vite build -c vite.sw.c
 
 node scripts/inject-service-worker.mjs
 
-# Keep the deployable demo/runtime lean by removing low-frequency bundled
-# assets and emitting canonical path packs for per-document-type CDN sync.
-node scripts/build-onlyoffice-runtime-assets.mjs \
-    --input dist \
-    --prune-root \
-    --split-output .onlyoffice-runtime-asset-packs
-
+# Finish every content mutation before hashing the deployable runtime.
 node scripts/patch-onlyoffice-print-fallback.mjs dist
 
 # Inject timestamp into sw.js for versioning
@@ -38,5 +32,13 @@ if [ -f "$SW_PATH" ]; then
 else
     echo "Warning: dist/sw.js not found, skipping version injection."
 fi
+
+# Keep the deployable demo/runtime lean by removing low-frequency bundled
+# assets and emitting canonical path packs for per-document-type CDN sync.
+# This must run after content patching so manifest revisions match final bytes.
+node scripts/build-onlyoffice-runtime-assets.mjs \
+    --input dist \
+    --prune-root \
+    --split-output .onlyoffice-runtime-asset-packs
 
 echo "Build completed successfully!"
