@@ -56,6 +56,7 @@ export function shouldShareAsset(pathname: string, destination: string | null): 
   if (
     pathname === '/office-host.html' ||
     pathname === '/reset.html' ||
+    pathname === '/slot-prewarm.html' ||
     pathname === '/document_editor_service_worker.js' ||
     pathname === '/sw.js'
   ) {
