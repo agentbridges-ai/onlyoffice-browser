@@ -262,17 +262,15 @@ export function collectRuntimeAssets(input, options) {
   const selected = [];
   const excluded = [];
   for (const relativePath of walkFiles(input)) {
+    const absolutePath = path.join(input, relativePath);
+    const bytes = fs.statSync(absolutePath).size;
     const pack = getRuntimeAssetPack(relativePath, options);
-    if (pack) {
+    if (pack && bytes > 0) {
       selected.push({
         path: relativePath,
         pack,
-        bytes: fs.statSync(path.join(input, relativePath)).size,
-        revision: crypto
-          .createHash('sha256')
-          .update(fs.readFileSync(path.join(input, relativePath)))
-          .digest('hex')
-          .slice(0, 16),
+        bytes,
+        revision: crypto.createHash('sha256').update(fs.readFileSync(absolutePath)).digest('hex').slice(0, 16),
       });
     } else if (isRuntimeAsset(relativePath)) {
       excluded.push(relativePath);

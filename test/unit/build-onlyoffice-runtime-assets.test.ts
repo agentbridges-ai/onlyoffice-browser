@@ -136,6 +136,9 @@ describe('build-onlyoffice-runtime-assets', () => {
     touch(input, 'web-apps/apps/api/documents/api.js');
     touch(input, 'web-apps/apps/documenteditor/main/app.js');
     touch(input, 'web-apps/apps/spreadsheeteditor/main/app.js');
+    const emptySprite = 'web-apps/apps/spreadsheeteditor/main/resources/img/iconshuge.png';
+    fs.mkdirSync(path.dirname(path.join(input, emptySprite)), { recursive: true });
+    fs.writeFileSync(path.join(input, emptySprite), '');
     touch(input, 'web-apps/apps/spreadsheeteditor/main/resources/help/en/images/large.gif');
     touch(input, 'sdkjs/word/sdk-all.js');
     touch(input, 'sdkjs/cell/sdk-all.js');
@@ -163,11 +166,14 @@ describe('build-onlyoffice-runtime-assets', () => {
     expect(manifest.packs.cell).toBe(2);
     expect(manifest.version).toBe(2);
     expect(manifest.totalBytes).toBe(manifest.assets.reduce((total, asset) => total + asset.bytes, 0));
+    expect(manifest.assets.every((asset) => asset.bytes > 0)).toBe(true);
+    expect(manifest.assets.some((asset) => asset.path === emptySprite)).toBe(false);
     expect(manifest.assets.every((asset) => /^[a-f0-9]{16}$/.test(asset.revision))).toBe(true);
     expect(manifest.assets).toEqual([...manifest.assets].sort((left, right) => left.path.localeCompare(right.path)));
     expect(exists(input, 'web-apps/apps/api/documents/api.js')).toBe(true);
     expect(exists(input, 'sdkjs/pdf/src/engine/drawingfile.wasm')).toBe(false);
     expect(exists(input, 'dictionaries/fr_FR/fr_FR.dic')).toBe(false);
+    expect(exists(input, emptySprite)).toBe(false);
     expect(exists(input, 'web-apps/apps/spreadsheeteditor/main/resources/help/en/images/large.gif')).toBe(false);
     expect(exists(splitOutput, 'core/web-apps/apps/api/documents/api.js')).toBe(true);
     expect(exists(splitOutput, 'word/sdkjs/word/sdk-all.js')).toBe(true);
