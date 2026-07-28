@@ -121,6 +121,28 @@ async function sendPrewarm(
   });
 }
 
+async function activeWorker(registration: ServiceWorkerRegistration): Promise<ServiceWorker> {
+  await registration.update();
+  const worker = registration.installing || registration.waiting || registration.active;
+  if (!worker) throw new Error('Offline slot Service Worker is unavailable.');
+  if (worker.state === 'activated') return worker;
+  await new Promise<void>((resolve, reject) => {
+    const timeoutId = window.setTimeout(
+      () => reject(new Error('Offline slot Service Worker activation timed out.')),
+      30_000,
+    );
+    const onStateChange = () => {
+      if (worker.state !== 'activated' && worker.state !== 'redundant') return;
+      window.clearTimeout(timeoutId);
+      worker.removeEventListener('statechange', onStateChange);
+      if (worker.state === 'activated') resolve();
+      else reject(new Error('Offline slot Service Worker became redundant.'));
+    };
+    worker.addEventListener('statechange', onStateChange);
+  });
+  return worker;
+}
+
 async function prewarm(): Promise<void> {
   if (!('serviceWorker' in navigator)) throw new Error('Service Worker is unavailable.');
   const [{ paths: runtimePaths, version }, shellPaths] = await Promise.all([
@@ -132,8 +154,7 @@ async function prewarm(): Promise<void> {
     updateViaCache: 'none',
   });
   await navigator.serviceWorker.ready;
-  const worker = registration.active || registration.waiting || registration.installing;
-  if (!worker) throw new Error('Offline slot Service Worker is unavailable.');
+  const worker = await activeWorker(registration);
   await sendPrewarm(worker, version, [...new Set(shellPaths)], [...new Set(runtimePaths)]);
 }
 
