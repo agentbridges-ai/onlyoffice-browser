@@ -5,7 +5,8 @@ const LEGACY_R2_HOST_PATTERN = /^pub-[a-f0-9]+\.r2\.dev$/i;
 const LEGACY_STORAGE_KEY = 'onlyoffice-browser:last-host-url';
 
 function productionHostUrl({ sessionId }: OfficeHostUrlContext): string {
-  return `https://office-${sessionId}.getpi.work/office-host.html`;
+  const hostLabel = sessionId.replace(/^office-editor-/, '');
+  return `https://${hostLabel}.onlyoffice.getpi.work/office-host.html`;
 }
 
 function configuredHostUrlResolver(configured: string, pageUrl: URL): OfficeHostUrlResolver {

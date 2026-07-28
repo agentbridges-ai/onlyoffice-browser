@@ -3,7 +3,7 @@
 The production runtime is served by the `onlyoffice-browser-runtime` Worker:
 
 - `https://onlyoffice.getpi.work` is the canonical shared-asset origin.
-- `https://office-<editor-session>.getpi.work/office-host.html` gives every
+- `https://<editor-session>.onlyoffice.getpi.work/office-host.html` gives every
   editor its own host origin and renderer lifecycle.
 - The `onlyoffice-getpi-work` R2 bucket stores the compact runtime and generated
   font overlay.
@@ -25,14 +25,14 @@ zone must contain proxied DNS records for:
 
 ```text
 onlyoffice.getpi.work
-*.getpi.work
+*.onlyoffice.getpi.work
 ```
 
 Both records may use the same placeholder origin because the Worker routes
-intercept requests before an origin fetch. Editor hosts stay directly below
-`getpi.work`, so Cloudflare Universal SSL covers them without Total TLS or an
-Advanced Certificate Manager subscription. The Worker rejects first-level
-wildcard hostnames that do not start with `office-`.
+intercept requests before an origin fetch. The nested editor hostname requires
+Cloudflare Total TLS or an Advanced Certificate that covers
+`*.onlyoffice.getpi.work`. The Worker rejects unrelated hostnames outside this
+dedicated wildcard.
 
 ## Deployment
 
