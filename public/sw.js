@@ -10,6 +10,7 @@ const FIXED_OFFLINE_SLOT_HOSTS = new Set(['office-misaka.getpi.work', 'office-pe
 const FIXED_OFFLINE_SLOT_MESSAGE = 'onlyoffice-slot-prewarm-v1';
 const FIXED_OFFLINE_SLOT_META_CACHE = 'onlyoffice-browser-slot-meta';
 const FIXED_OFFLINE_SLOT_VERSION_KEY = '/__onlyoffice-slot-version__';
+const FIXED_OFFLINE_SLOT_READY_KEY = '/__onlyoffice-slot-ready__';
 const FIXED_OFFLINE_SLOT_SHELL_QUERY = '__oobslot';
 const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work';
 
@@ -45,8 +46,14 @@ const cacheSlotPaths = async (cache, paths, requestForPath) => {
 
 const prewarmFixedSlot = async (version, shellPaths, runtimePaths) => {
   const cache = await caches.open(CACHE_NAME);
+  const ready = await cache.match(FIXED_OFFLINE_SLOT_READY_KEY);
+  if (ready && (await ready.text()) === version) return;
   await cacheSlotPaths(cache, shellPaths, (path) => fetch(fixedSlotShellRequest(path)));
   await cacheSlotPaths(cache, runtimePaths, (path) => fetch(fixedSlotShellRequest(path)));
+  await cache.put(
+    FIXED_OFFLINE_SLOT_READY_KEY,
+    new Response(version, { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
+  );
   const meta = await caches.open(FIXED_OFFLINE_SLOT_META_CACHE);
   await meta.put(
     FIXED_OFFLINE_SLOT_VERSION_KEY,

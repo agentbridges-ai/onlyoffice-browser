@@ -93,6 +93,7 @@ describe('SW fetch routing', () => {
     expect(sw).toContain('office-misaka.getpi.work');
     expect(sw).toContain('office-pectics.getpi.work');
     expect(sw).toContain('onlyoffice-slot-prewarm-v1');
+    expect(sw).toContain('/__onlyoffice-slot-ready__');
     expect(sw).toContain("canonical.hostname = CANONICAL_OFFICE_HOST");
     expect(sw).toContain('!isFixedOfflineSlot');
   });
