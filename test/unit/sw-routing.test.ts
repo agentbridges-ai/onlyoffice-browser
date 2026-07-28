@@ -87,19 +87,14 @@ describe('SW fetch routing', () => {
     expect(bridge).toContain("importScripts('/sw.js')");
   });
 
-  it('contains the two fixed offline editor slots and their canonical cache bridge', () => {
+  it('precaches the canonical PWA shell without fixed offline editor slots', () => {
     const sw = fs.readFileSync(path.join(process.cwd(), 'public/sw.js'), 'utf8');
 
-    expect(sw).toContain('office-misaka.getpi.work');
-    expect(sw).toContain('office-pectics.getpi.work');
-    expect(sw).toContain('onlyoffice-slot-prewarm-v1');
-    expect(sw).toContain('/__onlyoffice-slot-ready__');
-    expect(sw).toContain('requestedPaths.every((path) => cachedPaths.has(path))');
     expect(sw).toContain("const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html'])");
     expect(sw).toContain('precachePwaShell(cache)');
     expect(sw).toContain('isCanonicalPwaNavigation');
-    expect(sw).toContain("canonical.hostname = CANONICAL_OFFICE_HOST");
-    expect(sw).toContain('!isFixedOfflineSlot');
+    expect(sw).not.toContain('FIXED_OFFLINE_SLOT');
+    expect(sw).not.toContain('onlyoffice-slot-prewarm-v1');
   });
 
   it('provides root OnlyOffice desktop-mode discovery manifests', () => {

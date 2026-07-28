@@ -4,10 +4,6 @@ import {
   type OfficeEditorMode,
 } from './lib/office-editor';
 import { clearLegacyDemoHostState, resolveDemoHostUrl } from './lib/demo-host-url';
-import {
-  OfficeHostSlotPool,
-  productionOfficeHostSlots,
-} from './lib/fixed-office-host-slots';
 import { RuntimeCacheController, type RuntimeCacheProgress } from './lib/runtime-cache';
 import './styles/base.css';
 
@@ -17,11 +13,9 @@ type DemoRecord = {
   panel: HTMLElement;
   status: HTMLElement;
   readonlyButton: HTMLButtonElement;
-  hostUrl: string | null;
   closing: boolean;
 };
-type DemoEditorOptions = Omit<Parameters<typeof createOfficeEditor>[1], 'hostUrl'> & { hostUrl?: string };
-type FixedSlotPreparationState = 'checking' | 'preparing' | 'ready' | 'error';
+type DemoEditorOptions = Omit<Parameters<typeof createOfficeEditor>[1], 'hostUrl'>;
 
 const records: DemoRecord[] = [];
 let nextPanelId = 1;
@@ -42,10 +36,6 @@ app.innerHTML = `
         <span id="runtime-cache-label">Shared static assets: checking…</span>
         <progress id="runtime-cache-progress" max="1" value="0"></progress>
       </button>
-      <div id="offline-slot-status" class="offline-slot-status" aria-live="polite">
-        <strong>Fixed editor slots:</strong>
-        <ul id="offline-slot-list"></ul>
-      </div>
     </div>
     <div class="demo-actions">
       <fieldset class="mode-selector" aria-label="Open mode">
@@ -88,15 +78,6 @@ app.innerHTML = `
       </div>
     </form>
   </dialog>
-  <dialog id="offline-slot-capacity-dialog" class="runtime-cache-dialog">
-    <form method="dialog">
-      <h2>Offline editor slots are full</h2>
-      <p>Misaka and Pectics are both in use. Close an editor before opening another while offline.</p>
-      <div class="runtime-cache-dialog-actions">
-        <button value="default" type="submit">OK</button>
-      </div>
-    </form>
-  </dialog>
 `;
 
 const grid = document.querySelector<HTMLElement>('#editor-grid')!;
@@ -104,17 +85,6 @@ const fileInput = document.querySelector<HTMLInputElement>('#file-input')!;
 const hardResetOnLastDestroy = new URLSearchParams(window.location.search).get('hardResetOnLastDestroy') === 'true';
 clearLegacyDemoHostState(window.location, window.localStorage);
 const defaultOfficeHostUrl = resolveDemoHostUrl(new URL(window.location.href));
-const fixedHostSlotPool = new OfficeHostSlotPool(
-  productionOfficeHostSlots(new URL(window.location.href)),
-);
-const fixedHostSlots = productionOfficeHostSlots(new URL(window.location.href));
-const fixedSlotPreparation = new Map<string, FixedSlotPreparationState>(
-  fixedHostSlots.map((hostUrl) => [hostUrl, 'checking']),
-);
-const offlineSlotStatus = document.querySelector<HTMLElement>('#offline-slot-status')!;
-const offlineSlotList = document.querySelector<HTMLElement>('#offline-slot-list')!;
-const offlineSlotCapacityDialog =
-  document.querySelector<HTMLDialogElement>('#offline-slot-capacity-dialog')!;
 const cacheStatusButton = document.querySelector<HTMLButtonElement>('#runtime-cache-status')!;
 const cacheLabel = document.querySelector<HTMLElement>('#runtime-cache-label')!;
 const cacheProgress = document.querySelector<HTMLProgressElement>('#runtime-cache-progress')!;
@@ -127,90 +97,6 @@ const cacheLoadButton = document.querySelector<HTMLButtonElement>('#runtime-cach
 const cacheLaterButton = document.querySelector<HTMLButtonElement>('#runtime-cache-later')!;
 let runtimeCacheController: RuntimeCacheController | null = null;
 let runtimeCacheLoading = false;
-
-function fixedSlotLabel(hostUrl: string): string {
-  const hostname = new URL(hostUrl).hostname;
-  if (hostname === 'office-misaka.getpi.work') return 'Misaka';
-  if (hostname === 'office-pectics.getpi.work') return 'Pectics';
-  return hostname;
-}
-
-function refreshFixedSlotStatus(): void {
-  if (fixedHostSlots.length === 0) {
-    offlineSlotStatus.hidden = true;
-    return;
-  }
-  offlineSlotStatus.hidden = false;
-  offlineSlotList.replaceChildren(
-    ...fixedHostSlots.map((hostUrl) => {
-      const item = document.createElement('li');
-      const preparation = fixedSlotPreparation.get(hostUrl) || 'checking';
-      const state = fixedHostSlotPool.isLeased(hostUrl)
-        ? 'in use'
-        : preparation === 'ready'
-          ? 'available'
-          : preparation;
-      item.dataset.slotOrigin = new URL(hostUrl).origin;
-      item.textContent = `${fixedSlotLabel(hostUrl)}: ${state}`;
-      return item;
-    }),
-  );
-}
-
-async function prewarmFixedHostSlot(hostUrl: string): Promise<void> {
-  const origin = new URL(hostUrl).origin;
-  const iframe = document.createElement('iframe');
-  iframe.hidden = true;
-  iframe.title = `Prewarm ${origin}`;
-  const result = new Promise<void>((resolve, reject) => {
-    const timeoutId = window.setTimeout(() => {
-      window.removeEventListener('message', onMessage);
-      reject(new Error(`Timed out preparing ${origin}`));
-    }, 12 * 60_000);
-    const onMessage = (event: MessageEvent) => {
-      if (
-        event.origin !== origin ||
-        event.source !== iframe.contentWindow ||
-        event.data?.type !== 'onlyoffice-slot-prewarm-v1'
-      ) {
-        return;
-      }
-      window.clearTimeout(timeoutId);
-      window.removeEventListener('message', onMessage);
-      if (event.data.state === 'ready') resolve();
-      else reject(new Error(event.data.detail || `Failed to prepare ${origin}`));
-    };
-    window.addEventListener('message', onMessage);
-  });
-  const url = new URL('/slot-prewarm.html', origin);
-  url.searchParams.set('parentOrigin', window.location.origin);
-  iframe.src = url.href;
-  document.body.appendChild(iframe);
-  try {
-    await result;
-  } finally {
-    iframe.remove();
-  }
-}
-
-async function initializeFixedHostSlots(): Promise<void> {
-  if (fixedHostSlots.length === 0) return refreshFixedSlotStatus();
-  for (const hostUrl of fixedHostSlots) fixedSlotPreparation.set(hostUrl, 'preparing');
-  refreshFixedSlotStatus();
-  await Promise.allSettled(
-    fixedHostSlots.map(async (hostUrl) => {
-      try {
-        await prewarmFixedHostSlot(hostUrl);
-        fixedSlotPreparation.set(hostUrl, 'ready');
-      } catch (error) {
-        fixedSlotPreparation.set(hostUrl, 'error');
-        throw error;
-      } finally {
-        refreshFixedSlotStatus();
-      }
-    }),
-  );
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -328,7 +214,6 @@ async function initializeRuntimeCache(): Promise<void> {
 cacheLoadButton.addEventListener('click', () => void loadAllRuntimeAssets());
 cacheStatusButton.addEventListener('click', showCacheDialog);
 void initializeRuntimeCache();
-void initializeFixedHostSlots();
 
 function isOfficeEditorMode(value: string): value is OfficeEditorMode {
   return value === 'edit' || value === 'readonly' || value === 'preview';
@@ -375,20 +260,10 @@ async function removeRecord(record: DemoRecord): Promise<void> {
     records.splice(index, 1);
   }
   await record.instance.destroy();
-  if (record.hostUrl) {
-    fixedHostSlotPool.release(record.hostUrl);
-    refreshFixedSlotStatus();
-  }
   record.panel.remove();
 }
 
 async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
-  const hostUrl = fixedHostSlotPool.size > 0 ? fixedHostSlotPool.acquire() : null;
-  if (fixedHostSlotPool.size > 0 && !hostUrl && !navigator.onLine) {
-    if (!offlineSlotCapacityDialog.open) offlineSlotCapacityDialog.showModal();
-    throw new Error('Offline editor slots are full');
-  }
-  refreshFixedSlotStatus();
   const id = nextPanelId++;
   const title =
     options.fileName ||
@@ -420,7 +295,7 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
   try {
     instance = await createOfficeEditor(slot, {
       ...options,
-      hostUrl: hostUrl || defaultOfficeHostUrl,
+      hostUrl: defaultOfficeHostUrl,
       saveBehavior: options.saveBehavior || 'download',
       hardResetOnLastDestroy,
       onReady: (readyInstance) => {
@@ -440,15 +315,11 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
       },
     });
   } catch (error) {
-    if (hostUrl) {
-      fixedHostSlotPool.release(hostUrl);
-      refreshFixedSlotStatus();
-    }
     panel.remove();
     throw error;
   }
 
-  const record: DemoRecord = { id, instance, panel, status, readonlyButton, hostUrl, closing: false };
+  const record: DemoRecord = { id, instance, panel, status, readonlyButton, closing: false };
   records.push(record);
   const initialState = instance.getState();
   setStatus(record, `${initialState.fileType.toUpperCase()} ${getModeLabel(initialState.mode)}`);

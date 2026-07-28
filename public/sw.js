@@ -7,18 +7,11 @@ const ONLYOFFICE_RUNTIME_ASSET_REGEX = /(^|\/)(web-apps|sdkjs|wasm\/x2t)\//;
 const ONLYOFFICE_NAVIGATION_PATHS = new Set(['/office-host.html', '/reset.html']);
 const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html']);
 const ONLYOFFICE_RUNTIME_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
-const FIXED_OFFLINE_SLOT_HOSTS = new Set(['office-misaka.getpi.work', 'office-pectics.getpi.work']);
-const FIXED_OFFLINE_SLOT_MESSAGE = 'onlyoffice-slot-prewarm-v1';
-const FIXED_OFFLINE_SLOT_META_CACHE = 'onlyoffice-browser-slot-meta';
-const FIXED_OFFLINE_SLOT_VERSION_KEY = '/__onlyoffice-slot-version__';
-const FIXED_OFFLINE_SLOT_READY_KEY = '/__onlyoffice-slot-ready__';
-const FIXED_OFFLINE_SLOT_SHELL_QUERY = '__oobslot';
 const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work';
 
 // Cache limits and clean-up configuration
 const MAX_CACHE_ITEMS = 100;
 
-const isFixedOfflineSlot = FIXED_OFFLINE_SLOT_HOSTS.has(self.location.hostname);
 const isCanonicalPwaHost = self.location.hostname === CANONICAL_OFFICE_HOST;
 
 const precachePwaShell = async (cache) => {
@@ -34,90 +27,6 @@ const precachePwaShell = async (cache) => {
   await cache.put(new URL('/', self.location.origin).href, response);
   await cache.addAll([...new Set(assetUrls)]);
 };
-
-const readFixedSlotVersion = async () => {
-  const cache = await caches.open(FIXED_OFFLINE_SLOT_META_CACHE);
-  const response = await cache.match(FIXED_OFFLINE_SLOT_VERSION_KEY);
-  return response ? response.text() : '';
-};
-
-const fixedSlotShellRequest = (path) => {
-  const url = new URL(path, self.location.origin);
-  url.searchParams.set(FIXED_OFFLINE_SLOT_SHELL_QUERY, 'shell');
-  return new Request(url.href, { cache: 'reload' });
-};
-
-const cacheSlotPaths = async (cache, paths, requestForPath) => {
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(6, paths.length) }, async () => {
-    while (cursor < paths.length) {
-      const path = paths[cursor++];
-      const response = await requestForPath(path);
-      if (!response.ok) throw new Error(`Slot cache request failed (${response.status}): ${path}`);
-      await cache.put(new Request(new URL(path, self.location.origin).href), response);
-    }
-  });
-  await Promise.all(workers);
-};
-
-const markFixedSlotReady = async (cache, version) => {
-  await cache.put(
-    FIXED_OFFLINE_SLOT_READY_KEY,
-    new Response(version, { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
-  );
-  const meta = await caches.open(FIXED_OFFLINE_SLOT_META_CACHE);
-  await meta.put(
-    FIXED_OFFLINE_SLOT_VERSION_KEY,
-    new Response(version, { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
-  );
-};
-
-const prewarmFixedSlot = async (version, shellPaths, runtimePaths) => {
-  const cache = await caches.open(CACHE_NAME);
-  const ready = await cache.match(FIXED_OFFLINE_SLOT_READY_KEY);
-  if (ready && (await ready.text()) === version) return;
-  const cachedPaths = new Set((await cache.keys()).map((request) => new URL(request.url).pathname));
-  const requestedPaths = [...new Set([...shellPaths, ...runtimePaths])];
-  if (requestedPaths.every((path) => cachedPaths.has(path))) {
-    await markFixedSlotReady(cache, version);
-    return;
-  }
-  await cacheSlotPaths(cache, shellPaths, (path) => fetch(fixedSlotShellRequest(path)));
-  await cacheSlotPaths(cache, runtimePaths, (path) => fetch(fixedSlotShellRequest(path)));
-  await markFixedSlotReady(cache, version);
-};
-
-if (isFixedOfflineSlot) {
-  self.addEventListener('message', (event) => {
-    if (event.data?.type !== FIXED_OFFLINE_SLOT_MESSAGE) return;
-    const version = typeof event.data.version === 'string' ? event.data.version.trim() : '';
-    const safePaths = (value) =>
-      Array.isArray(value)
-        ? [...new Set(value)].filter(
-          (path) =>
-            typeof path === 'string' &&
-            path.startsWith('/') &&
-            !path.includes('..') &&
-            !path.includes('\0'),
-        )
-        : [];
-    const shellPaths = safePaths(event.data.shellPaths);
-    const runtimePaths = safePaths(event.data.runtimePaths);
-    event.waitUntil(
-      (version && shellPaths.length > 0 && runtimePaths.length > 0
-        ? prewarmFixedSlot(version, shellPaths, runtimePaths)
-        : Promise.reject(new Error('Invalid fixed slot prewarm payload'))
-      )
-        .then(() => event.ports[0]?.postMessage({ ok: true }))
-        .catch((error) =>
-          event.ports[0]?.postMessage({
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        ),
-    );
-  });
-}
 
 // Helper: Trim cache to a certain size
 const limitCacheSize = (name, maxItems) => {
@@ -207,13 +116,11 @@ const responseForCachedPrintPdf = async (request, cached) => {
 // Install event: Pre-cache core UI assets
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    isFixedOfflineSlot
-      ? Promise.resolve()
-      : caches.open(CACHE_NAME).then((cache) => {
-          return cache
-            .addAll(ASSETS_TO_CACHE)
-            .then(() => (isCanonicalPwaHost ? precachePwaShell(cache) : undefined));
-        }),
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache
+        .addAll(ASSETS_TO_CACHE)
+        .then(() => (isCanonicalPwaHost ? precachePwaShell(cache) : undefined));
+    }),
   );
   self.skipWaiting();
 });
@@ -226,8 +133,7 @@ self.addEventListener('activate', (event) => {
         cacheNames.map((cacheName) => {
           if (
             cacheName !== CACHE_NAME &&
-            cacheName !== PRINT_PDF_CACHE_NAME &&
-            cacheName !== FIXED_OFFLINE_SLOT_META_CACHE
+            cacheName !== PRINT_PDF_CACHE_NAME
           ) {
             return caches.delete(cacheName);
           }
@@ -272,8 +178,7 @@ self.addEventListener('fetch', (event) => {
   if (
     event.request.mode === 'navigate' &&
     !ONLYOFFICE_NAVIGATION_PATHS.has(url.pathname) &&
-    !isCanonicalPwaNavigation &&
-    !isFixedOfflineSlot
+    !isCanonicalPwaNavigation
   ) {
     return;
   }
@@ -314,26 +219,6 @@ self.addEventListener('fetch', (event) => {
             cache.match(new URL('/index.html', self.location.origin).href),
           ),
         ),
-    );
-    return;
-  }
-
-  // Fixed editor slots keep only their small origin-bound shell locally. All
-  // remaining runtime requests are rewritten to the versioned canonical host,
-  // so the parent page's one shared HTTP cache remains reusable offline.
-  if (isFixedOfflineSlot) {
-    event.respondWith(
-      caches.match(event.request, { ignoreSearch: true }).then(async (cached) => {
-        if (cached) return cached;
-        if (event.request.mode === 'navigate') return fetch(event.request);
-        const version = await readFixedSlotVersion();
-        if (!version) return fetch(event.request);
-        const canonical = new URL(event.request.url);
-        canonical.hostname = CANONICAL_OFFICE_HOST;
-        canonical.searchParams.delete(FIXED_OFFLINE_SLOT_SHELL_QUERY);
-        canonical.searchParams.set('__oobv', version);
-        return fetch(canonical.href, { cache: 'force-cache' });
-      }),
     );
     return;
   }

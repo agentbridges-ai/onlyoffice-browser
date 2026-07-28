@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   isIsolatedEditorHost,
-  isFixedOfflineEditorHost,
   isOnlyOfficeHost,
   resolveObjectKey,
   shouldShareAsset,
@@ -16,9 +15,6 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(isOnlyOfficeHost('onlyoffice.getpi.work.example.com')).toBe(false);
     expect(isIsolatedEditorHost('office-editor-a.getpi.work')).toBe(true);
     expect(isIsolatedEditorHost('onlyoffice.getpi.work')).toBe(false);
-    expect(isFixedOfflineEditorHost('office-misaka.getpi.work')).toBe(true);
-    expect(isFixedOfflineEditorHost('office-pectics.getpi.work')).toBe(true);
-    expect(isFixedOfflineEditorHost('office-editor-a.getpi.work')).toBe(false);
   });
 
   it('keeps only origin-bound boot files and workers on each editor origin', () => {
@@ -27,7 +23,6 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(shouldShareAsset('/wasm/x2t/worker.js', 'worker')).toBe(false);
     expect(shouldShareAsset('/document_editor_service_worker.js', 'serviceworker')).toBe(false);
     expect(shouldShareAsset('/document_editor_service_worker.js', null)).toBe(false);
-    expect(shouldShareAsset('/slot-prewarm.html', null)).toBe(false);
     expect(shouldShareAsset('/sw.js', 'script')).toBe(false);
     expect(shouldShareAsset('/sdkjs/word/sdk-all.js', 'script')).toBe(true);
     expect(shouldShareAsset('/fonts/000.ttf', 'empty')).toBe(true);

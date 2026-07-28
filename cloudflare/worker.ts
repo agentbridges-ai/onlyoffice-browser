@@ -1,11 +1,6 @@
 const CANONICAL_HOST = 'onlyoffice.getpi.work';
 const EDITOR_HOST_PATTERN = /^office-[a-z0-9-]+\.getpi\.work$/;
-const FIXED_OFFLINE_EDITOR_HOSTS = new Set([
-  'office-misaka.getpi.work',
-  'office-pectics.getpi.work',
-]);
 const VERSION_QUERY = '__oobv';
-const SLOT_SHELL_QUERY = '__oobslot';
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
 
 type R2ObjectLike = {
@@ -37,10 +32,6 @@ export function isIsolatedEditorHost(hostname: string): boolean {
   return EDITOR_HOST_PATTERN.test(hostname);
 }
 
-export function isFixedOfflineEditorHost(hostname: string): boolean {
-  return FIXED_OFFLINE_EDITOR_HOSTS.has(hostname);
-}
-
 export function shouldShareAsset(pathname: string, destination: string | null): boolean {
   const normalizedDestination = destination?.trim().toLowerCase() || '';
   if (
@@ -56,7 +47,6 @@ export function shouldShareAsset(pathname: string, destination: string | null): 
   if (
     pathname === '/office-host.html' ||
     pathname === '/reset.html' ||
-    pathname === '/slot-prewarm.html' ||
     pathname === '/document_editor_service_worker.js' ||
     pathname === '/sw.js'
   ) {
@@ -217,11 +207,8 @@ export default {
     }
 
     const isolated = isIsolatedEditorHost(hostname);
-    const fixedSlotShell =
-      isFixedOfflineEditorHost(hostname) && url.searchParams.get(SLOT_SHELL_QUERY) === 'shell';
     if (
       isolated &&
-      !fixedSlotShell &&
       shouldShareAsset(url.pathname, request.headers.get('sec-fetch-dest'))
     ) {
       return Response.redirect(canonicalAssetUrl(url, env.ASSET_VERSION), 307);
