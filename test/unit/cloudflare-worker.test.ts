@@ -26,6 +26,7 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(shouldShareAsset('/assets/officeHost-a.js', 'script')).toBe(false);
     expect(shouldShareAsset('/wasm/x2t/worker.js', 'worker')).toBe(false);
     expect(shouldShareAsset('/document_editor_service_worker.js', 'serviceworker')).toBe(false);
+    expect(shouldShareAsset('/sw.js', 'script')).toBe(false);
     expect(shouldShareAsset('/sdkjs/word/sdk-all.js', 'script')).toBe(true);
     expect(shouldShareAsset('/fonts/000.ttf', 'empty')).toBe(true);
   });

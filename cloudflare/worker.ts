@@ -53,7 +53,9 @@ export function shouldShareAsset(pathname: string, destination: string | null): 
     return false;
   }
   if (pathname.startsWith('/assets/')) return false;
-  if (pathname === '/office-host.html' || pathname === '/reset.html') return false;
+  if (pathname === '/office-host.html' || pathname === '/reset.html' || pathname === '/sw.js') {
+    return false;
+  }
   if (pathname.startsWith(PRINT_ROUTE_PREFIX)) return false;
   return true;
 }
