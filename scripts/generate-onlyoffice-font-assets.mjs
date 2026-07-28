@@ -707,17 +707,28 @@ function assertGeneratedAssets(output) {
 }
 
 function writeGeneratedManifest(output, options) {
+  const allFonts = 'sdkjs/common/AllFonts.js';
+  const fontSelection = 'server/FileConverter/bin/font_selection.bin';
+  const fontSourceMap = GENERATED_FONT_SOURCE_MAP;
+  const fontThumbnails = listGeneratedFontThumbnailPaths(output);
+  const fonts = listGeneratedFontAssetPaths(output);
+  const assetPaths = [allFonts, fontSelection, fontSourceMap, ...fontThumbnails, ...fonts];
   const manifest = {
     version: 1,
     generator: 'documentserver-generate-allfonts.sh',
     image: options.image,
     fontSet: options.fontSet,
     generatedAt: new Date().toISOString(),
-    allFonts: 'sdkjs/common/AllFonts.js',
-    fontSelection: 'server/FileConverter/bin/font_selection.bin',
-    fontSourceMap: GENERATED_FONT_SOURCE_MAP,
-    fontThumbnails: listGeneratedFontThumbnailPaths(output),
-    fonts: listGeneratedFontAssetPaths(output),
+    allFonts,
+    fontSelection,
+    fontSourceMap,
+    fontThumbnails,
+    fonts,
+    totalBytes: assetPaths.reduce((total, assetPath) => total + fs.statSync(path.join(output, assetPath)).size, 0),
+    assets: assetPaths.map((assetPath) => ({
+      path: assetPath,
+      bytes: fs.statSync(path.join(output, assetPath)).size,
+    })),
   };
 
   fs.writeFileSync(path.join(output, GENERATED_FONT_ASSETS_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);

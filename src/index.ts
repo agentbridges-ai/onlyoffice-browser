@@ -1,4 +1,10 @@
-import { createOfficeEditor, type OfficeEditorInstance, type OfficeEditorMode } from './lib/office-editor';
+import {
+  createOfficeEditor,
+  type OfficeEditorInstance,
+  type OfficeEditorMode,
+} from './lib/office-editor';
+import { clearLegacyDemoHostState, resolveDemoHostUrl } from './lib/demo-host-url';
+import { RuntimeCacheController, type RuntimeCacheProgress } from './lib/runtime-cache';
 import './styles/base.css';
 
 type DemoRecord = {
@@ -26,6 +32,10 @@ app.innerHTML = `
     <div>
       <h1>Browser Office Editor</h1>
       <p>Local DOCX, XLSX, PPTX, and CSV preview/edit component demo.</p>
+      <button id="runtime-cache-status" class="runtime-cache-status" type="button" aria-live="polite">
+        <span id="runtime-cache-label">Shared static assets: checking…</span>
+        <progress id="runtime-cache-progress" max="1" value="0"></progress>
+      </button>
     </div>
     <div class="demo-actions">
       <fieldset class="mode-selector" aria-label="Open mode">
@@ -52,28 +62,158 @@ app.innerHTML = `
   </section>
   <input id="file-input" type="file" multiple accept=".docx,.xlsx,.pptx,.doc,.xls,.ppt,.csv" />
   <section id="editor-grid" class="editor-grid" aria-live="polite"></section>
+  <dialog id="runtime-cache-dialog" class="runtime-cache-dialog">
+    <form method="dialog">
+      <h2>Load all shared static assets?</h2>
+      <p id="runtime-cache-detail">
+        The complete Office runtime is not cached yet. Sizes below are uncompressed browser-cache sizes;
+        network transfer is smaller because Cloudflare uses Brotli compression.
+      </p>
+      <progress id="runtime-cache-dialog-progress" max="1" value="0"></progress>
+      <p id="runtime-cache-dialog-status" class="runtime-cache-dialog-status"></p>
+      <div id="runtime-cache-categories" class="runtime-cache-categories"></div>
+      <div class="runtime-cache-dialog-actions">
+        <button id="runtime-cache-later" value="cancel" type="submit">Later</button>
+        <button id="runtime-cache-load" value="default" type="button">Load all</button>
+      </div>
+    </form>
+  </dialog>
 `;
 
 const grid = document.querySelector<HTMLElement>('#editor-grid')!;
 const fileInput = document.querySelector<HTMLInputElement>('#file-input')!;
 const hardResetOnLastDestroy = new URLSearchParams(window.location.search).get('hardResetOnLastDestroy') === 'true';
+clearLegacyDemoHostState(window.location, window.localStorage);
+const defaultOfficeHostUrl = resolveDemoHostUrl(new URL(window.location.href));
+const cacheStatusButton = document.querySelector<HTMLButtonElement>('#runtime-cache-status')!;
+const cacheLabel = document.querySelector<HTMLElement>('#runtime-cache-label')!;
+const cacheProgress = document.querySelector<HTMLProgressElement>('#runtime-cache-progress')!;
+const cacheDialog = document.querySelector<HTMLDialogElement>('#runtime-cache-dialog')!;
+const cacheDialogDetail = document.querySelector<HTMLElement>('#runtime-cache-detail')!;
+const cacheDialogProgress = document.querySelector<HTMLProgressElement>('#runtime-cache-dialog-progress')!;
+const cacheDialogStatus = document.querySelector<HTMLElement>('#runtime-cache-dialog-status')!;
+const cacheCategories = document.querySelector<HTMLElement>('#runtime-cache-categories')!;
+const cacheLoadButton = document.querySelector<HTMLButtonElement>('#runtime-cache-load')!;
+const cacheLaterButton = document.querySelector<HTMLButtonElement>('#runtime-cache-later')!;
+let runtimeCacheController: RuntimeCacheController | null = null;
+let runtimeCacheLoading = false;
 
-function getDefaultOfficeHostUrl(): string {
-  const configured = new URLSearchParams(window.location.search).get('hostUrl');
-  if (configured) return new URL(configured, window.location.href).href;
-
-  const hostUrl = new URL('/office-host.html', window.location.href);
-  if (hostUrl.hostname === 'localhost' || (hostUrl.hostname.endsWith('.localhost') && hostUrl.hostname !== 'host.localhost')) {
-    hostUrl.hostname = 'host.localhost';
-  } else if (hostUrl.hostname === 'host.localhost') {
-    hostUrl.hostname = 'app.localhost';
-  } else if (hostUrl.hostname === '127.0.0.1') {
-    hostUrl.hostname = 'localhost';
-  } else if (!hostUrl.hostname.endsWith('.localhost')) {
-    hostUrl.hostname = `host.${hostUrl.hostname}`;
-  }
-  return hostUrl.href;
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
+
+function cacheProgressText(progress: RuntimeCacheProgress): string {
+  const byteText =
+    progress.totalBytes > 0
+      ? ` · ${formatBytes(progress.completedBytes)} / ${formatBytes(progress.totalBytes)}`
+      : '';
+  const failureText = progress.failedFiles > 0 ? ` · ${progress.failedFiles} failed` : '';
+  return `${progress.completedFiles} / ${progress.totalFiles} files${byteText} cached${failureText}`;
+}
+
+function renderCacheProgress(progress: RuntimeCacheProgress): void {
+  const ratio =
+    progress.totalBytes > 0
+      ? progress.completedBytes / progress.totalBytes
+      : progress.totalFiles > 0
+        ? progress.completedFiles / progress.totalFiles
+        : 0;
+  cacheProgress.value = Math.min(1, ratio);
+  cacheDialogProgress.value = Math.min(1, ratio);
+  const detail = cacheProgressText(progress);
+  cacheDialogStatus.textContent = detail;
+  const categoryLabels = {
+    fonts: 'Fonts',
+    core: 'Common runtime & x2t',
+    word: 'Word',
+    cell: 'Spreadsheet',
+    slide: 'Presentation',
+  } as const;
+  cacheCategories.replaceChildren(
+    ...progress.categories.map((category) => {
+      const ratio =
+        category.totalBytes > 0
+          ? category.completedBytes / category.totalBytes
+          : category.totalFiles > 0
+            ? category.completedFiles / category.totalFiles
+            : 0;
+      const row = document.createElement('div');
+      row.className = 'runtime-cache-category';
+      const label = document.createElement('div');
+      label.innerHTML = `<span>${categoryLabels[category.category]}</span><span>${category.completedFiles} / ${category.totalFiles} · ${formatBytes(category.completedBytes)} / ${formatBytes(category.totalBytes)} cached</span>`;
+      const bar = document.createElement('progress');
+      bar.max = 1;
+      bar.value = Math.min(1, ratio);
+      row.append(label, bar);
+      return row;
+    }),
+  );
+  if (progress.phase === 'complete') {
+    cacheLabel.textContent = `Shared static assets: ready · ${detail}`;
+  } else if (progress.phase === 'error') {
+    cacheLabel.textContent = `Shared static assets: incomplete · ${detail}`;
+  } else if (progress.phase === 'loading') {
+    cacheLabel.textContent = `Shared static assets: loading · ${detail}`;
+  } else if (progress.phase === 'checking') {
+    cacheLabel.textContent = `Shared static assets: checking · ${detail}`;
+  } else {
+    cacheLabel.textContent = `Shared static assets: not fully loaded · ${detail}`;
+  }
+}
+
+function showCacheDialog(): void {
+  if (!cacheDialog.open) cacheDialog.showModal();
+}
+
+async function loadAllRuntimeAssets(): Promise<void> {
+  if (!runtimeCacheController || runtimeCacheLoading) return;
+  runtimeCacheLoading = true;
+  cacheLoadButton.disabled = true;
+  cacheLaterButton.disabled = true;
+  cacheDialogDetail.textContent =
+    'Keep this page open while the shared Office runtime is loaded. Displayed bytes are uncompressed cache size; network transfer is Brotli-compressed.';
+  try {
+    const result = await runtimeCacheController.loadAll(renderCacheProgress);
+    if (result.phase === 'complete') {
+      cacheDialogDetail.textContent = 'All shared static assets are loaded for the current release.';
+      cacheLaterButton.textContent = 'Done';
+      cacheLaterButton.disabled = false;
+    } else {
+      cacheDialogDetail.textContent = 'Some assets failed to load. Check the connection and retry.';
+      cacheLoadButton.textContent = 'Retry';
+      cacheLoadButton.disabled = false;
+      cacheLaterButton.disabled = false;
+    }
+  } catch (error) {
+    cacheDialogDetail.textContent = error instanceof Error ? error.message : String(error);
+    cacheLoadButton.textContent = 'Retry';
+    cacheLoadButton.disabled = false;
+    cacheLaterButton.disabled = false;
+  } finally {
+    runtimeCacheLoading = false;
+  }
+}
+
+async function initializeRuntimeCache(): Promise<void> {
+  try {
+    runtimeCacheController = await RuntimeCacheController.create();
+    const progress = runtimeCacheController.getProgress(
+      runtimeCacheController.isComplete() ? 'complete' : 'ready',
+    );
+    renderCacheProgress(progress);
+    if (!runtimeCacheController.isComplete()) showCacheDialog();
+  } catch (error) {
+    cacheLabel.textContent = `Shared static assets: status unavailable`;
+    cacheDialogDetail.textContent = error instanceof Error ? error.message : String(error);
+    cacheDialogStatus.textContent = '';
+  }
+}
+
+cacheLoadButton.addEventListener('click', () => void loadAllRuntimeAssets());
+cacheStatusButton.addEventListener('click', showCacheDialog);
+void initializeRuntimeCache();
 
 function isOfficeEditorMode(value: string): value is OfficeEditorMode {
   return value === 'edit' || value === 'readonly' || value === 'preview';
@@ -125,7 +265,11 @@ async function removeRecord(record: DemoRecord): Promise<void> {
 
 async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
   const id = nextPanelId++;
-  const title = options.fileName || (options.file instanceof File ? options.file.name : undefined) || options.emptyType || 'document';
+  const title =
+    options.fileName ||
+    (options.file instanceof File ? options.file.name : undefined) ||
+    options.emptyType ||
+    'document';
   const panel = document.createElement('article');
   panel.className = 'editor-panel';
   panel.innerHTML = `
@@ -149,7 +293,7 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
 
   const instance = await createOfficeEditor(slot, {
     ...options,
-    hostUrl: getDefaultOfficeHostUrl(),
+    hostUrl: defaultOfficeHostUrl,
     saveBehavior: options.saveBehavior || 'download',
     hardResetOnLastDestroy,
     onReady: (readyInstance) => {

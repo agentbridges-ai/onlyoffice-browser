@@ -263,25 +263,33 @@ export function collectRuntimeAssets(input, options) {
   for (const relativePath of walkFiles(input)) {
     const pack = getRuntimeAssetPack(relativePath, options);
     if (pack) {
-      selected.push({ path: relativePath, pack });
+      selected.push({
+        path: relativePath,
+        pack,
+        bytes: fs.statSync(path.join(input, relativePath)).size,
+      });
     } else if (isRuntimeAsset(relativePath)) {
       excluded.push(relativePath);
     }
   }
+  selected.sort((left, right) => left.path.localeCompare(right.path));
+  excluded.sort();
   return { selected, excluded };
 }
 
 export function buildRuntimeAssets(options) {
   const { selected, excluded } = collectRuntimeAssets(options.input, options);
   const manifest = {
-    version: 1,
+    version: 2,
     generatedAt: new Date().toISOString(),
     types: options.types,
     dictionaries: options.dictionaries,
     keepHelp: options.keepHelp,
     packs: Object.fromEntries(PACKS.map((pack) => [pack, selected.filter((asset) => asset.pack === pack).length])),
+    totalBytes: selected.reduce((total, asset) => total + asset.bytes, 0),
     selected: selected.length,
     excluded: excluded.length,
+    assets: selected,
   };
 
   if (options.dryRun) {

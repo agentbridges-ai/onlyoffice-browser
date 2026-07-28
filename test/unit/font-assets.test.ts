@@ -4,6 +4,7 @@ import {
   assertGeneratedFontAssetsAvailable,
   fetchGeneratedFontAssetsManifest,
   fetchRuntimeBinaryAsset,
+  resolveRuntimeAssetCacheMode,
 } from '../../src/lib/font-assets';
 
 const MANIFEST = {
@@ -19,6 +20,13 @@ afterEach(() => {
 });
 
 describe('generated font assets runtime checks', () => {
+  it('reuses versioned wildcard-localhost runtime assets without revalidation', () => {
+    expect(resolveRuntimeAssetCacheMode('host-office-editor-1.office.localhost')).toBe('force-cache');
+    expect(resolveRuntimeAssetCacheMode('assets.office.localhost')).toBe('force-cache');
+    expect(resolveRuntimeAssetCacheMode('office-editor-1.getpi.work')).toBe('force-cache');
+    expect(resolveRuntimeAssetCacheMode('office.example.com')).toBe('no-cache');
+  });
+
   it('requires the generated font asset manifest', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 404 })));
 

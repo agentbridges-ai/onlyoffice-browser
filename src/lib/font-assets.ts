@@ -30,6 +30,21 @@ const FONT_ASSETS_SETUP_HINT =
   'then serve that directory with `ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=/absolute/path/to/.onlyoffice-font-assets` in dev, ' +
   'or deploy the generated directory at the editor host root in production.';
 
+export function resolveRuntimeAssetCacheMode(hostname: string): RequestCache {
+  // Piwork and the Cloudflare wildcard deployment redirect shareable assets to
+  // one immutable, build-versioned URL. Distinct editor origins can therefore
+  // reuse one browser HTTP-cache entry without revalidation.
+  return hostname.endsWith('.office.localhost') ||
+    hostname === 'onlyoffice.getpi.work' ||
+    /^office-[a-z0-9-]+\.getpi\.work$/.test(hostname)
+    ? 'force-cache'
+    : 'no-cache';
+}
+
+function runtimeAssetCacheMode(): RequestCache {
+  return resolveRuntimeAssetCacheMode(globalThis.location.hostname);
+}
+
 function normalizeAssetPath(assetPath: string): string {
   return assetPath.replace(/^\/+/, '');
 }
@@ -80,7 +95,7 @@ export async function fetchGeneratedFontAssetsManifest(): Promise<GeneratedFontA
   const manifestUrl = getRuntimeAssetUrl(GENERATED_FONT_ASSETS_MANIFEST);
   let response: Response;
   try {
-    response = await fetch(manifestUrl, { cache: 'no-cache' });
+    response = await fetch(manifestUrl, { cache: runtimeAssetCacheMode() });
   } catch (error) {
     throw createMissingFontAssetsError(
       `failed to request ${GENERATED_FONT_ASSETS_MANIFEST}: ${error instanceof Error ? error.message : String(error)}`,
@@ -106,7 +121,7 @@ export async function fetchGeneratedFontAssetsManifest(): Promise<GeneratedFontA
 export async function fetchGeneratedFontSourceMap(assetPath?: string): Promise<GeneratedFontSourceMap | null> {
   if (!assetPath) return null;
 
-  const response = await fetch(getRuntimeAssetUrl(assetPath), { cache: 'no-cache' }).catch(() => null);
+  const response = await fetch(getRuntimeAssetUrl(assetPath), { cache: runtimeAssetCacheMode() }).catch(() => null);
   if (!response || response.status === 404) return null;
   if (!response.ok) {
     throw createMissingFontAssetsError(`${assetPath} returned ${response.status}`);
@@ -137,7 +152,7 @@ async function assertRuntimeAssetReachable(assetPath: string): Promise<void> {
   let response: Response;
   try {
     response = await fetch(assetUrl, {
-      cache: 'no-cache',
+      cache: runtimeAssetCacheMode(),
       headers: {
         Range: 'bytes=0-0',
       },
@@ -166,7 +181,7 @@ export async function assertGeneratedFontAssetsAvailable(): Promise<GeneratedFon
 }
 
 export async function fetchRuntimeBinaryAsset(assetPath: string): Promise<Uint8Array> {
-  const response = await fetch(getRuntimeAssetUrl(assetPath), { cache: 'no-cache' });
+  const response = await fetch(getRuntimeAssetUrl(assetPath), { cache: runtimeAssetCacheMode() });
   if (!response.ok) {
     throw createMissingFontAssetsError(`${assetPath} returned ${response.status}`);
   }

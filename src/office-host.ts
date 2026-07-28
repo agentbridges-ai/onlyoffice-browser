@@ -16,6 +16,7 @@ import {
   resolveOfficePluginReady,
   type OfficePluginRuntime,
 } from './lib/office-plugin-runtime';
+import { resolveRuntimeAssetCacheMode } from './lib/font-assets';
 import './styles/base.css';
 
 type RuntimeOptions = Parameters<typeof createRuntimeOfficeEditor>[1];
@@ -86,7 +87,7 @@ function bytesToHex(bytes: ArrayBuffer): string {
 
 async function loadOfficeHostIdentity() {
   const response = await fetch(OFFICE_RUNTIME_ASSET_MANIFEST_PATH, {
-    cache: 'no-store',
+    cache: resolveRuntimeAssetCacheMode(location.hostname),
     credentials: 'omit',
   });
   if (!response.ok) {

@@ -5,6 +5,7 @@ const PRINT_PDF_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
 const ASSETS_TO_CACHE = ['./plugins.json', './themes.json'];
 const ONLYOFFICE_RUNTIME_ASSET_REGEX = /(^|\/)(web-apps|sdkjs|wasm\/x2t)\//;
 const ONLYOFFICE_NAVIGATION_PATHS = new Set(['/office-host.html', '/reset.html']);
+const ONLYOFFICE_RUNTIME_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 
 // Cache limits and clean-up configuration
 const MAX_CACHE_ITEMS = 100;
@@ -180,7 +181,7 @@ self.addEventListener('fetch', (event) => {
     url.pathname === '/' ||
     url.pathname.endsWith('/');
 
-  if (isHtml || isOnlyOfficeRuntimeAsset(url)) {
+  if (isHtml || isOnlyOfficeRuntimeAsset(url) || url.pathname === ONLYOFFICE_RUNTIME_MANIFEST_PATH) {
     // Strategy: Network-First for HTML/Navigation
     // Ensuring the user always gets the latest version if online,
     // but can still access the app when offline.
