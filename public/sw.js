@@ -44,12 +44,7 @@ const cacheSlotPaths = async (cache, paths, requestForPath) => {
   await Promise.all(workers);
 };
 
-const prewarmFixedSlot = async (version, shellPaths, runtimePaths) => {
-  const cache = await caches.open(CACHE_NAME);
-  const ready = await cache.match(FIXED_OFFLINE_SLOT_READY_KEY);
-  if (ready && (await ready.text()) === version) return;
-  await cacheSlotPaths(cache, shellPaths, (path) => fetch(fixedSlotShellRequest(path)));
-  await cacheSlotPaths(cache, runtimePaths, (path) => fetch(fixedSlotShellRequest(path)));
+const markFixedSlotReady = async (cache, version) => {
   await cache.put(
     FIXED_OFFLINE_SLOT_READY_KEY,
     new Response(version, { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
@@ -59,6 +54,21 @@ const prewarmFixedSlot = async (version, shellPaths, runtimePaths) => {
     FIXED_OFFLINE_SLOT_VERSION_KEY,
     new Response(version, { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
   );
+};
+
+const prewarmFixedSlot = async (version, shellPaths, runtimePaths) => {
+  const cache = await caches.open(CACHE_NAME);
+  const ready = await cache.match(FIXED_OFFLINE_SLOT_READY_KEY);
+  if (ready && (await ready.text()) === version) return;
+  const cachedPaths = new Set((await cache.keys()).map((request) => new URL(request.url).pathname));
+  const requestedPaths = [...new Set([...shellPaths, ...runtimePaths])];
+  if (requestedPaths.every((path) => cachedPaths.has(path))) {
+    await markFixedSlotReady(cache, version);
+    return;
+  }
+  await cacheSlotPaths(cache, shellPaths, (path) => fetch(fixedSlotShellRequest(path)));
+  await cacheSlotPaths(cache, runtimePaths, (path) => fetch(fixedSlotShellRequest(path)));
+  await markFixedSlotReady(cache, version);
 };
 
 if (isFixedOfflineSlot) {
