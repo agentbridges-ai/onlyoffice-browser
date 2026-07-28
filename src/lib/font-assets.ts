@@ -40,7 +40,7 @@ export function resolveRuntimeAssetCacheMode(hostname: string): RequestCache {
   // reuse one browser HTTP-cache entry without revalidation.
   return hostname.endsWith('.office.localhost') ||
     hostname === 'onlyoffice.getpi.work' ||
-    /^[a-z0-9-]+\.onlyoffice\.getpi\.work$/.test(hostname)
+    /^office-editor-[a-z0-9-]+\.getpi\.work$/.test(hostname)
     ? 'force-cache'
     : 'no-cache';
 }

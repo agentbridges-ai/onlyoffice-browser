@@ -18,10 +18,10 @@ describe('demo host URL routing', () => {
     const page = new URL('https://onlyoffice.getpi.work/');
 
     expect(new URL(resolve(page, 'office-editor-a')).origin).toBe(
-      'https://a.onlyoffice.getpi.work',
+      'https://office-editor-a.getpi.work',
     );
     expect(new URL(resolve(page, 'office-editor-b')).origin).toBe(
-      'https://b.onlyoffice.getpi.work',
+      'https://office-editor-b.getpi.work',
     );
   });
 
@@ -31,7 +31,7 @@ describe('demo host URL routing', () => {
     );
 
     expect(new URL(resolve(page, 'office-editor-c')).origin).toBe(
-      'https://c.onlyoffice.getpi.work',
+      'https://office-editor-c.getpi.work',
     );
   });
 

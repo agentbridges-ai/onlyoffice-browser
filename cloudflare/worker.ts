@@ -1,5 +1,5 @@
 const CANONICAL_HOST = 'onlyoffice.getpi.work';
-const EDITOR_HOST_PATTERN = /^[a-z0-9-]+\.onlyoffice\.getpi\.work$/;
+const EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
 const VERSION_QUERY = '__oobv';
 const ASSET_REVISION_PATTERN = /^[a-f0-9]{16,64}$/;
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';

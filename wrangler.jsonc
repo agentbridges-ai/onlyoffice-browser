@@ -10,7 +10,7 @@
       "zone_name": "getpi.work"
     },
     {
-      "pattern": "*.onlyoffice.getpi.work/*",
+      "pattern": "*.getpi.work/*",
       "zone_name": "getpi.work"
     }
   ],

@@ -11,11 +11,11 @@ import {
 describe('Cloudflare OnlyOffice runtime routing', () => {
   it('accepts the canonical and unbounded per-editor wildcard hosts', () => {
     expect(isOnlyOfficeHost('onlyoffice.getpi.work')).toBe(true);
-    expect(isOnlyOfficeHost('editor-a.onlyoffice.getpi.work')).toBe(true);
+    expect(isOnlyOfficeHost('office-editor-a.getpi.work')).toBe(true);
     expect(isOnlyOfficeHost('unrelated.getpi.work')).toBe(false);
     expect(isOnlyOfficeHost('office-a.dev.getpi.work')).toBe(false);
     expect(isOnlyOfficeHost('onlyoffice.getpi.work.example.com')).toBe(false);
-    expect(isIsolatedEditorHost('editor-a.onlyoffice.getpi.work')).toBe(true);
+    expect(isIsolatedEditorHost('office-editor-a.getpi.work')).toBe(true);
     expect(isIsolatedEditorHost('onlyoffice.getpi.work')).toBe(false);
   });
 
