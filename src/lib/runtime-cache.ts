@@ -17,6 +17,7 @@ export type RuntimeFontFamily = {
   bytes: number;
   paths: string[];
   downloaded: boolean;
+  removable: boolean;
 };
 
 type RuntimeFontFamilyDefinition = {
@@ -68,15 +69,21 @@ type StoredProgress = {
   lastVerifiedAt?: number;
   fontCatalog?: RuntimeFontPackage[];
   fontFamilies?: RuntimeFontFamilyDefinition[];
+  requiredFonts?: string[];
 };
 
 const RUNTIME_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const FONT_MANIFEST_PATH = '/onlyoffice-browser-font-assets.json';
 const STORAGE_KEY = 'onlyoffice-browser:shared-runtime-cache';
 const INSTALLED_FONTS_STORAGE_KEY = 'onlyoffice-browser:installed-fonts';
+const FONT_PACKAGE_CACHE_PREFIX = 'onlyoffice-browser-font-packages-';
 
 function isSafeAssetPath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && !value.startsWith('/') && !value.includes('..');
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
 function parseRuntimeManifest(value: unknown): RuntimeManifest {
@@ -195,6 +202,7 @@ function readStoredProgress(
   lastVerifiedAt: number;
   fontCatalog: RuntimeFontPackage[] | null;
   fontFamilies: RuntimeFontFamilyDefinition[] | null;
+  requiredFonts: string[] | null;
 } {
   try {
     const parsed = JSON.parse(storage.getItem(STORAGE_KEY) || 'null') as StoredProgress | null;
@@ -206,6 +214,7 @@ function readStoredProgress(
         lastVerifiedAt: 0,
         fontCatalog: null,
         fontFamilies: null,
+        requiredFonts: null,
       };
     }
     return {
@@ -215,6 +224,7 @@ function readStoredProgress(
       lastVerifiedAt: Number.isFinite(parsed.lastVerifiedAt) ? parsed.lastVerifiedAt || 0 : 0,
       fontCatalog: parseStoredFontCatalog(parsed.fontCatalog),
       fontFamilies: parseFontFamilies(parsed.fontFamilies),
+      requiredFonts: isStringArray(parsed.requiredFonts) ? parsed.requiredFonts.filter(isSafeAssetPath) : null,
     };
   } catch {
     return {
@@ -224,6 +234,7 @@ function readStoredProgress(
       lastVerifiedAt: 0,
       fontCatalog: null,
       fontFamilies: null,
+      requiredFonts: null,
     };
   }
 }
@@ -236,6 +247,7 @@ function writeStoredProgress(
   lastVerifiedAt = 0,
   fontCatalog: RuntimeFontPackage[] = [],
   fontFamilies: RuntimeFontFamilyDefinition[] = [],
+  requiredFonts: string[] = [],
 ): void {
   storage.setItem(
     STORAGE_KEY,
@@ -246,6 +258,7 @@ function writeStoredProgress(
       lastVerifiedAt,
       fontCatalog,
       fontFamilies,
+      requiredFonts,
     } satisfies StoredProgress),
   );
 }
@@ -258,6 +271,8 @@ function readInstalledFonts(
     const stored = JSON.parse(storage.getItem(INSTALLED_FONTS_STORAGE_KEY) || 'null');
     if (stored?.version === 2 && Array.isArray(stored.downloaded)) {
       const downloaded = new Set<string>(stored.downloaded.filter(isSafeAssetPath));
+      for (const required of requiredFonts) downloaded.delete(required);
+      writeDownloadedFonts(storage, downloaded);
       return {
         installed: new Set([...requiredFonts.filter(isSafeAssetPath), ...downloaded]),
         downloaded,
@@ -327,12 +342,16 @@ export class RuntimeCacheController {
   readonly assets: RuntimeCacheAsset[];
   readonly fontCatalog: RuntimeFontPackage[];
   readonly fontFamilies: RuntimeFontFamilyDefinition[];
+  readonly fontPackageSharedPaths: string[];
+  readonly requiredFontPaths: string[];
   readonly version: string;
   readonly completed: Set<string>;
   private readonly storage: Storage;
   private readonly fetchImpl: typeof fetch;
   private readonly installedFonts: Set<string>;
   private readonly downloadedFonts: Set<string>;
+  private readonly cacheStorage?: CacheStorage;
+  private fontPackageCachePromise?: Promise<Cache>;
   private lastVerifiedAt: number;
 
   private constructor(
@@ -346,10 +365,20 @@ export class RuntimeCacheController {
     fontFamilies: RuntimeFontFamilyDefinition[] = [],
     installedFonts = new Set<string>(),
     downloadedFonts = new Set<string>(),
+    requiredFontPaths: string[] = [],
+    cacheStorage?: CacheStorage,
   ) {
     this.assets = assets;
     this.fontCatalog = fontCatalog;
     this.fontFamilies = fontFamilies;
+    this.requiredFontPaths = [...new Set(requiredFontPaths)];
+    this.fontPackageSharedPaths = assets
+      .filter(
+        (asset) =>
+          asset.category === 'fonts' &&
+          (!asset.path.startsWith('fonts/') || this.requiredFontPaths.includes(asset.path)),
+      )
+      .map((asset) => asset.path);
     this.version = version;
     this.storage = storage;
     this.fetchImpl = fetchImpl;
@@ -357,11 +386,13 @@ export class RuntimeCacheController {
     this.lastVerifiedAt = lastVerifiedAt;
     this.installedFonts = installedFonts;
     this.downloadedFonts = downloadedFonts;
+    this.cacheStorage = cacheStorage;
   }
 
   static async create(
     storage: Storage = window.localStorage,
     fetchImpl: typeof fetch = window.fetch.bind(window),
+    cacheStorage: CacheStorage | undefined = window.caches,
   ): Promise<RuntimeCacheController> {
     const manifestUrl = new URL(RUNTIME_MANIFEST_PATH, window.location.origin);
     const versionResponse = await fetchImpl(manifestUrl.href, {
@@ -377,9 +408,12 @@ export class RuntimeCacheController {
       versionResponse.headers.get('etag')?.replaceAll('"', '') ||
       '';
     const stored = deployedVersion ? readStoredProgress(storage, deployedVersion) : null;
-    if (stored?.assets && stored.fontCatalog && stored.fontFamilies) {
-      const { installed: installedFonts, downloaded: downloadedFonts } = readInstalledFonts(storage, []);
-      return new RuntimeCacheController(
+    if (stored?.assets && stored.fontCatalog && stored.fontFamilies && stored.requiredFonts) {
+      const { installed: installedFonts, downloaded: downloadedFonts } = readInstalledFonts(
+        storage,
+        stored.requiredFonts,
+      );
+      const controller = new RuntimeCacheController(
         stored.assets,
         deployedVersion,
         storage,
@@ -390,9 +424,12 @@ export class RuntimeCacheController {
         stored.fontFamilies,
         installedFonts,
         downloadedFonts,
+        stored.requiredFonts,
+        cacheStorage,
       );
+      await controller.reconcileFontPackageCache();
+      return controller;
     }
-
     if (deployedVersion) manifestUrl.searchParams.set('__oobv', deployedVersion);
     let runtimeResponse = await fetchImpl(manifestUrl.href, {
       cache: deployedVersion ? 'force-cache' : 'reload',
@@ -428,10 +465,11 @@ export class RuntimeCacheController {
     });
     if (!fontResponse.ok) throw new Error(`Font manifest request failed (${fontResponse.status}).`);
     const fonts = (await fontResponse.json()) as FontManifest;
-    const { installed: installedFonts, downloaded: downloadedFonts } = readInstalledFonts(storage, [
+    const requiredFontPaths = [
       ...(fonts.defaultFonts || (fonts.defaultFont ? [fonts.defaultFont] : [])),
       ...(fonts.builtInFonts || []),
-    ]);
+    ];
+    const { installed: installedFonts, downloaded: downloadedFonts } = readInstalledFonts(storage, requiredFontPaths);
     const fontInventory = fontAssets(fonts, version);
     const fontCatalog = fontInventory
       .filter((asset) => asset.path.startsWith('fonts/'))
@@ -490,7 +528,10 @@ export class RuntimeCacheController {
       fontFamilies,
       installedFonts,
       downloadedFonts,
+      requiredFontPaths,
+      cacheStorage,
     );
+    await controller.reconcileFontPackageCache();
     writeStoredProgress(
       storage,
       controller.version,
@@ -499,6 +540,7 @@ export class RuntimeCacheController {
       controller.lastVerifiedAt,
       controller.fontCatalog,
       controller.fontFamilies,
+      controller.requiredFontPaths,
     );
     return controller;
   }
@@ -554,7 +596,12 @@ export class RuntimeCacheController {
           name,
           bytes: fonts.reduce((total, font) => total + font.bytes, 0),
           paths: fonts.map((font) => font.path),
-          downloaded: fonts.length > 0 && fonts.every((font) => this.completed.has(font.path)),
+          downloaded:
+            fonts.length > 0 &&
+            [...fonts.map((font) => font.path), ...this.fontPackageSharedPaths].every((path) =>
+              this.completed.has(path),
+            ),
+          removable: fonts.some((font) => !this.fontPackageSharedPaths.includes(font.path)),
         };
       })
       .filter((family) => family.paths.length > 0);
@@ -567,16 +614,23 @@ export class RuntimeCacheController {
     const family = this.listFonts().find((candidate) => candidate.id === id);
     if (!family) throw new Error(`Unknown font family: ${id}`);
     let failedFiles = 0;
-    for (const path of family.paths) {
-      const font = this.fontCatalog.find((candidate) => candidate.path === path)!;
-      if (!this.assets.some((asset) => asset.path === path)) this.assets.push(font);
+    const packagePaths = [...new Set([...this.fontPackageSharedPaths, ...family.paths])];
+    for (const path of packagePaths) {
+      const asset =
+        this.assets.find((candidate) => candidate.path === path) ||
+        this.fontCatalog.find((candidate) => candidate.path === path);
+      if (!asset) {
+        failedFiles += 1;
+        continue;
+      }
+      if (!this.assets.some((candidate) => candidate.path === path)) this.assets.push(asset);
       if (this.completed.has(path)) continue;
 
       onProgress(this.getProgress('loading'));
       let verified = false;
       for (const cacheMode of ['force-cache', 'reload'] as const) {
         try {
-          await this.downloadAndVerify(font, cacheMode, () => onProgress(this.getProgress('loading')));
+          await this.downloadAndVerify(asset, cacheMode, () => onProgress(this.getProgress('loading')));
           verified = true;
           break;
         } catch {
@@ -590,8 +644,10 @@ export class RuntimeCacheController {
         continue;
       }
       this.completed.add(path);
-      this.installedFonts.add(path);
-      this.downloadedFonts.add(path);
+      if (path.startsWith('fonts/')) {
+        this.installedFonts.add(path);
+        if (!this.fontPackageSharedPaths.includes(path)) this.downloadedFonts.add(path);
+      }
     }
     writeDownloadedFonts(this.storage, this.downloadedFonts);
     writeStoredProgress(
@@ -602,6 +658,7 @@ export class RuntimeCacheController {
       this.lastVerifiedAt,
       this.fontCatalog,
       this.fontFamilies,
+      this.requiredFontPaths,
     );
     const progress = this.getProgress(
       failedFiles === 0 ? (this.isComplete() ? 'complete' : 'ready') : 'error',
@@ -609,6 +666,83 @@ export class RuntimeCacheController {
     );
     onProgress(progress);
     return progress;
+  }
+
+  async uninstallFontFamily(id: string): Promise<RuntimeCacheProgress> {
+    const family = this.listFonts().find((candidate) => candidate.id === id);
+    if (!family) throw new Error(`Unknown font family: ${id}`);
+    if (!family.downloaded || !family.removable) return this.getProgress(this.isComplete() ? 'complete' : 'ready');
+
+    const removablePaths = family.paths.filter((path) => !this.fontPackageSharedPaths.includes(path));
+    const cache = await this.openFontPackageCache();
+    for (const path of removablePaths) {
+      const asset = this.fontCatalog.find((candidate) => candidate.path === path);
+      if (!asset) continue;
+      if (cache) {
+        await Promise.all([
+          cache.delete(this.versionedUrl(asset)),
+          cache.delete(new URL(asset.path, window.location.origin).href),
+        ]);
+      }
+      this.completed.delete(path);
+      this.installedFonts.delete(path);
+      this.downloadedFonts.delete(path);
+      const assetIndex = this.assets.findIndex((candidate) => candidate.path === path);
+      if (assetIndex >= 0) this.assets.splice(assetIndex, 1);
+    }
+    writeDownloadedFonts(this.storage, this.downloadedFonts);
+    writeStoredProgress(
+      this.storage,
+      this.version,
+      this.completed,
+      this.assets,
+      this.lastVerifiedAt,
+      this.fontCatalog,
+      this.fontFamilies,
+      this.requiredFontPaths,
+    );
+    return this.getProgress(this.isComplete() ? 'complete' : 'ready');
+  }
+
+  private async openFontPackageCache(): Promise<Cache | undefined> {
+    if (!this.cacheStorage) return undefined;
+    this.fontPackageCachePromise ||= this.cacheStorage.open(`${FONT_PACKAGE_CACHE_PREFIX}${this.version}`);
+    return this.fontPackageCachePromise;
+  }
+
+  private async reconcileFontPackageCache(): Promise<void> {
+    if (!this.cacheStorage) return;
+    const cache = await this.openFontPackageCache();
+    if (!cache) return;
+    for (const asset of this.assets.filter((candidate) => candidate.category === 'fonts')) {
+      const requestUrl = this.versionedUrl(asset);
+      const cached = (await cache.match(requestUrl)) || (await this.cacheStorage.match(requestUrl));
+      if (cached) {
+        this.completed.add(asset.path);
+        if (!(await cache.match(requestUrl))) await cache.put(requestUrl, cached.clone());
+      } else {
+        this.completed.delete(asset.path);
+      }
+    }
+    const cacheNames = await this.cacheStorage.keys();
+    await Promise.all(
+      cacheNames
+        .filter(
+          (name) =>
+            name.startsWith(FONT_PACKAGE_CACHE_PREFIX) && name !== `${FONT_PACKAGE_CACHE_PREFIX}${this.version}`,
+        )
+        .map((name) => this.cacheStorage!.delete(name)),
+    );
+    writeStoredProgress(
+      this.storage,
+      this.version,
+      this.completed,
+      this.assets,
+      this.lastVerifiedAt,
+      this.fontCatalog,
+      this.fontFamilies,
+      this.requiredFontPaths,
+    );
   }
 
   private expectedIntegrity(asset: RuntimeCacheAsset): string | undefined {
@@ -653,7 +787,13 @@ export class RuntimeCacheController {
       mode: 'same-origin',
     });
     if (!response.ok) throw new Error(`${asset.path}: HTTP ${response.status}`);
-    return responseBytes(response, onChunk, this.expectedIntegrity(asset));
+    const cacheResponse = asset.category === 'fonts' ? response.clone() : null;
+    const received = await responseBytes(response, onChunk, this.expectedIntegrity(asset));
+    if (cacheResponse) {
+      const fontCache = await this.openFontPackageCache();
+      await fontCache?.put(this.versionedUrl(asset), cacheResponse);
+    }
+    return received;
   }
 
   async loadAll(onProgress: (progress: RuntimeCacheProgress) => void): Promise<RuntimeCacheProgress> {
@@ -714,6 +854,7 @@ export class RuntimeCacheController {
               this.lastVerifiedAt,
               this.fontCatalog,
               this.fontFamilies,
+              this.requiredFontPaths,
             );
             writesSinceFlush = 0;
           }
@@ -741,6 +882,7 @@ export class RuntimeCacheController {
       this.lastVerifiedAt,
       this.fontCatalog,
       this.fontFamilies,
+      this.requiredFontPaths,
     );
     const progress = this.getProgress(failedFiles === 0 && this.isComplete() ? 'complete' : 'error', failedFiles);
     onProgress(progress);
@@ -768,6 +910,7 @@ export class RuntimeCacheController {
             this.lastVerifiedAt,
             this.fontCatalog,
             this.fontFamilies,
+            this.requiredFontPaths,
           );
           try {
             await this.downloadAndVerify(asset, 'reload', () => undefined);
@@ -789,6 +932,7 @@ export class RuntimeCacheController {
       this.lastVerifiedAt,
       this.fontCatalog,
       this.fontFamilies,
+      this.requiredFontPaths,
     );
     const progress = this.getProgress(failedFiles === 0 ? 'complete' : 'error', failedFiles);
     onProgress(progress);

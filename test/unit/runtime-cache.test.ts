@@ -12,6 +12,42 @@ function response(body: BodyInit | null, init: ResponseInit = {}): Response {
   return new Response(body, { status: 200, ...init });
 }
 
+function memoryCacheStorage() {
+  const buckets = new Map<string, Map<string, Response>>();
+  const deleted: string[] = [];
+  const requestUrl = (request: RequestInfo | URL) =>
+    typeof request === 'string' ? request : request instanceof URL ? request.href : request.url;
+  const cacheFor = (bucket: Map<string, Response>) =>
+    ({
+      match: async (request: RequestInfo | URL) => bucket.get(requestUrl(request))?.clone(),
+      put: async (request: RequestInfo | URL, value: Response) => {
+        bucket.set(requestUrl(request), value.clone());
+      },
+      delete: async (request: RequestInfo | URL) => {
+        const url = requestUrl(request);
+        deleted.push(url);
+        return bucket.delete(url);
+      },
+    }) as unknown as Cache;
+  const storage = {
+    open: async (name: string) => {
+      const bucket = buckets.get(name) || new Map<string, Response>();
+      buckets.set(name, bucket);
+      return cacheFor(bucket);
+    },
+    match: async (request: RequestInfo | URL) => {
+      for (const bucket of buckets.values()) {
+        const value = bucket.get(requestUrl(request));
+        if (value) return value.clone();
+      }
+      return undefined;
+    },
+    keys: async () => [...buckets.keys()],
+    delete: async (name: string) => buckets.delete(name),
+  } as unknown as CacheStorage;
+  return { storage, buckets, deleted };
+}
+
 describe('RuntimeCacheController', () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -224,14 +260,25 @@ describe('RuntimeCacheController', () => {
         return response(
           JSON.stringify({
             defaultFonts: [],
-            builtInFonts: [],
+            builtInFonts: ['fonts/symbol.ttf'],
             fontFamilies: [{ name: 'Aptos', paths: ['fonts/aptos.ttf'] }],
             assets: [
+              {
+                path: 'sdkjs/common/Images/fonts_thumbnail.png',
+                bytes: 4,
+                revision: '9f64a747e1b97f13',
+              },
               {
                 path: 'fonts/aptos.ttf',
                 bytes: 4,
                 revision: '9f64a747e1b97f13',
                 families: ['Aptos'],
+              },
+              {
+                path: 'fonts/symbol.ttf',
+                bytes: 4,
+                revision: '9f64a747e1b97f13',
+                families: ['OpenSymbol'],
               },
             ],
           }),
@@ -244,9 +291,77 @@ describe('RuntimeCacheController', () => {
     const result = await controller.downloadFontFamily('aptos', () => undefined);
 
     expect(result.phase).toBe('ready');
-    expect(result.completedFiles).toBe(1);
-    expect(result.totalFiles).toBe(runtimeAssets.length + 2);
+    expect(result.completedFiles).toBe(4);
+    expect(result.totalFiles).toBe(runtimeAssets.length + 4);
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes('sdkjs/common/Images/fonts_thumbnail.png')),
+    ).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('fonts/symbol.ttf'))).toBe(true);
+    expect(controller.listFonts()).toEqual([
+      expect.objectContaining({
+        name: 'Aptos',
+        downloaded: true,
+      }),
+    ]);
     expect(controller.isComplete()).toBe(false);
+  });
+
+  it('precisely removes an optional family from the parent font package cache', async () => {
+    const cacheStorage = memoryCacheStorage();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/onlyoffice-runtime-assets.json') {
+        return response(
+          JSON.stringify({
+            version: 2,
+            generatedAt: '2026-07-28T00:00:00.000Z',
+            assets: runtimeAssets,
+          }),
+          { headers: { 'X-OnlyOffice-Asset-Version': 'font-remove-v1' } },
+        );
+      }
+      if (url.pathname === '/onlyoffice-browser-font-assets.json') {
+        return response(
+          JSON.stringify({
+            defaultFonts: ['fonts/default.ttf'],
+            builtInFonts: [],
+            fontFamilies: [
+              { name: 'Microsoft YaHei', paths: ['fonts/default.ttf'] },
+              { name: 'Arial', paths: ['fonts/arial.ttf'] },
+            ],
+            assets: [
+              { path: 'fonts/default.ttf', bytes: 4, revision: '9f64a747e1b97f13' },
+              { path: 'fonts/arial.ttf', bytes: 4, revision: '9f64a747e1b97f13' },
+            ],
+          }),
+        );
+      }
+      return response(new Uint8Array([1, 2, 3, 4]));
+    });
+    const controller = await RuntimeCacheController.create(
+      window.localStorage,
+      fetchMock as unknown as typeof fetch,
+      cacheStorage.storage,
+    );
+
+    await controller.downloadFontFamily('arial', () => undefined);
+    expect(controller.listFonts().find((font) => font.name === 'Arial')).toMatchObject({
+      downloaded: true,
+      removable: true,
+    });
+
+    await controller.uninstallFontFamily('arial');
+
+    expect(controller.listFonts().find((font) => font.name === 'Arial')).toMatchObject({
+      downloaded: false,
+      removable: true,
+    });
+    expect(controller.assets.some((asset) => asset.path === 'fonts/arial.ttf')).toBe(false);
+    expect(cacheStorage.deleted.some((url) => url.includes('/fonts/arial.ttf?__oobv=9f64a747e1b97f13'))).toBe(true);
+    expect(JSON.parse(window.localStorage.getItem('onlyoffice-browser:installed-fonts') || 'null')).toEqual({
+      version: 2,
+      downloaded: [],
+    });
   });
 
   it('recovers from a stale v1 manifest cached by an older service worker', async () => {
@@ -293,6 +408,7 @@ describe('RuntimeCacheController', () => {
         assets,
         fontCatalog: [],
         fontFamilies: [],
+        requiredFonts: [],
       }),
     );
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -326,6 +442,7 @@ describe('RuntimeCacheController', () => {
         lastVerifiedAt: 0,
         fontCatalog: [],
         fontFamilies: [],
+        requiredFonts: [],
       }),
     );
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -367,6 +484,7 @@ describe('RuntimeCacheController', () => {
         lastVerifiedAt: 0,
         fontCatalog: [],
         fontFamilies: [],
+        requiredFonts: [],
       }),
     );
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {

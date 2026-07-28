@@ -4,6 +4,7 @@ import {
   assertGeneratedFontAssetsAvailable,
   fetchGeneratedFontAssetsManifest,
   fetchRuntimeBinaryAsset,
+  resolveAvailableFontFamilyNames,
   resolveRuntimeAssetCacheMode,
 } from '../../src/lib/font-assets';
 
@@ -74,5 +75,25 @@ describe('generated font assets runtime checks', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { status: 200 })));
 
     await expect(fetchRuntimeBinaryAsset('fonts/000.ttf')).resolves.toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('derives picker families from verified font paths instead of the static catalog', () => {
+    const manifest = {
+      ...MANIFEST,
+      defaultFonts: ['fonts/000.ttf', 'fonts/001.ttf'],
+      builtInFonts: ['fonts/symbol.ttf'],
+      fontFamilies: [
+        { name: 'Microsoft YaHei', paths: ['fonts/000.ttf', 'fonts/001.ttf'] },
+        { name: 'Arial', paths: ['fonts/002.ttf', 'fonts/003.ttf'] },
+        { name: 'Calibri', paths: ['fonts/004.ttf'] },
+      ],
+    };
+
+    expect(resolveAvailableFontFamilyNames(manifest, [])).toEqual(['Microsoft YaHei']);
+    expect(resolveAvailableFontFamilyNames(manifest, ['fonts/002.ttf'])).toEqual(['Microsoft YaHei']);
+    expect(resolveAvailableFontFamilyNames(manifest, ['fonts/002.ttf', 'fonts/003.ttf'])).toEqual([
+      'Microsoft YaHei',
+      'Arial',
+    ]);
   });
 });

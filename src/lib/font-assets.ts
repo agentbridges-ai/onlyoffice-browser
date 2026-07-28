@@ -23,6 +23,10 @@ export interface GeneratedFontAssetsManifest {
   fontThumbnails: string[];
   fonts: string[];
   fontSourceMap?: string;
+  defaultFont?: string;
+  defaultFonts?: string[];
+  builtInFonts?: string[];
+  fontFamilies?: Array<{ name: string; paths: string[] }>;
 }
 
 const FONT_ASSETS_SETUP_HINT =
@@ -66,6 +70,19 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string' && item.length > 0);
 }
 
+function isFontFamilyArray(value: unknown): value is Array<{ name: string; paths: string[] }> {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (family) =>
+        family &&
+        typeof family === 'object' &&
+        typeof (family as { name?: unknown }).name === 'string' &&
+        isStringArray((family as { paths?: unknown }).paths),
+    )
+  );
+}
+
 function validateManifest(value: unknown): GeneratedFontAssetsManifest {
   if (!value || typeof value !== 'object') {
     throw createMissingFontAssetsError(`${GENERATED_FONT_ASSETS_MANIFEST} is not a JSON object`);
@@ -87,8 +104,36 @@ function validateManifest(value: unknown): GeneratedFontAssetsManifest {
   if (!isStringArray(manifest.fonts) || manifest.fonts.length === 0) {
     throw createMissingFontAssetsError(`${GENERATED_FONT_ASSETS_MANIFEST} is missing fonts`);
   }
+  if (manifest.defaultFonts !== undefined && !isStringArray(manifest.defaultFonts)) {
+    throw createMissingFontAssetsError(`${GENERATED_FONT_ASSETS_MANIFEST} has invalid defaultFonts`);
+  }
+  if (manifest.builtInFonts !== undefined && !isStringArray(manifest.builtInFonts)) {
+    throw createMissingFontAssetsError(`${GENERATED_FONT_ASSETS_MANIFEST} has invalid builtInFonts`);
+  }
+  if (manifest.fontFamilies !== undefined && !isFontFamilyArray(manifest.fontFamilies)) {
+    throw createMissingFontAssetsError(`${GENERATED_FONT_ASSETS_MANIFEST} has invalid fontFamilies`);
+  }
 
   return manifest as GeneratedFontAssetsManifest;
+}
+
+/**
+ * Resolve picker-visible families from the verified font paths supplied by the
+ * embedding application. AllFonts.js remains the glyph-index source, but it is
+ * deliberately not the authority for runtime font availability.
+ */
+export function resolveAvailableFontFamilyNames(
+  manifest: GeneratedFontAssetsManifest,
+  verifiedFontPaths: string[],
+): string[] {
+  const availablePaths = new Set([
+    ...(manifest.defaultFonts || (manifest.defaultFont ? [manifest.defaultFont] : [])),
+    ...(manifest.builtInFonts || []),
+    ...verifiedFontPaths,
+  ]);
+  return (manifest.fontFamilies || [])
+    .filter((family) => family.paths.length > 0 && family.paths.every((path) => availablePaths.has(path)))
+    .map((family) => family.name);
 }
 
 export async function fetchGeneratedFontAssetsManifest(): Promise<GeneratedFontAssetsManifest> {

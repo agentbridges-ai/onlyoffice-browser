@@ -17,7 +17,7 @@ import {
   LOCAL_ONLYOFFICE_USER_NAME,
 } from './onlyoffice-mock-server';
 import type { BinConversionResult, DocumentMediaMap, SaveEvent } from './document-types';
-import { assertGeneratedFontAssetsAvailable } from './font-assets';
+import { assertGeneratedFontAssetsAvailable, resolveAvailableFontFamilyNames } from './font-assets';
 
 const ONLYOFFICE_BROWSER_BUILD_VERSION = '9.3.0';
 const ONLYOFFICE_BROWSER_BUILD_NUMBER = 140;
@@ -112,6 +112,8 @@ export interface CreateOfficeEditorOptions {
   interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
   plugins?: OfficePluginOptions;
+  /** Picker-visible families derived from font files verified by the host. */
+  visibleFontNames?: string[];
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
   onReady?: (instance: OfficeEditorInstance) => void;
@@ -1747,13 +1749,15 @@ function getFontNameForFilter(font: unknown): string {
   return '';
 }
 
-function installFontPickerFilter(frameWindow: OnlyOfficeFrameWindow): boolean {
-  const visibleNames =
-    Array.isArray(frameWindow.__fonts_visible_names) &&
-    frameWindow.__fonts_visible_names.every((name) => typeof name === 'string')
-      ? new Set(frameWindow.__fonts_visible_names)
-      : null;
-  if (!visibleNames || visibleNames.size === 0) return true;
+export function filterEditorFontsByVisibleNames(guiFonts: unknown[], visibleNames: ReadonlySet<string>): unknown[] {
+  return guiFonts.filter((font) => {
+    const name = getFontNameForFilter(font);
+    return name ? visibleNames.has(name) : false;
+  });
+}
+
+function installFontPickerFilter(frameWindow: OnlyOfficeFrameWindow, configuredNames?: string[]): boolean {
+  const visibleNames = new Set(configuredNames || []);
 
   const prototype = frameWindow.AscCommon?.baseEditorsApi?.prototype;
   const original = prototype?.sync_InitEditorFonts;
@@ -1761,19 +1765,14 @@ function installFontPickerFilter(frameWindow: OnlyOfficeFrameWindow): boolean {
   if (prototype.__onlyOfficeBrowserFontPickerFilter) return true;
 
   prototype.sync_InitEditorFonts = function syncInitEditorFontsWithFilter(this: unknown, guiFonts: unknown[]) {
-    const filteredFonts = Array.isArray(guiFonts)
-      ? guiFonts.filter((font) => {
-          const name = getFontNameForFilter(font);
-          return name ? visibleNames.has(name) : false;
-        })
-      : guiFonts;
+    const filteredFonts = Array.isArray(guiFonts) ? filterEditorFontsByVisibleNames(guiFonts, visibleNames) : guiFonts;
     return original.call(this, filteredFonts);
   };
   prototype.__onlyOfficeBrowserFontPickerFilter = true;
   return true;
 }
 
-function installNestedFontPickerFilter(): void {
+function installNestedFontPickerFilter(visibleFontNames?: string[]): void {
   const startedAt = Date.now();
   const timeoutMs = 10_000;
   const intervalMs = 50;
@@ -1783,7 +1782,7 @@ function installNestedFontPickerFilter(): void {
     const frameWindow = frame?.contentWindow as OnlyOfficeFrameWindow | null | undefined;
     if (frameWindow) {
       try {
-        if (installFontPickerFilter(frameWindow)) return;
+        if (installFontPickerFilter(frameWindow, visibleFontNames)) return;
       } catch {
         return;
       }
@@ -1963,12 +1962,16 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   static async create(container: HTMLElement, options: CreateOfficeEditorOptions): Promise<BrowserOfficeEditor> {
-    await assertGeneratedFontAssetsAvailable();
+    const fontManifest = await assertGeneratedFontAssetsAvailable();
     await loadOfficeEditorApi();
     await initX2T();
-    const prepared = await prepareDocument(options);
+    const resolvedOptions: CreateOfficeEditorOptions = {
+      ...options,
+      visibleFontNames: options.visibleFontNames || resolveAvailableFontFamilyNames(fontManifest, []),
+    };
+    const prepared = await prepareDocument(resolvedOptions);
     const placeholder = document.createElement('div');
-    const instance = new BrowserOfficeEditor(container, options, prepared, placeholder);
+    const instance = new BrowserOfficeEditor(container, resolvedOptions, prepared, placeholder);
     await instance.mount();
     return instance;
   }
@@ -1992,7 +1995,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     activeInstances.set(this.id, this);
 
     try {
-      installNestedFontPickerFilter();
+      installNestedFontPickerFilter(this.options.visibleFontNames);
       const defaultZoom = getDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       persistDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       const uiTheme = normalizeOfficeInterfaceTheme(this.options.interfaceTheme);
@@ -2061,7 +2064,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           onAppReady: () => {
             this.applyNestedEditorFrameDefaults();
             this.installModernThemeFilter();
-            installNestedFontPickerFilter();
+            installNestedFontPickerFilter(this.options.visibleFontNames);
             this.installSpreadsheetPdfPrintPanelBridge();
             this.installNativeEditModeBridge();
             this.scheduleNativeDownloadAsInterceptor();
@@ -2070,7 +2073,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             if (this.destroyed) return;
             this.applyNestedEditorFrameDefaults();
             this.installModernThemeFilter();
-            installNestedFontPickerFilter();
+            installNestedFontPickerFilter(this.options.visibleFontNames);
             this.installSpreadsheetPdfPrintPanelBridge();
             this.installNativeEditModeBridge();
             this.scheduleNativeDownloadAsInterceptor();

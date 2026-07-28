@@ -72,8 +72,8 @@ app.innerHTML = `
       <section class="font-downloads" aria-labelledby="font-downloads-title">
         <h3 id="font-downloads-title">Font family</h3>
         <p>
-          Microsoft YaHei is the default fallback. Compatibility and symbol fonts are built in;
-          download other document font families when needed.
+          Microsoft YaHei is the default fallback. The first font package also installs the shared
+          thumbnails, indexes, and compatibility fonts once; later families reuse them.
         </p>
         <div id="font-download-list" class="font-download-list"></div>
       </section>
@@ -195,19 +195,33 @@ function renderFontDownloads(): void {
       label.textContent = `${font.name} · ${formatBytes(font.bytes)}`;
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = font.downloaded ? 'Downloaded' : 'Download';
-      button.disabled = font.downloaded;
+      button.textContent = font.downloaded ? (font.removable ? 'Remove' : 'Downloaded') : 'Download';
+      button.disabled = font.downloaded && !font.removable;
       button.addEventListener('click', async () => {
         if (!runtimeCacheController) return;
         button.disabled = true;
-        button.textContent = 'Downloading…';
-        if (navigator.storage?.persist) await navigator.storage.persist();
-        await runtimeCacheController.downloadFontFamily(font.id, renderCacheProgress);
+        if (font.downloaded && font.removable) {
+          button.textContent = 'Removing…';
+          renderCacheProgress(await runtimeCacheController.uninstallFontFamily(font.id));
+        } else {
+          button.textContent = 'Downloading…';
+          if (navigator.storage?.persist) await navigator.storage.persist();
+          await runtimeCacheController.downloadFontFamily(font.id, renderCacheProgress);
+        }
         renderFontDownloads();
       });
       row.append(label, button);
       return row;
     }),
+  );
+}
+
+function verifiedFontPaths(): string[] {
+  return (
+    runtimeCacheController
+      ?.listFonts()
+      .filter((font) => font.downloaded)
+      .flatMap((font) => font.paths) || []
   );
 }
 
@@ -267,6 +281,7 @@ async function initializeRuntimeCache(): Promise<void> {
       showCacheDialog();
     } else if (runtimeCacheController.shouldCheckHealth()) {
       void runtimeCacheController.checkHealth(renderCacheProgress).then((health) => {
+        renderFontDownloads();
         if (health.phase === 'error') showCacheDialog();
       });
     }
@@ -362,10 +377,7 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
     instance = await createOfficeEditor(slot, {
       ...options,
       hostUrl: defaultOfficeHostUrl,
-      downloadedFonts: runtimeCacheController
-        ?.listFonts()
-        .filter((font) => font.downloaded)
-        .flatMap((font) => font.paths),
+      downloadedFonts: verifiedFontPaths(),
       saveBehavior: options.saveBehavior || 'download',
       hardResetOnLastDestroy,
       onReady: (readyInstance) => {
