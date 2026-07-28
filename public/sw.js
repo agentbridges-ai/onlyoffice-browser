@@ -43,25 +43,10 @@ const cacheSlotPaths = async (cache, paths, requestForPath) => {
   await Promise.all(workers);
 };
 
-const canonicalSlotResponse = async (path, version) => {
-  const url = new URL(path, `https://${CANONICAL_OFFICE_HOST}`);
-  url.searchParams.set('__oobv', version);
-  const response = await fetch(url.href, { cache: 'force-cache' });
-  if (!response.ok) return response;
-  const headers = new Headers(response.headers);
-  headers.delete('content-encoding');
-  headers.delete('content-length');
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-};
-
 const prewarmFixedSlot = async (version, shellPaths, runtimePaths) => {
   const cache = await caches.open(CACHE_NAME);
   await cacheSlotPaths(cache, shellPaths, (path) => fetch(fixedSlotShellRequest(path)));
-  await cacheSlotPaths(cache, runtimePaths, (path) => canonicalSlotResponse(path, version));
+  await cacheSlotPaths(cache, runtimePaths, (path) => fetch(fixedSlotShellRequest(path)));
   const meta = await caches.open(FIXED_OFFLINE_SLOT_META_CACHE);
   await meta.put(
     FIXED_OFFLINE_SLOT_VERSION_KEY,
