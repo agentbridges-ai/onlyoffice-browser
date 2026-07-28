@@ -5,6 +5,7 @@ const PRINT_PDF_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
 const ASSETS_TO_CACHE = ['./plugins.json', './themes.json'];
 const ONLYOFFICE_RUNTIME_ASSET_REGEX = /(^|\/)(web-apps|sdkjs|wasm\/x2t)\//;
 const ONLYOFFICE_NAVIGATION_PATHS = new Set(['/office-host.html', '/reset.html']);
+const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html']);
 const ONLYOFFICE_RUNTIME_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const FIXED_OFFLINE_SLOT_HOSTS = new Set(['office-misaka.getpi.work', 'office-pectics.getpi.work']);
 const FIXED_OFFLINE_SLOT_MESSAGE = 'onlyoffice-slot-prewarm-v1';
@@ -18,6 +19,21 @@ const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work';
 const MAX_CACHE_ITEMS = 100;
 
 const isFixedOfflineSlot = FIXED_OFFLINE_SLOT_HOSTS.has(self.location.hostname);
+const isCanonicalPwaHost = self.location.hostname === CANONICAL_OFFICE_HOST;
+
+const precachePwaShell = async (cache) => {
+  const indexUrl = new URL('/index.html', self.location.origin);
+  const response = await fetch(new Request(indexUrl.href, { cache: 'reload' }));
+  if (!response.ok) throw new Error(`PWA shell request failed (${response.status}): ${indexUrl.pathname}`);
+  const html = await response.clone().text();
+  const assetUrls = [...html.matchAll(/(?:src|href)=["']([^"']+)["']/g)]
+    .map((match) => new URL(match[1], indexUrl))
+    .filter((url) => url.origin === self.location.origin)
+    .map((url) => url.href);
+  await cache.put(indexUrl.href, response.clone());
+  await cache.put(new URL('/', self.location.origin).href, response);
+  await cache.addAll([...new Set(assetUrls)]);
+};
 
 const readFixedSlotVersion = async () => {
   const cache = await caches.open(FIXED_OFFLINE_SLOT_META_CACHE);
@@ -194,7 +210,9 @@ self.addEventListener('install', (event) => {
     isFixedOfflineSlot
       ? Promise.resolve()
       : caches.open(CACHE_NAME).then((cache) => {
-          return cache.addAll(ASSETS_TO_CACHE);
+          return cache
+            .addAll(ASSETS_TO_CACHE)
+            .then(() => (isCanonicalPwaHost ? precachePwaShell(cache) : undefined));
         }),
   );
   self.skipWaiting();
@@ -243,12 +261,18 @@ self.addEventListener('fetch', (event) => {
   // 3. Only handle GET requests for all other routes.
   if (event.request.method !== 'GET') return;
 
-  // 4. Only the Office host documents are allowed to be handled as navigations.
-  // Do not cache or serve the parent application's root/login page from an
-  // isolated host subdomain.
+  const isCanonicalPwaNavigation =
+    isCanonicalPwaHost &&
+    event.request.mode === 'navigate' &&
+    PWA_APP_NAVIGATION_PATHS.has(url.pathname);
+
+  // 4. Only Office host documents and this deployment's canonical PWA shell
+  // are handled as navigations. A broad integration scope must not intercept
+  // another application's root or login page.
   if (
     event.request.mode === 'navigate' &&
     !ONLYOFFICE_NAVIGATION_PATHS.has(url.pathname) &&
+    !isCanonicalPwaNavigation &&
     !isFixedOfflineSlot
   ) {
     return;
@@ -273,6 +297,26 @@ self.addEventListener('fetch', (event) => {
   // 6. Skip caching for requests with dynamic parameters (like ?file= or ?src=)
   // These are typically documents being edited, which should always be fresh.
   if (url.searchParams.has('file') || url.searchParams.has('src')) return;
+
+  if (isCanonicalPwaNavigation) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            caches.open(CACHE_NAME).then((cache) =>
+              cache.put(new URL('/index.html', self.location.origin).href, response.clone()),
+            );
+          }
+          return response;
+        })
+        .catch(() =>
+          caches.open(CACHE_NAME).then((cache) =>
+            cache.match(new URL('/index.html', self.location.origin).href),
+          ),
+        ),
+    );
+    return;
+  }
 
   // Fixed editor slots keep only their small origin-bound shell locally. All
   // remaining runtime requests are rewritten to the versioned canonical host,

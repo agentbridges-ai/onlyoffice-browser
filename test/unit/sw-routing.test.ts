@@ -95,6 +95,9 @@ describe('SW fetch routing', () => {
     expect(sw).toContain('onlyoffice-slot-prewarm-v1');
     expect(sw).toContain('/__onlyoffice-slot-ready__');
     expect(sw).toContain('requestedPaths.every((path) => cachedPaths.has(path))');
+    expect(sw).toContain("const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html'])");
+    expect(sw).toContain('precachePwaShell(cache)');
+    expect(sw).toContain('isCanonicalPwaNavigation');
     expect(sw).toContain("canonical.hostname = CANONICAL_OFFICE_HOST");
     expect(sw).toContain('!isFixedOfflineSlot');
   });
