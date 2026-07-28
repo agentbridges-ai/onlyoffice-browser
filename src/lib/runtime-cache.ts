@@ -250,25 +250,42 @@ function writeStoredProgress(
   );
 }
 
-function readInstalledFonts(storage: Storage, defaultFonts: string[]): Set<string> {
+function readInstalledFonts(
+  storage: Storage,
+  requiredFonts: string[],
+): { installed: Set<string>; downloaded: Set<string> } {
   try {
     const stored = JSON.parse(storage.getItem(INSTALLED_FONTS_STORAGE_KEY) || 'null');
-    if (Array.isArray(stored)) {
-      const installed = new Set(stored.filter(isSafeAssetPath));
-      for (const path of defaultFonts.filter(isSafeAssetPath)) installed.add(path);
-      writeInstalledFonts(storage, installed);
-      return installed;
+    if (stored?.version === 2 && Array.isArray(stored.downloaded)) {
+      const downloaded = new Set<string>(stored.downloaded.filter(isSafeAssetPath));
+      return {
+        installed: new Set([...requiredFonts.filter(isSafeAssetPath), ...downloaded]),
+        downloaded,
+      };
     }
   } catch {
-    // Fall through to the compact default.
+    // Fall through to the compact required set.
   }
-  const installed = new Set(defaultFonts.filter(isSafeAssetPath));
-  storage.setItem(INSTALLED_FONTS_STORAGE_KEY, JSON.stringify([...installed]));
-  return installed;
+  // Version 1 stored required and user-selected fonts in one array, so it
+  // cannot distinguish an intentional download from a formerly over-broad
+  // built-in set. Reset that ambiguous ledger once and let the current
+  // manifest define required fonts precisely.
+  const downloaded = new Set<string>();
+  writeDownloadedFonts(storage, downloaded);
+  return {
+    installed: new Set(requiredFonts.filter(isSafeAssetPath)),
+    downloaded,
+  };
 }
 
-function writeInstalledFonts(storage: Storage, installed: Set<string>): void {
-  storage.setItem(INSTALLED_FONTS_STORAGE_KEY, JSON.stringify([...installed]));
+function writeDownloadedFonts(storage: Storage, downloaded: Set<string>): void {
+  storage.setItem(
+    INSTALLED_FONTS_STORAGE_KEY,
+    JSON.stringify({
+      version: 2,
+      downloaded: [...downloaded],
+    }),
+  );
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -315,6 +332,7 @@ export class RuntimeCacheController {
   private readonly storage: Storage;
   private readonly fetchImpl: typeof fetch;
   private readonly installedFonts: Set<string>;
+  private readonly downloadedFonts: Set<string>;
   private lastVerifiedAt: number;
 
   private constructor(
@@ -327,6 +345,7 @@ export class RuntimeCacheController {
     fontCatalog: RuntimeFontPackage[] = [],
     fontFamilies: RuntimeFontFamilyDefinition[] = [],
     installedFonts = new Set<string>(),
+    downloadedFonts = new Set<string>(),
   ) {
     this.assets = assets;
     this.fontCatalog = fontCatalog;
@@ -337,6 +356,7 @@ export class RuntimeCacheController {
     this.completed = completed || readStoredProgress(storage, version).completed;
     this.lastVerifiedAt = lastVerifiedAt;
     this.installedFonts = installedFonts;
+    this.downloadedFonts = downloadedFonts;
   }
 
   static async create(
@@ -358,7 +378,7 @@ export class RuntimeCacheController {
       '';
     const stored = deployedVersion ? readStoredProgress(storage, deployedVersion) : null;
     if (stored?.assets && stored.fontCatalog && stored.fontFamilies) {
-      const installedFonts = readInstalledFonts(storage, []);
+      const { installed: installedFonts, downloaded: downloadedFonts } = readInstalledFonts(storage, []);
       return new RuntimeCacheController(
         stored.assets,
         deployedVersion,
@@ -369,6 +389,7 @@ export class RuntimeCacheController {
         stored.fontCatalog,
         stored.fontFamilies,
         installedFonts,
+        downloadedFonts,
       );
     }
 
@@ -407,7 +428,7 @@ export class RuntimeCacheController {
     });
     if (!fontResponse.ok) throw new Error(`Font manifest request failed (${fontResponse.status}).`);
     const fonts = (await fontResponse.json()) as FontManifest;
-    const installedFonts = readInstalledFonts(storage, [
+    const { installed: installedFonts, downloaded: downloadedFonts } = readInstalledFonts(storage, [
       ...(fonts.defaultFonts || (fonts.defaultFont ? [fonts.defaultFont] : [])),
       ...(fonts.builtInFonts || []),
     ]);
@@ -468,6 +489,7 @@ export class RuntimeCacheController {
       fontCatalog,
       fontFamilies,
       installedFonts,
+      downloadedFonts,
     );
     writeStoredProgress(
       storage,
@@ -569,8 +591,9 @@ export class RuntimeCacheController {
       }
       this.completed.add(path);
       this.installedFonts.add(path);
+      this.downloadedFonts.add(path);
     }
-    writeInstalledFonts(this.storage, this.installedFonts);
+    writeDownloadedFonts(this.storage, this.downloadedFonts);
     writeStoredProgress(
       this.storage,
       this.version,
@@ -580,7 +603,10 @@ export class RuntimeCacheController {
       this.fontCatalog,
       this.fontFamilies,
     );
-    const progress = this.getProgress(failedFiles === 0 ? 'complete' : 'error', failedFiles);
+    const progress = this.getProgress(
+      failedFiles === 0 ? (this.isComplete() ? 'complete' : 'ready') : 'error',
+      failedFiles,
+    );
     onProgress(progress);
     return progress;
   }

@@ -47,7 +47,9 @@ The default visible font list is fixed to:
 
 Hosts that need an even narrower font picker may filter the generated `__fonts_visible_names` at the application layer. Do not remove hidden symbol font registrations.
 
-These hidden fonts must remain registered but should stay out of the font picker:
+These hidden fonts remain registered but stay out of the font picker. Registration
+does not imply startup download: ordinary text compatibility fonts can remain
+on-demand, while structural symbols and script fallbacks are built in.
 
 - `Symbol`
 - `Wingdings`
@@ -65,7 +67,11 @@ These hidden fonts must remain registered but should stay out of the font picker
 - `DejaVu Sans` (Unicode arrows and geometric/dingbat fallback used by `AllFonts.js`)
 - `Cambria Math`
 
-This compact profile still keeps a mandatory fallback chain: DejaVu Sans for common Unicode, Symbola/OpenSymbol for broad symbol coverage, and the selected CJK families for Chinese characters. A single font cannot cover all of Unicode, so compaction must never remap these fallback sources to the Latin default.
+The startup set contains the complete Microsoft YaHei family plus Japanese,
+Korean, Arabic, emoji, math, and Office symbol fallbacks. Ordinary families
+such as SimSun, FangSong, Consolas, and DejaVu Sans remain available on demand.
+A single font cannot cover all of Unicode, so compaction must never remap the
+built-in structural and script fallbacks to the Latin default.
 
 Known pitfalls:
 

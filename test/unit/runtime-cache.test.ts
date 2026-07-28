@@ -162,6 +162,93 @@ describe('RuntimeCacheController', () => {
     expect(downloadedAssetUrls).toEqual([expect.stringContaining('sdkjs/word/word.js?__oobv=ee10da4aefe61a37')]);
   });
 
+  it('drops the ambiguous v1 font ledger when a narrower built-in set is released', async () => {
+    window.localStorage.setItem(
+      'onlyoffice-browser:installed-fonts',
+      JSON.stringify(['fonts/default.ttf', 'fonts/formerly-built-in.ttf']),
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/onlyoffice-runtime-assets.json') {
+        return response(
+          JSON.stringify({
+            version: 2,
+            generatedAt: '2026-07-28T00:00:00.000Z',
+            assets: runtimeAssets,
+          }),
+          { headers: { 'X-OnlyOffice-Asset-Version': 'font-ledger-v2' } },
+        );
+      }
+      if (url.pathname === '/onlyoffice-browser-font-assets.json') {
+        return response(
+          JSON.stringify({
+            defaultFonts: ['fonts/default.ttf'],
+            builtInFonts: ['fonts/symbol.ttf'],
+            fontFamilies: [],
+            assets: [
+              { path: 'fonts/default.ttf', bytes: 4, revision: '9f64a747e1b97f13' },
+              { path: 'fonts/symbol.ttf', bytes: 4, revision: '9f64a747e1b97f13' },
+              { path: 'fonts/formerly-built-in.ttf', bytes: 4, revision: '9f64a747e1b97f13' },
+            ],
+          }),
+        );
+      }
+      return response(null);
+    });
+
+    const controller = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
+
+    expect(controller.assets.map((asset) => asset.path)).toContain('fonts/default.ttf');
+    expect(controller.assets.map((asset) => asset.path)).toContain('fonts/symbol.ttf');
+    expect(controller.assets.map((asset) => asset.path)).not.toContain('fonts/formerly-built-in.ttf');
+    expect(JSON.parse(window.localStorage.getItem('onlyoffice-browser:installed-fonts') || 'null')).toEqual({
+      version: 2,
+      downloaded: [],
+    });
+  });
+
+  it('does not report the whole runtime complete after downloading one optional font family', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/onlyoffice-runtime-assets.json') {
+        return response(
+          JSON.stringify({
+            version: 2,
+            generatedAt: '2026-07-28T00:00:00.000Z',
+            assets: runtimeAssets,
+          }),
+          { headers: { 'X-OnlyOffice-Asset-Version': 'optional-font-v1' } },
+        );
+      }
+      if (url.pathname === '/onlyoffice-browser-font-assets.json') {
+        return response(
+          JSON.stringify({
+            defaultFonts: [],
+            builtInFonts: [],
+            fontFamilies: [{ name: 'Aptos', paths: ['fonts/aptos.ttf'] }],
+            assets: [
+              {
+                path: 'fonts/aptos.ttf',
+                bytes: 4,
+                revision: '9f64a747e1b97f13',
+                families: ['Aptos'],
+              },
+            ],
+          }),
+        );
+      }
+      return response(new Uint8Array([1, 2, 3, 4]));
+    });
+    const controller = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
+
+    const result = await controller.downloadFontFamily('aptos', () => undefined);
+
+    expect(result.phase).toBe('ready');
+    expect(result.completedFiles).toBe(1);
+    expect(result.totalFiles).toBe(runtimeAssets.length + 2);
+    expect(controller.isComplete()).toBe(false);
+  });
+
   it('recovers from a stale v1 manifest cached by an older service worker', async () => {
     let runtimeRequests = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -21,7 +21,7 @@ interface GeneratorModule {
   collectFontFiles(inputDir: string): string[];
   dockerGenerationScript(options: { fontSet: string; keepFonts: string[] }): string;
   generateOnlyOfficeFontAssets(options: GeneratorOptions): void;
-  readGeneratedBuiltInFonts(source: string, keptFamilyNames: string[]): string[];
+  readGeneratedBuiltInFonts(source: string, builtInFamilyNames: string[]): string[];
   readGeneratedFallbackFonts(source: string): Record<string, string[]>;
   readGeneratedFontFamilies(source: string): Array<{ name: string; paths: string[] }>;
   isSupportedFontFileName(fileName: string): boolean;
@@ -229,6 +229,17 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(script).toContain('"styles": sorted(styles_by_source_index.get(old_index, set()))');
     expect(script).toContain('visible_family_names = {info[0] for info in web_infos');
     expect(script).toContain('"visibleFamilies": sorted(visible_family_names)');
+  });
+
+  it('does not derive the default download set from every hidden compatibility family', () => {
+    const source = fs.readFileSync(path.resolve('scripts/generate-onlyoffice-font-assets.mjs'), 'utf8');
+
+    expect(source).toContain('const builtInFonts = readGeneratedBuiltInFonts(allFontsSource, BUILT_IN_FONT_FAMILIES);');
+    expect(source).not.toContain('readGeneratedBuiltInFonts(allFontsSource, fontSourceMapValue.keptFamilies');
+    expect(source).toMatch(/const BUILT_IN_FONT_FAMILIES = \[[\s\S]*?'Noto Sans KR',[\s\S]*?'Wingdings 3',[\s\S]*?\];/);
+    expect(source).not.toMatch(/const BUILT_IN_FONT_FAMILIES = \[[\s\S]*?'FangSong'/);
+    expect(source).not.toMatch(/const BUILT_IN_FONT_FAMILIES = \[[\s\S]*?'NSimSun'/);
+    expect(source).not.toMatch(/const BUILT_IN_FONT_FAMILIES = \[[\s\S]*?'SimSun-ExtB'/);
   });
 
   it('stages input fonts before cleaning the output directory', () => {

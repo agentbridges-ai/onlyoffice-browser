@@ -58,6 +58,32 @@ const ZH_CORE_HIDDEN_FONT_FAMILIES = [
   'Wingdings 2',
   'Wingdings 3',
 ];
+// These families are required for document structure, script coverage, or
+// symbol fidelity and must be available before a user downloads an optional
+// font family. Keep this narrower than ZH_CORE_HIDDEN_FONT_FAMILIES: the latter
+// also contains compatibility aliases used for fallback mapping and must not
+// silently turn ordinary fonts such as SimSun or FangSong into default assets.
+const BUILT_IN_FONT_FAMILIES = [
+  'ASCW3',
+  'Bookshelf Symbol 7',
+  'Cambria Math',
+  'Marlett',
+  'Monotype Sorts',
+  'MS Reference Specialty',
+  'MT Extra',
+  'MS Gothic',
+  'Noto Emoji',
+  'Noto Naskh Arabic',
+  'Noto Sans KR',
+  'OpenSymbol',
+  'Segoe UI Symbol',
+  'Symbol',
+  'Symbola',
+  'Webdings',
+  'Wingdings',
+  'Wingdings 2',
+  'Wingdings 3',
+];
 const ZH_CORE_SOURCE_FILE_NAMES = [
   'ASC.ttf',
   'Aptos-Bold-Italic.ttf',
@@ -865,13 +891,13 @@ export function readGeneratedFontFamilies(allFontsSource) {
   );
 }
 
-export function readGeneratedBuiltInFonts(allFontsSource, keptFamilyNames) {
+export function readGeneratedBuiltInFonts(allFontsSource, builtInFamilyNames) {
   const visibleFamilyNames = new Set(readGeneratedFontFamilies(allFontsSource).map((family) => family.name));
   return [
     ...new Set(
       readGeneratedFontFamiliesByName(
         allFontsSource,
-        keptFamilyNames.filter((name) => !visibleFamilyNames.has(name)),
+        builtInFamilyNames.filter((name) => !visibleFamilyNames.has(name)),
       ).flatMap((family) => family.paths),
     ),
   ];
@@ -886,7 +912,7 @@ export function readGeneratedFallbackFonts(allFontsSource) {
   );
 }
 
-function writeGeneratedManifest(output, options) {
+export function writeGeneratedManifest(output, options) {
   const allFonts = 'sdkjs/common/AllFonts.js';
   const fontSelection = 'server/FileConverter/bin/font_selection.bin';
   const fontSourceMap = GENERATED_FONT_SOURCE_MAP;
@@ -908,7 +934,7 @@ function writeGeneratedManifest(output, options) {
     .filter((font) => ['msyh.ttc', 'msyhbd.ttc'].includes(path.basename(font.source || '').toLowerCase()))
     .map((font) => font.file);
   if (defaultFonts.length === 0 && fonts[0]) defaultFonts.push(fonts[0]);
-  const builtInFonts = readGeneratedBuiltInFonts(allFontsSource, fontSourceMapValue.keptFamilies || []);
+  const builtInFonts = readGeneratedBuiltInFonts(allFontsSource, BUILT_IN_FONT_FAMILIES);
   const fallbackFonts = readGeneratedFallbackFonts(allFontsSource);
   const assetPaths = [allFonts, fontSelection, fontSourceMap, ...fontThumbnails, ...fonts];
   const manifest = {
