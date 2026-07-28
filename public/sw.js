@@ -166,9 +166,11 @@ const responseForCachedPrintPdf = async (request, cached) => {
 // Install event: Pre-cache core UI assets
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE);
-    }),
+    isFixedOfflineSlot
+      ? Promise.resolve()
+      : caches.open(CACHE_NAME).then((cache) => {
+          return cache.addAll(ASSETS_TO_CACHE);
+        }),
   );
   self.skipWaiting();
 });
