@@ -42,6 +42,7 @@ type FontManifest = {
 type StoredProgress = {
   version: string;
   completed: string[];
+  assets?: RuntimeCacheAsset[];
 };
 
 const RUNTIME_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
@@ -80,11 +81,7 @@ function fontAssets(manifest: FontManifest): Array<{ path: string; bytes: number
   if (
     Array.isArray(manifest.assets) &&
     manifest.assets.every(
-      (asset) =>
-        asset &&
-        isSafeAssetPath(asset.path) &&
-        Number.isSafeInteger(asset.bytes) &&
-        asset.bytes >= 0,
+      (asset) => asset && isSafeAssetPath(asset.path) && Number.isSafeInteger(asset.bytes) && asset.bytes >= 0,
     )
   ) {
     return manifest.assets;
@@ -99,18 +96,44 @@ function fontAssets(manifest: FontManifest): Array<{ path: string; bytes: number
   return [...new Set(candidates.filter(isSafeAssetPath))].map((path) => ({ path, bytes: 0 }));
 }
 
-function readStoredProgress(storage: Storage, version: string): Set<string> {
+function parseStoredAssets(value: unknown): RuntimeCacheAsset[] | null {
+  if (!Array.isArray(value)) return null;
+  const assets = value.filter(
+    (asset): asset is RuntimeCacheAsset =>
+      Boolean(asset) &&
+      isSafeAssetPath(asset.path) &&
+      Number.isSafeInteger(asset.bytes) &&
+      asset.bytes >= 0 &&
+      ['fonts', 'core', 'word', 'cell', 'slide'].includes(asset.category),
+  );
+  return assets.length === value.length && assets.length > 0 ? assets : null;
+}
+
+function readStoredProgress(
+  storage: Storage,
+  version: string,
+): { completed: Set<string>; assets: RuntimeCacheAsset[] | null } {
   try {
     const parsed = JSON.parse(storage.getItem(STORAGE_KEY) || 'null') as StoredProgress | null;
-    if (parsed?.version !== version || !Array.isArray(parsed.completed)) return new Set();
-    return new Set(parsed.completed.filter(isSafeAssetPath));
+    if (parsed?.version !== version || !Array.isArray(parsed.completed)) {
+      return { completed: new Set(), assets: null };
+    }
+    return {
+      completed: new Set(parsed.completed.filter(isSafeAssetPath)),
+      assets: parseStoredAssets(parsed.assets),
+    };
   } catch {
-    return new Set();
+    return { completed: new Set(), assets: null };
   }
 }
 
-function writeStoredProgress(storage: Storage, version: string, completed: Set<string>): void {
-  storage.setItem(STORAGE_KEY, JSON.stringify({ version, completed: [...completed] } satisfies StoredProgress));
+function writeStoredProgress(
+  storage: Storage,
+  version: string,
+  completed: Set<string>,
+  assets: RuntimeCacheAsset[],
+): void {
+  storage.setItem(STORAGE_KEY, JSON.stringify({ version, completed: [...completed], assets } satisfies StoredProgress));
 }
 
 async function responseBytes(response: Response, onChunk: (bytes: number) => void): Promise<void> {
@@ -134,17 +157,12 @@ export class RuntimeCacheController {
   private readonly storage: Storage;
   private readonly fetchImpl: typeof fetch;
 
-  private constructor(
-    assets: RuntimeCacheAsset[],
-    version: string,
-    storage: Storage,
-    fetchImpl: typeof fetch,
-  ) {
+  private constructor(assets: RuntimeCacheAsset[], version: string, storage: Storage, fetchImpl: typeof fetch) {
     this.assets = assets;
     this.version = version;
     this.storage = storage;
     this.fetchImpl = fetchImpl;
-    this.completed = readStoredProgress(storage, version);
+    this.completed = readStoredProgress(storage, version).completed;
   }
 
   static async create(
@@ -152,8 +170,28 @@ export class RuntimeCacheController {
     fetchImpl: typeof fetch = window.fetch.bind(window),
   ): Promise<RuntimeCacheController> {
     const manifestUrl = new URL(RUNTIME_MANIFEST_PATH, window.location.origin);
-    manifestUrl.searchParams.set('__cache_status', String(Date.now()));
-    let runtimeResponse = await fetchImpl(manifestUrl.href, { cache: 'reload' });
+    const versionResponse = await fetchImpl(manifestUrl.href, {
+      method: 'HEAD',
+      cache: 'no-cache',
+      credentials: 'omit',
+    });
+    if (!versionResponse.ok) {
+      throw new Error(`Runtime manifest version request failed (${versionResponse.status}).`);
+    }
+    const deployedVersion =
+      versionResponse.headers.get('X-OnlyOffice-Asset-Version') ||
+      versionResponse.headers.get('etag')?.replaceAll('"', '') ||
+      '';
+    const stored = deployedVersion ? readStoredProgress(storage, deployedVersion) : null;
+    if (stored?.assets) {
+      return new RuntimeCacheController(stored.assets, deployedVersion, storage, fetchImpl);
+    }
+
+    if (deployedVersion) manifestUrl.searchParams.set('__oobv', deployedVersion);
+    let runtimeResponse = await fetchImpl(manifestUrl.href, {
+      cache: deployedVersion ? 'force-cache' : 'reload',
+      credentials: 'omit',
+    });
     if (!runtimeResponse.ok) throw new Error(`Runtime manifest request failed (${runtimeResponse.status}).`);
     let runtimeValue = await runtimeResponse.json();
     let runtime: RuntimeManifest;
@@ -163,7 +201,7 @@ export class RuntimeCacheController {
       const recoveryUrl = new URL(RUNTIME_MANIFEST_PATH, window.location.origin);
       recoveryUrl.searchParams.set('__cache_status', String(Date.now()));
       recoveryUrl.searchParams.set('retry', '1');
-      runtimeResponse = await fetchImpl(recoveryUrl.href, { cache: 'reload' });
+      runtimeResponse = await fetchImpl(recoveryUrl.href, { cache: 'reload', credentials: 'omit' });
       if (!runtimeResponse.ok) {
         throw new Error(`Runtime manifest recovery request failed (${runtimeResponse.status}).`);
       }
@@ -171,13 +209,17 @@ export class RuntimeCacheController {
       runtime = parseRuntimeManifest(runtimeValue);
     }
     const version =
+      deployedVersion ||
       runtimeResponse.headers.get('X-OnlyOffice-Asset-Version') ||
       runtimeResponse.headers.get('etag')?.replaceAll('"', '') ||
       runtime.generatedAt;
 
     const fontManifestUrl = new URL(FONT_MANIFEST_PATH, window.location.origin);
-    fontManifestUrl.searchParams.set('__cache_status', String(Date.now()));
-    const fontResponse = await fetchImpl(fontManifestUrl.href, { cache: 'reload' });
+    if (version) fontManifestUrl.searchParams.set('__oobv', version);
+    const fontResponse = await fetchImpl(fontManifestUrl.href, {
+      cache: version ? 'force-cache' : 'reload',
+      credentials: 'omit',
+    });
     if (!fontResponse.ok) throw new Error(`Font manifest request failed (${fontResponse.status}).`);
     const fonts = (await fontResponse.json()) as FontManifest;
     const byPath = new Map(
@@ -194,7 +236,10 @@ export class RuntimeCacheController {
     for (const asset of fontAssets(fonts)) {
       byPath.set(asset.path, { ...asset, category: 'fonts' });
     }
-    return new RuntimeCacheController([...byPath.values()], version || runtime.generatedAt, storage, fetchImpl);
+    const assets = [...byPath.values()];
+    const controller = new RuntimeCacheController(assets, version || runtime.generatedAt, storage, fetchImpl);
+    writeStoredProgress(storage, controller.version, controller.completed, controller.assets);
+    return controller;
   }
 
   getProgress(phase: RuntimeCacheProgress['phase'] = 'ready', failedFiles = 0): RuntimeCacheProgress {
@@ -285,9 +330,7 @@ export class RuntimeCacheController {
               completedBytes: Math.min(downloadedBytes, totalBytes),
               totalBytes,
               failedFiles,
-              categories: this.categoryProgress(
-                this.assets.filter((candidate) => this.completed.has(candidate.path)),
-              ),
+              categories: this.categoryProgress(this.assets.filter((candidate) => this.completed.has(candidate.path))),
             });
           });
           if (asset.bytes === 0) asset.bytes = received;
@@ -295,7 +338,7 @@ export class RuntimeCacheController {
           completedFiles += 1;
           writesSinceFlush += 1;
           if (writesSinceFlush >= 10) {
-            writeStoredProgress(this.storage, this.version, this.completed);
+            writeStoredProgress(this.storage, this.version, this.completed, this.assets);
             writesSinceFlush = 0;
           }
         } catch {
@@ -308,14 +351,12 @@ export class RuntimeCacheController {
           completedBytes: Math.min(downloadedBytes, totalBytes),
           totalBytes,
           failedFiles,
-          categories: this.categoryProgress(
-            this.assets.filter((candidate) => this.completed.has(candidate.path)),
-          ),
+          categories: this.categoryProgress(this.assets.filter((candidate) => this.completed.has(candidate.path))),
         });
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker));
-    writeStoredProgress(this.storage, this.version, this.completed);
+    writeStoredProgress(this.storage, this.version, this.completed, this.assets);
     const progress = this.getProgress(failedFiles === 0 && this.isComplete() ? 'complete' : 'error', failedFiles);
     onProgress(progress);
     return progress;

@@ -30,7 +30,7 @@ describe('RuntimeCacheController', () => {
           { headers: { 'X-OnlyOffice-Asset-Version': 'asset-v1', 'Content-Type': 'application/json' } },
         );
       }
-      if (url.pathname === '/onlyoffice-browser-font-assets.json' && !url.searchParams.has('__oobv')) {
+      if (url.pathname === '/onlyoffice-browser-font-assets.json') {
         return response(
           JSON.stringify({
             allFonts: 'sdkjs/common/AllFonts.js',
@@ -55,10 +55,7 @@ describe('RuntimeCacheController', () => {
       return response(new Uint8Array([1, 2, 3, 4]));
     });
 
-    const controller = await RuntimeCacheController.create(
-      window.localStorage,
-      fetchMock as unknown as typeof fetch,
-    );
+    const controller = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
     const initial = controller.getProgress();
 
     expect(initial.totalFiles).toBe(10);
@@ -79,17 +76,21 @@ describe('RuntimeCacheController', () => {
     expect(finalProgress?.completedFiles).toBe(10);
     expect(fetchMock.mock.calls.some(([, init]) => init?.cache === 'force-cache')).toBe(true);
 
-    const restored = await RuntimeCacheController.create(
-      window.localStorage,
-      fetchMock as unknown as typeof fetch,
-    );
+    const restored = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
     expect(restored.isComplete()).toBe(true);
+    const restoredRequests = fetchMock.mock.calls.slice(-1);
+    expect(restoredRequests).toHaveLength(1);
+    expect(restoredRequests[0]?.[1]).toMatchObject({ method: 'HEAD', cache: 'no-cache' });
   });
 
   it('invalidates stored progress when the deployed asset version changes', async () => {
     window.localStorage.setItem(
       'onlyoffice-browser:shared-runtime-cache',
-      JSON.stringify({ version: 'old', completed: runtimeAssets.map((asset) => asset.path) }),
+      JSON.stringify({
+        version: 'old',
+        completed: runtimeAssets.map((asset) => asset.path),
+        assets: runtimeAssets.map((asset) => ({ ...asset, category: asset.pack })),
+      }),
     );
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), window.location.origin);
@@ -106,18 +107,18 @@ describe('RuntimeCacheController', () => {
       return response(JSON.stringify({ fonts: [] }));
     });
 
-    const controller = await RuntimeCacheController.create(
-      window.localStorage,
-      fetchMock as unknown as typeof fetch,
-    );
+    const controller = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
     expect(controller.isComplete()).toBe(false);
     expect(controller.getProgress().completedFiles).toBe(0);
   });
 
   it('recovers from a stale v1 manifest cached by an older service worker', async () => {
     let runtimeRequests = 0;
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/onlyoffice-runtime-assets.json' && init?.method === 'HEAD') {
+        return response(null, { headers: { 'X-OnlyOffice-Asset-Version': 'recovered' } });
+      }
       if (url.pathname === '/onlyoffice-runtime-assets.json' && runtimeRequests++ > 0) {
         return response(
           JSON.stringify({
@@ -134,12 +135,38 @@ describe('RuntimeCacheController', () => {
       return response(JSON.stringify({ fonts: [] }));
     });
 
-    const controller = await RuntimeCacheController.create(
-      window.localStorage,
-      fetchMock as unknown as typeof fetch,
-    );
+    const controller = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
     expect(controller.version).toBe('recovered');
     expect(controller.getProgress().totalFiles).toBe(5);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('__cache_status='))).toBe(true);
+  });
+
+  it('checks only the release header when a complete inventory is already stored', async () => {
+    const assets = runtimeAssets.map((asset) => ({
+      path: asset.path,
+      bytes: asset.bytes,
+      category: asset.pack,
+    }));
+    window.localStorage.setItem(
+      'onlyoffice-browser:shared-runtime-cache',
+      JSON.stringify({
+        version: 'asset-v1',
+        completed: assets.map((asset) => asset.path),
+        assets,
+      }),
+    );
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      response(null, { headers: { 'X-OnlyOffice-Asset-Version': 'asset-v1' } }),
+    );
+
+    const controller = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
+
+    expect(controller.isComplete()).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: 'HEAD',
+      cache: 'no-cache',
+      credentials: 'omit',
+    });
   });
 });

@@ -97,6 +97,16 @@ describe('SW fetch routing', () => {
     expect(sw).not.toContain('onlyoffice-slot-prewarm-v1');
   });
 
+  it('proxies isolated-host shared assets directly to the immutable canonical URL', () => {
+    const sw = fs.readFileSync(path.join(process.cwd(), 'public/sw.js'), 'utf8');
+
+    expect(sw).toContain("const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work'");
+    expect(sw).toContain('const shouldProxySharedAsset = (request, url)');
+    expect(sw).toContain('canonicalUrl.searchParams.set(SHARED_ASSET_VERSION_QUERY, version)');
+    expect(sw).toContain('event.respondWith(fetchSharedAsset(event.request, url))');
+    expect(sw).toContain('if (isIsolatedEditorHost) return undefined');
+  });
+
   it('provides root OnlyOffice desktop-mode discovery manifests', () => {
     const plugins = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'public/plugins.json'), 'utf8'));
     const themes = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'public/themes.json'), 'utf8'));
@@ -154,9 +164,12 @@ describe('SW fetch routing', () => {
       expect(parseRangeHeader(range, byteLength)).toEqual(expected);
     });
 
-    it.each(['bytes=100-99', 'bytes=1000-', 'items=0-10', 'bytes=-0', 'bytes=-'])('rejects invalid range %s', (range) => {
-      expect(parseRangeHeader(range, 1000)).toBeNull();
-    });
+    it.each(['bytes=100-99', 'bytes=1000-', 'items=0-10', 'bytes=-0', 'bytes=-'])(
+      'rejects invalid range %s',
+      (range) => {
+        expect(parseRangeHeader(range, 1000)).toBeNull();
+      },
+    );
   });
 
   describe('host navigation and app routes are not intercepted', () => {

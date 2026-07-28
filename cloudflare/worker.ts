@@ -32,6 +32,10 @@ export function isIsolatedEditorHost(hostname: string): boolean {
   return EDITOR_HOST_PATTERN.test(hostname);
 }
 
+export function shouldDisableResponseTransform(key: string, isolated: boolean): boolean {
+  return isolated && (key.endsWith('.html') || key === 'index.html');
+}
+
 export function shouldShareAsset(pathname: string, destination: string | null): boolean {
   const normalizedDestination = destination?.trim().toLowerCase() || '';
   if (
@@ -181,6 +185,9 @@ function responseHeaders(
     'Cache-Control',
     immutable ? 'public, max-age=31536000, immutable' : 'public, max-age=0, must-revalidate',
   );
+  if (shouldDisableResponseTransform(key, isolated)) {
+    headers.set('Cache-Control', `${headers.get('Cache-Control')}, no-transform`);
+  }
   applySharedHeaders(headers);
   headers.set('X-OnlyOffice-Asset-Version', version);
   if (isolated && key === 'office-host.html') headers.set('Origin-Agent-Cluster', '?1');
@@ -207,10 +214,7 @@ export default {
     }
 
     const isolated = isIsolatedEditorHost(hostname);
-    if (
-      isolated &&
-      shouldShareAsset(url.pathname, request.headers.get('sec-fetch-dest'))
-    ) {
+    if (isolated && shouldShareAsset(url.pathname, request.headers.get('sec-fetch-dest'))) {
       return Response.redirect(canonicalAssetUrl(url, env.ASSET_VERSION), 307);
     }
     return serveAsset(request, env, ctx, url, isolated);

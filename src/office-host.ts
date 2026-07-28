@@ -31,6 +31,8 @@ const SAVE_ACK_TIMEOUT_MS = 60_000;
 const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.34';
 const OFFICE_HOST_BUILD_ID = 'office-host-0.3.34-r1';
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
+const OFFICE_SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
+const OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS = 30_000;
 const STARTUP_HEARTBEAT_INTERVAL_MS = 5_000;
 const PLUGIN_REQUEST_TIMEOUT_MS = 30_000;
 const OFFICE_PLUGIN_PROTOCOL = 'onlyoffice-browser-plugin/v1';
@@ -101,8 +103,28 @@ async function loadOfficeHostIdentity() {
   };
 }
 
+async function ensureOfficeServiceWorkerControl(): Promise<void> {
+  if (!('serviceWorker' in navigator)) return;
+  await navigator.serviceWorker.register(OFFICE_SERVICE_WORKER_PATH, { scope: '/' });
+  await navigator.serviceWorker.ready;
+  if (navigator.serviceWorker.controller) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+      reject(new Error('Office service worker did not take control of the isolated host'));
+    }, OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS);
+    const onControllerChange = () => {
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange, { once: true });
+  });
+}
+
 async function announceHostReady(): Promise<void> {
   try {
+    await ensureOfficeServiceWorkerControl();
     const identity = await loadOfficeHostIdentity();
     postWindowMessage({
       protocol: OFFICE_HOST_PROTOCOL,

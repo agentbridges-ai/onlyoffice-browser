@@ -3,6 +3,7 @@ import {
   isIsolatedEditorHost,
   isOnlyOfficeHost,
   resolveObjectKey,
+  shouldDisableResponseTransform,
   shouldShareAsset,
 } from '../../cloudflare/worker';
 
@@ -33,5 +34,12 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(resolveObjectKey('/sdkjs/word/sdk-all.js')).toBe('sdkjs/word/sdk-all.js');
     expect(resolveObjectKey('/sdkjs/%2e%2e/secret')).toBeNull();
     expect(resolveObjectKey('/%E0%A4%A')).toBeNull();
+  });
+
+  it('prevents automatic analytics injection only in isolated Office HTML', () => {
+    expect(shouldDisableResponseTransform('office-host.html', true)).toBe(true);
+    expect(shouldDisableResponseTransform('web-apps/apps/documenteditor/main/index.html', true)).toBe(true);
+    expect(shouldDisableResponseTransform('assets/officeHost.js', true)).toBe(false);
+    expect(shouldDisableResponseTransform('index.html', false)).toBe(false);
   });
 });
