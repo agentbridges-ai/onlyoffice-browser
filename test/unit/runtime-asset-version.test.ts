@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,18 +14,19 @@ const modulePromise = import(
 ) as Promise<VersionModule>;
 const roots: string[] = [];
 
-function runtimeRoot(generatedAt: string): string {
+function runtimeRoot(generatedAt: string, content = 'same-content'): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'onlyoffice-runtime-version-'));
   roots.push(root);
   fs.mkdirSync(path.join(root, 'sdkjs/common'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'sdkjs/common/core.js'), 'same-content');
+  fs.writeFileSync(path.join(root, 'sdkjs/common/core.js'), content);
+  const revision = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
   fs.writeFileSync(
     path.join(root, 'onlyoffice-runtime-assets.json'),
     JSON.stringify({
       version: 2,
       generatedAt,
       selected: 1,
-      assets: [{ path: 'sdkjs/common/core.js', pack: 'core', bytes: 12 }],
+      assets: [{ path: 'sdkjs/common/core.js', pack: 'core', bytes: content.length, revision }],
     }),
   );
   return root;
@@ -45,9 +47,18 @@ describe('runtime asset version', () => {
   it('changes when a shared asset changes without relying on its size', async () => {
     const mod = await modulePromise;
     const first = runtimeRoot('same');
-    const second = runtimeRoot('same');
-    fs.writeFileSync(path.join(second, 'sdkjs/common/core.js'), 'same-contEnt');
+    const second = runtimeRoot('same', 'same-contEnt');
     expect(mod.calculateRuntimeAssetVersion(first)).not.toBe(mod.calculateRuntimeAssetVersion(second));
+  });
+
+  it('rejects a manifest revision that does not match the final file bytes', async () => {
+    const mod = await modulePromise;
+    const root = runtimeRoot('same');
+    fs.writeFileSync(path.join(root, 'sdkjs/common/core.js'), 'changed-after-manifest');
+
+    expect(() => mod.calculateRuntimeAssetVersion(root)).toThrow(
+      'Runtime asset revision does not match final bytes: sdkjs/common/core.js',
+    );
   });
 
   it('ignores origin-bound service worker revisions', async () => {

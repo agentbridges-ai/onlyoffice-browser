@@ -29,14 +29,23 @@ export function calculateRuntimeAssetVersion(root, fontManifestPath = '') {
       throw new Error(`Runtime asset path escapes its root: ${asset.path}`);
     }
     const bytes = fs.readFileSync(filePath);
+    const revision = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+    if (asset.revision !== revision) {
+      throw new Error(`Runtime asset revision does not match final bytes: ${asset.path}`);
+    }
     digest.update(asset.path);
     digest.update('\0');
-    digest.update(crypto.createHash('sha256').update(bytes).digest());
+    digest.update(asset.revision);
     digest.update('\0');
   }
   if (fontManifestPath) {
     digest.update('font-manifest\0');
-    digest.update(crypto.createHash('sha256').update(fs.readFileSync(path.resolve(fontManifestPath))).digest());
+    digest.update(
+      crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(path.resolve(fontManifestPath)))
+        .digest(),
+    );
   }
   return digest.digest('hex').slice(0, 16);
 }
