@@ -35,7 +35,10 @@
     "access": "public"
   },
   "scripts": {
+    "build:sw": "vite build -c vite.sw.config.ts",
+    "predev": "pnpm build:sw",
     "dev": "vite --host --force",
+    "predev:fonts": "pnpm build:sw",
     "dev:fonts": "ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-font-assets vite --host --force",
     "build": "sh ./bin/build.sh",
     "build:lib": "node -e \"require('node:fs').rmSync('dist/npm', { recursive: true, force: true })\" && tsc -p tsconfig.lib.json && vite build -c vite.lib.config.ts",
@@ -104,7 +107,16 @@
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.14",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "workbox-build": "^7.4.1",
+    "workbox-core": "^7.4.1",
+    "workbox-expiration": "^7.4.1",
+    "workbox-precaching": "^7.4.1",
+    "workbox-routing": "^7.4.1",
+    "workbox-strategies": "^7.4.1"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@noble/hashes": "^2.2.0",
+    "workbox-window": "^7.4.1"
+  }
 }

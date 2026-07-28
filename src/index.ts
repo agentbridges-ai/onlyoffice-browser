@@ -1,8 +1,5 @@
-import {
-  createOfficeEditor,
-  type OfficeEditorInstance,
-  type OfficeEditorMode,
-} from './lib/office-editor';
+import { createOfficeEditor, type OfficeEditorInstance, type OfficeEditorMode } from './lib/office-editor';
+import { Workbox } from 'workbox-window';
 import { clearLegacyDemoHostState, resolveDemoHostUrl } from './lib/demo-host-url';
 import { RuntimeCacheController, type RuntimeCacheProgress } from './lib/runtime-cache';
 import './styles/base.css';
@@ -72,6 +69,14 @@ app.innerHTML = `
       <progress id="runtime-cache-dialog-progress" max="1" value="0"></progress>
       <p id="runtime-cache-dialog-status" class="runtime-cache-dialog-status"></p>
       <div id="runtime-cache-categories" class="runtime-cache-categories"></div>
+      <section class="font-downloads" aria-labelledby="font-downloads-title">
+        <h3 id="font-downloads-title">Font family</h3>
+        <p>
+          Microsoft YaHei is the default fallback. Compatibility and symbol fonts are built in;
+          download other document font families when needed.
+        </p>
+        <div id="font-download-list" class="font-download-list"></div>
+      </section>
       <div class="runtime-cache-dialog-actions">
         <button id="runtime-cache-later" value="cancel" type="submit">Later</button>
         <button id="runtime-cache-load" value="default" type="button">Load all</button>
@@ -93,10 +98,19 @@ const cacheDialogDetail = document.querySelector<HTMLElement>('#runtime-cache-de
 const cacheDialogProgress = document.querySelector<HTMLProgressElement>('#runtime-cache-dialog-progress')!;
 const cacheDialogStatus = document.querySelector<HTMLElement>('#runtime-cache-dialog-status')!;
 const cacheCategories = document.querySelector<HTMLElement>('#runtime-cache-categories')!;
+const fontDownloadList = document.querySelector<HTMLElement>('#font-download-list')!;
 const cacheLoadButton = document.querySelector<HTMLButtonElement>('#runtime-cache-load')!;
 const cacheLaterButton = document.querySelector<HTMLButtonElement>('#runtime-cache-later')!;
 let runtimeCacheController: RuntimeCacheController | null = null;
 let runtimeCacheLoading = false;
+
+if ('serviceWorker' in navigator) {
+  const workbox = new Workbox('/sw.js', { scope: '/' });
+  void workbox.register().then(() => {
+    const updateInterval = window.setInterval(() => void workbox.update(), 60 * 60 * 1000);
+    window.addEventListener('pagehide', () => window.clearInterval(updateInterval), { once: true });
+  });
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -106,9 +120,7 @@ function formatBytes(bytes: number): string {
 
 function cacheProgressText(progress: RuntimeCacheProgress): string {
   const byteText =
-    progress.totalBytes > 0
-      ? ` · ${formatBytes(progress.completedBytes)} / ${formatBytes(progress.totalBytes)}`
-      : '';
+    progress.totalBytes > 0 ? ` · ${formatBytes(progress.completedBytes)} / ${formatBytes(progress.totalBytes)}` : '';
   const failureText = progress.failedFiles > 0 ? ` · ${progress.failedFiles} failed` : '';
   return `${progress.completedFiles} / ${progress.totalFiles} files${byteText} cached${failureText}`;
 }
@@ -163,6 +175,32 @@ function renderCacheProgress(progress: RuntimeCacheProgress): void {
   }
 }
 
+function renderFontDownloads(): void {
+  if (!runtimeCacheController) return;
+  fontDownloadList.replaceChildren(
+    ...runtimeCacheController.listFonts().map((font) => {
+      const row = document.createElement('div');
+      row.className = 'font-download-row';
+      const label = document.createElement('span');
+      label.textContent = `${font.name} · ${formatBytes(font.bytes)}`;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = font.downloaded ? 'Downloaded' : 'Download';
+      button.disabled = font.downloaded;
+      button.addEventListener('click', async () => {
+        if (!runtimeCacheController) return;
+        button.disabled = true;
+        button.textContent = 'Downloading…';
+        if (navigator.storage?.persist) await navigator.storage.persist();
+        await runtimeCacheController.downloadFontFamily(font.id, renderCacheProgress);
+        renderFontDownloads();
+      });
+      row.append(label, button);
+      return row;
+    }),
+  );
+}
+
 function showCacheDialog(): void {
   if (!cacheDialog.open) cacheDialog.showModal();
 }
@@ -175,6 +213,19 @@ async function loadAllRuntimeAssets(): Promise<void> {
   cacheDialogDetail.textContent =
     'Keep this page open while the shared Office runtime is loaded. Displayed bytes are uncompressed cache size; network transfer is Brotli-compressed.';
   try {
+    if (navigator.storage?.persist) await navigator.storage.persist();
+    if (navigator.storage?.estimate) {
+      const estimate = await navigator.storage.estimate();
+      const available =
+        typeof estimate.quota === 'number' && typeof estimate.usage === 'number'
+          ? Math.max(0, estimate.quota - estimate.usage)
+          : Number.POSITIVE_INFINITY;
+      if (available < runtimeCacheController.remainingBytes()) {
+        throw new Error(
+          `Not enough browser storage is available (${formatBytes(available)} free). Free space or leave private browsing before loading the Office runtime.`,
+        );
+      }
+    }
     const result = await runtimeCacheController.loadAll(renderCacheProgress);
     if (result.phase === 'complete') {
       cacheDialogDetail.textContent = 'All shared static assets are loaded for the current release.';
@@ -199,11 +250,16 @@ async function loadAllRuntimeAssets(): Promise<void> {
 async function initializeRuntimeCache(): Promise<void> {
   try {
     runtimeCacheController = await RuntimeCacheController.create();
-    const progress = runtimeCacheController.getProgress(
-      runtimeCacheController.isComplete() ? 'complete' : 'ready',
-    );
+    const progress = runtimeCacheController.getProgress(runtimeCacheController.isComplete() ? 'complete' : 'ready');
     renderCacheProgress(progress);
-    if (!runtimeCacheController.isComplete()) showCacheDialog();
+    renderFontDownloads();
+    if (!runtimeCacheController.isComplete()) {
+      showCacheDialog();
+    } else if (runtimeCacheController.shouldCheckHealth()) {
+      void runtimeCacheController.checkHealth(renderCacheProgress).then((health) => {
+        if (health.phase === 'error') showCacheDialog();
+      });
+    }
   } catch (error) {
     cacheLabel.textContent = `Shared static assets: status unavailable`;
     cacheDialogDetail.textContent = error instanceof Error ? error.message : String(error);
@@ -296,6 +352,10 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
     instance = await createOfficeEditor(slot, {
       ...options,
       hostUrl: defaultOfficeHostUrl,
+      downloadedFonts: runtimeCacheController
+        ?.listFonts()
+        .filter((font) => font.downloaded)
+        .flatMap((font) => font.paths),
       saveBehavior: options.saveBehavior || 'download',
       hardResetOnLastDestroy,
       onReady: (readyInstance) => {

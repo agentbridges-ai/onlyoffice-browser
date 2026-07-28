@@ -15,6 +15,7 @@ cache
 vite.config.ts.timestamp*
 config.ts.timestamp*
 dist
+.onlyoffice-sw
 # test artifacts
 coverage/
 playwright-report/

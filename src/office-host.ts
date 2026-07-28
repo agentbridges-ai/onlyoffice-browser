@@ -609,6 +609,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
   startStartupHeartbeat();
 
   try {
+    await configureDownloadedFonts(message.options.downloadedFonts || []);
     (window as PrintTitleHostWindow).__onlyOfficeBrowserSetPrintTitle = (title, durationMs = 45_000) => {
       postPortMessage({
         protocol: OFFICE_HOST_PROTOCOL,
@@ -665,6 +666,26 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
     stopStartupHeartbeat();
     postError('init', error, message.requestId);
   }
+}
+
+async function configureDownloadedFonts(paths: string[]): Promise<void> {
+  const controller = navigator.serviceWorker?.controller;
+  if (!controller) return;
+  await new Promise<void>((resolve) => {
+    const channel = new MessageChannel();
+    const timeout = window.setTimeout(resolve, 2_000);
+    channel.port1.onmessage = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    controller.postMessage(
+      {
+        type: 'SET_FONT_ALLOWLIST',
+        paths: paths.filter((path) => /^fonts\/[^/]+$/.test(path)),
+      },
+      [channel.port2],
+    );
+  });
 }
 
 function handlePluginWindowMessage(event: MessageEvent<OfficePluginWindowMessage>): void {

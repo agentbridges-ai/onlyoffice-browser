@@ -399,6 +399,7 @@ describe('office-editor parent proxy', () => {
       fileName: 'alpha.docx',
       interfaceTheme: 'dark',
       canReturnToPreview: true,
+      downloadedFonts: ['fonts/005.ttc', 'fonts/024.ttc'],
       onReady,
     });
     const { iframe, messages } = await connectHost(container);
@@ -414,6 +415,7 @@ describe('office-editor parent proxy', () => {
         fileName: 'alpha.docx',
         interfaceTheme: 'dark',
         canReturnToPreview: true,
+        downloadedFonts: ['fonts/005.ttc', 'fonts/024.ttc'],
         spellcheck: false,
         source: {
           kind: 'buffer',

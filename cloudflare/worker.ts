@@ -1,6 +1,7 @@
 const CANONICAL_HOST = 'onlyoffice.getpi.work';
 const EDITOR_HOST_PATTERN = /^office-[a-z0-9-]+\.getpi\.work$/;
 const VERSION_QUERY = '__oobv';
+const ASSET_REVISION_PATTERN = /^[a-f0-9]{16,64}$/;
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
 
 type R2ObjectLike = {
@@ -34,6 +35,10 @@ export function isIsolatedEditorHost(hostname: string): boolean {
 
 export function shouldDisableResponseTransform(key: string, isolated: boolean): boolean {
   return isolated && (key.endsWith('.html') || key === 'index.html');
+}
+
+export function isAssetRevision(value: string | null): boolean {
+  return ASSET_REVISION_PATTERN.test(value || '');
 }
 
 export function shouldShareAsset(pathname: string, destination: string | null): boolean {
@@ -120,7 +125,7 @@ async function serveAsset(
   const key = resolveObjectKey(url.pathname);
   if (!key) return new Response('Invalid asset path', { status: 400 });
 
-  const versioned = url.searchParams.get(VERSION_QUERY) === env.ASSET_VERSION;
+  const versioned = isAssetRevision(url.searchParams.get(VERSION_QUERY));
   const immutable = !isolated && versioned;
   const cache = (caches as CacheStorage & { default: Cache }).default;
   const cacheKey = new Request(url.href, { method: 'GET' });

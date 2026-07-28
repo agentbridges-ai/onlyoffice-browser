@@ -1,7 +1,7 @@
 /**
- * Tests for the fetch routing rules in public/sw.js.
+ * Tests for the fetch routing rules in src/service-worker.js.
  *
- * sw.js is a non-module service worker file that can't be imported directly,
+ * The service worker is bundled with Workbox and can't be imported directly,
  * so we replicate the routing conditions here as a living specification.
  * If sw.js changes, update both files together.
  *
@@ -88,23 +88,50 @@ describe('SW fetch routing', () => {
   });
 
   it('precaches the canonical PWA shell without fixed offline editor slots', () => {
-    const sw = fs.readFileSync(path.join(process.cwd(), 'public/sw.js'), 'utf8');
+    const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
 
     expect(sw).toContain("const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html'])");
-    expect(sw).toContain('precachePwaShell(cache)');
-    expect(sw).toContain('isCanonicalPwaNavigation');
+    expect(sw).toContain('precacheAndRoute(self.__WB_MANIFEST || [])');
+    expect(sw).toContain("matchPrecache('/index.html')");
+    expect(sw).toContain('isCanonicalPwaHost');
     expect(sw).not.toContain('FIXED_OFFLINE_SLOT');
     expect(sw).not.toContain('onlyoffice-slot-prewarm-v1');
+    expect(sw).toContain('if (isIsolatedEditorHost)');
+    expect(sw).toContain('clientsClaim()');
+    expect(sw).not.toContain("self.addEventListener('install'");
   });
 
   it('proxies isolated-host shared assets directly to the immutable canonical URL', () => {
-    const sw = fs.readFileSync(path.join(process.cwd(), 'public/sw.js'), 'utf8');
+    const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
 
     expect(sw).toContain("const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work'");
+    expect(sw).toContain("const LOCAL_CANONICAL_OFFICE_HOST = 'assets.office.localhost'");
+    expect(sw).toContain('EDITOR_HOST_PATTERN.test(self.location.hostname) || isLocalEditorHost');
     expect(sw).toContain('const shouldProxySharedAsset = (request, url)');
-    expect(sw).toContain('canonicalUrl.searchParams.set(SHARED_ASSET_VERSION_QUERY, version)');
-    expect(sw).toContain('event.respondWith(fetchSharedAsset(event.request, url))');
-    expect(sw).toContain('if (isIsolatedEditorHost) return undefined');
+    expect(sw).toContain('revisions.get(path) || version');
+    expect(sw).toContain("response.headers.get('last-modified')");
+    expect(sw).toContain('({ request, url }) => fetchSharedAsset(request, url)');
+    expect(sw).toContain('if (isCanonicalPwaHost)');
+    expect(sw).toContain('new NetworkFirst');
+    expect(sw).toContain('new StaleWhileRevalidate');
+    expect(sw).toContain('url.searchParams.has(SHARED_ASSET_VERSION_QUERY)');
+    expect(sw).toContain("event.data?.type === 'SET_FONT_ALLOWLIST'");
+    expect(sw).toContain("path.startsWith('fonts/')");
+    expect(sw).toContain('!downloadedFontPaths.has(path)');
+    expect(sw).toContain('!builtInFonts.includes(path)');
+    expect(sw).toContain('fontFallbackRole');
+    expect(sw).toContain('selectFallbackFont');
+    expect(sw).toContain("return 'emoji'");
+    expect(sw).toContain("return 'math'");
+    expect(sw).toContain("return 'arabic'");
+    expect(sw).toContain("return 'korean'");
+    expect(sw).toContain("return 'japanese'");
+    expect(sw).toContain("return 'symbol'");
+    expect(sw).toContain('requested?.styles');
+    expect(sw).toContain('fallbackFonts[role] || fallbackFonts.default || defaultFonts');
+    expect(sw).toContain('path = selectFallbackFont({ requested, fallbackFonts, defaultFonts, fontAssets }) || path');
+    expect(sw).toContain("if (url.pathname.startsWith('/fonts/'))");
+    expect(sw).toContain("'Font Fallback Unavailable'");
   });
 
   it('provides root OnlyOffice desktop-mode discovery manifests', () => {

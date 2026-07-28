@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isIsolatedEditorHost,
+  isAssetRevision,
   isOnlyOfficeHost,
   resolveObjectKey,
   shouldDisableResponseTransform,
@@ -41,5 +42,12 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(shouldDisableResponseTransform('web-apps/apps/documenteditor/main/index.html', true)).toBe(true);
     expect(shouldDisableResponseTransform('assets/officeHost.js', true)).toBe(false);
     expect(shouldDisableResponseTransform('index.html', false)).toBe(false);
+  });
+
+  it('accepts content revisions as immutable canonical cache keys', () => {
+    expect(isAssetRevision('f59fbffe31d7f98f')).toBe(true);
+    expect(isAssetRevision('f59fbffe31d7f98')).toBe(false);
+    expect(isAssetRevision('release-v1')).toBe(false);
+    expect(isAssetRevision(null)).toBe(false);
   });
 });

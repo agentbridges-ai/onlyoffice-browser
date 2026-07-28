@@ -26,7 +26,7 @@ type RuntimeAssetModule = {
     excluded: number;
     totalBytes: number;
     packs: Record<string, number>;
-    assets: Array<{ path: string; pack: string; bytes: number }>;
+    assets: Array<{ path: string; pack: string; bytes: number; revision: string }>;
   };
 };
 
@@ -163,6 +163,7 @@ describe('build-onlyoffice-runtime-assets', () => {
     expect(manifest.packs.cell).toBe(2);
     expect(manifest.version).toBe(2);
     expect(manifest.totalBytes).toBe(manifest.assets.reduce((total, asset) => total + asset.bytes, 0));
+    expect(manifest.assets.every((asset) => /^[a-f0-9]{16}$/.test(asset.revision))).toBe(true);
     expect(manifest.assets).toEqual([...manifest.assets].sort((left, right) => left.path.localeCompare(right.path)));
     expect(exists(input, 'web-apps/apps/api/documents/api.js')).toBe(true);
     expect(exists(input, 'sdkjs/pdf/src/engine/drawingfile.wasm')).toBe(false);

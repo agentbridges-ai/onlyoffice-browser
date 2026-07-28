@@ -2,9 +2,27 @@ export type RuntimeCacheAsset = {
   path: string;
   bytes: number;
   category: RuntimeCacheCategory;
+  revision: string;
 };
 
 export type RuntimeCacheCategory = 'fonts' | 'core' | 'word' | 'cell' | 'slide';
+
+export type RuntimeFontPackage = RuntimeCacheAsset & {
+  families: string[];
+};
+
+export type RuntimeFontFamily = {
+  id: string;
+  name: string;
+  bytes: number;
+  paths: string[];
+  downloaded: boolean;
+};
+
+type RuntimeFontFamilyDefinition = {
+  name: string;
+  paths: string[];
+};
 
 export type RuntimeCacheCategoryProgress = {
   category: RuntimeCacheCategory;
@@ -27,27 +45,35 @@ export type RuntimeCacheProgress = {
 type RuntimeManifest = {
   version: number;
   generatedAt: string;
-  assets: Array<{ path: string; bytes: number; pack: RuntimeCacheCategory }>;
+  assets: Array<{ path: string; bytes: number; pack: RuntimeCacheCategory; revision: string }>;
 };
 
 type FontManifest = {
+  defaultFont?: string;
+  defaultFonts?: string[];
+  builtInFonts?: string[];
   allFonts?: string;
   fontSelection?: string;
   fontSourceMap?: string;
   fontThumbnails?: string[];
   fonts?: string[];
-  assets?: Array<{ path: string; bytes: number }>;
+  fontFamilies?: RuntimeFontFamilyDefinition[];
+  assets?: Array<{ path: string; bytes: number; revision: string; families?: string[] }>;
 };
 
 type StoredProgress = {
   version: string;
   completed: string[];
   assets?: RuntimeCacheAsset[];
+  lastVerifiedAt?: number;
+  fontCatalog?: RuntimeFontPackage[];
+  fontFamilies?: RuntimeFontFamilyDefinition[];
 };
 
 const RUNTIME_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const FONT_MANIFEST_PATH = '/onlyoffice-browser-font-assets.json';
 const STORAGE_KEY = 'onlyoffice-browser:shared-runtime-cache';
+const INSTALLED_FONTS_STORAGE_KEY = 'onlyoffice-browser:installed-fonts';
 
 function isSafeAssetPath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && !value.startsWith('/') && !value.includes('..');
@@ -64,11 +90,13 @@ function parseRuntimeManifest(value: unknown): RuntimeManifest {
     throw new Error('The runtime asset manifest is missing its asset inventory.');
   }
   const assets = manifest.assets.filter(
-    (asset): asset is { path: string; bytes: number; pack: RuntimeCacheCategory } =>
+    (asset): asset is { path: string; bytes: number; pack: RuntimeCacheCategory; revision: string } =>
       Boolean(asset) &&
       isSafeAssetPath(asset.path) &&
       Number.isSafeInteger(asset.bytes) &&
       asset.bytes >= 0 &&
+      typeof asset.revision === 'string' &&
+      asset.revision.length > 0 &&
       ['core', 'word', 'cell', 'slide'].includes(asset.pack),
   );
   if (assets.length !== manifest.assets.length) {
@@ -77,11 +105,22 @@ function parseRuntimeManifest(value: unknown): RuntimeManifest {
   return { version: manifest.version, generatedAt: manifest.generatedAt, assets };
 }
 
-function fontAssets(manifest: FontManifest): Array<{ path: string; bytes: number }> {
+function fontAssets(
+  manifest: FontManifest,
+  fallbackRevision: string,
+): Array<{ path: string; bytes: number; revision: string; families?: string[] }> {
   if (
     Array.isArray(manifest.assets) &&
     manifest.assets.every(
-      (asset) => asset && isSafeAssetPath(asset.path) && Number.isSafeInteger(asset.bytes) && asset.bytes >= 0,
+      (asset) =>
+        asset &&
+        isSafeAssetPath(asset.path) &&
+        Number.isSafeInteger(asset.bytes) &&
+        asset.bytes >= 0 &&
+        typeof asset.revision === 'string' &&
+        asset.revision.length > 0 &&
+        (asset.families === undefined ||
+          (Array.isArray(asset.families) && asset.families.every((name) => typeof name === 'string'))),
     )
   ) {
     return manifest.assets;
@@ -93,7 +132,11 @@ function fontAssets(manifest: FontManifest): Array<{ path: string; bytes: number
     ...(manifest.fontThumbnails || []),
     ...(manifest.fonts || []),
   ];
-  return [...new Set(candidates.filter(isSafeAssetPath))].map((path) => ({ path, bytes: 0 }));
+  return [...new Set(candidates.filter(isSafeAssetPath))].map((path) => ({
+    path,
+    bytes: 0,
+    revision: fallbackRevision,
+  }));
 }
 
 function parseStoredAssets(value: unknown): RuntimeCacheAsset[] | null {
@@ -104,26 +147,84 @@ function parseStoredAssets(value: unknown): RuntimeCacheAsset[] | null {
       isSafeAssetPath(asset.path) &&
       Number.isSafeInteger(asset.bytes) &&
       asset.bytes >= 0 &&
+      typeof asset.revision === 'string' &&
+      asset.revision.length > 0 &&
       ['fonts', 'core', 'word', 'cell', 'slide'].includes(asset.category),
   );
   return assets.length === value.length && assets.length > 0 ? assets : null;
 }
 
+function parseStoredFontCatalog(value: unknown): RuntimeFontPackage[] | null {
+  if (!Array.isArray(value)) return null;
+  const fonts = value.filter(
+    (asset): asset is RuntimeFontPackage =>
+      Boolean(asset) &&
+      isSafeAssetPath(asset.path) &&
+      asset.path.startsWith('fonts/') &&
+      Number.isSafeInteger(asset.bytes) &&
+      asset.bytes >= 0 &&
+      typeof asset.revision === 'string' &&
+      asset.revision.length > 0 &&
+      Array.isArray(asset.families) &&
+      asset.families.every((name: unknown) => typeof name === 'string'),
+  );
+  return fonts.length === value.length ? fonts : null;
+}
+
+function parseFontFamilies(value: unknown): RuntimeFontFamilyDefinition[] | null {
+  if (!Array.isArray(value)) return null;
+  const families = value.filter(
+    (family): family is RuntimeFontFamilyDefinition =>
+      Boolean(family) &&
+      typeof family.name === 'string' &&
+      family.name.length > 0 &&
+      Array.isArray(family.paths) &&
+      family.paths.length > 0 &&
+      family.paths.every((path: unknown) => isSafeAssetPath(path) && path.startsWith('fonts/')),
+  );
+  return families.length === value.length ? families : null;
+}
+
 function readStoredProgress(
   storage: Storage,
-  version: string,
-): { completed: Set<string>; assets: RuntimeCacheAsset[] | null } {
+  version?: string,
+): {
+  version: string;
+  completed: Set<string>;
+  assets: RuntimeCacheAsset[] | null;
+  lastVerifiedAt: number;
+  fontCatalog: RuntimeFontPackage[] | null;
+  fontFamilies: RuntimeFontFamilyDefinition[] | null;
+} {
   try {
     const parsed = JSON.parse(storage.getItem(STORAGE_KEY) || 'null') as StoredProgress | null;
-    if (parsed?.version !== version || !Array.isArray(parsed.completed)) {
-      return { completed: new Set(), assets: null };
+    if (!parsed || (version && parsed.version !== version) || !Array.isArray(parsed.completed)) {
+      return {
+        version: '',
+        completed: new Set(),
+        assets: null,
+        lastVerifiedAt: 0,
+        fontCatalog: null,
+        fontFamilies: null,
+      };
     }
     return {
+      version: parsed.version,
       completed: new Set(parsed.completed.filter(isSafeAssetPath)),
       assets: parseStoredAssets(parsed.assets),
+      lastVerifiedAt: Number.isFinite(parsed.lastVerifiedAt) ? parsed.lastVerifiedAt || 0 : 0,
+      fontCatalog: parseStoredFontCatalog(parsed.fontCatalog),
+      fontFamilies: parseFontFamilies(parsed.fontFamilies),
     };
   } catch {
-    return { completed: new Set(), assets: null };
+    return {
+      version: '',
+      completed: new Set(),
+      assets: null,
+      lastVerifiedAt: 0,
+      fontCatalog: null,
+      fontFamilies: null,
+    };
   }
 }
 
@@ -132,37 +233,110 @@ function writeStoredProgress(
   version: string,
   completed: Set<string>,
   assets: RuntimeCacheAsset[],
+  lastVerifiedAt = 0,
+  fontCatalog: RuntimeFontPackage[] = [],
+  fontFamilies: RuntimeFontFamilyDefinition[] = [],
 ): void {
-  storage.setItem(STORAGE_KEY, JSON.stringify({ version, completed: [...completed], assets } satisfies StoredProgress));
+  storage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      version,
+      completed: [...completed],
+      assets,
+      lastVerifiedAt,
+      fontCatalog,
+      fontFamilies,
+    } satisfies StoredProgress),
+  );
 }
 
-async function responseBytes(response: Response, onChunk: (bytes: number) => void): Promise<void> {
+function readInstalledFonts(storage: Storage, defaultFonts: string[]): Set<string> {
+  try {
+    const stored = JSON.parse(storage.getItem(INSTALLED_FONTS_STORAGE_KEY) || 'null');
+    if (Array.isArray(stored)) {
+      const installed = new Set(stored.filter(isSafeAssetPath));
+      for (const path of defaultFonts.filter(isSafeAssetPath)) installed.add(path);
+      writeInstalledFonts(storage, installed);
+      return installed;
+    }
+  } catch {
+    // Fall through to the compact default.
+  }
+  const installed = new Set(defaultFonts.filter(isSafeAssetPath));
+  storage.setItem(INSTALLED_FONTS_STORAGE_KEY, JSON.stringify([...installed]));
+  return installed;
+}
+
+function writeInstalledFonts(storage: Storage, installed: Set<string>): void {
+  storage.setItem(INSTALLED_FONTS_STORAGE_KEY, JSON.stringify([...installed]));
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function responseBytes(
+  response: Response,
+  onChunk: (bytes: number) => void,
+  expectedRevision?: string,
+): Promise<number> {
+  const digest = expectedRevision ? sha256.create() : null;
+  let received = 0;
   if (!response.body) {
     const body = await response.arrayBuffer();
-    onChunk(body.byteLength);
-    return;
+    const bytes = new Uint8Array(body);
+    received = bytes.byteLength;
+    digest?.update(bytes);
+    onChunk(bytes.byteLength);
+  } else {
+    const reader = response.body.getReader();
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      received += result.value.byteLength;
+      digest?.update(result.value);
+      onChunk(result.value.byteLength);
+    }
   }
-  const reader = response.body.getReader();
-  while (true) {
-    const result = await reader.read();
-    if (result.done) return;
-    onChunk(result.value.byteLength);
+  if (digest && !bytesToHex(digest.digest()).startsWith(expectedRevision!)) {
+    throw new Error('Asset integrity verification failed.');
   }
+  return received;
 }
+
+const HEALTH_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class RuntimeCacheController {
   readonly assets: RuntimeCacheAsset[];
+  readonly fontCatalog: RuntimeFontPackage[];
+  readonly fontFamilies: RuntimeFontFamilyDefinition[];
   readonly version: string;
   readonly completed: Set<string>;
   private readonly storage: Storage;
   private readonly fetchImpl: typeof fetch;
+  private readonly installedFonts: Set<string>;
+  private lastVerifiedAt: number;
 
-  private constructor(assets: RuntimeCacheAsset[], version: string, storage: Storage, fetchImpl: typeof fetch) {
+  private constructor(
+    assets: RuntimeCacheAsset[],
+    version: string,
+    storage: Storage,
+    fetchImpl: typeof fetch,
+    completed?: Set<string>,
+    lastVerifiedAt = 0,
+    fontCatalog: RuntimeFontPackage[] = [],
+    fontFamilies: RuntimeFontFamilyDefinition[] = [],
+    installedFonts = new Set<string>(),
+  ) {
     this.assets = assets;
+    this.fontCatalog = fontCatalog;
+    this.fontFamilies = fontFamilies;
     this.version = version;
     this.storage = storage;
     this.fetchImpl = fetchImpl;
-    this.completed = readStoredProgress(storage, version).completed;
+    this.completed = completed || readStoredProgress(storage, version).completed;
+    this.lastVerifiedAt = lastVerifiedAt;
+    this.installedFonts = installedFonts;
   }
 
   static async create(
@@ -183,8 +357,19 @@ export class RuntimeCacheController {
       versionResponse.headers.get('etag')?.replaceAll('"', '') ||
       '';
     const stored = deployedVersion ? readStoredProgress(storage, deployedVersion) : null;
-    if (stored?.assets) {
-      return new RuntimeCacheController(stored.assets, deployedVersion, storage, fetchImpl);
+    if (stored?.assets && stored.fontCatalog && stored.fontFamilies) {
+      const installedFonts = readInstalledFonts(storage, []);
+      return new RuntimeCacheController(
+        stored.assets,
+        deployedVersion,
+        storage,
+        fetchImpl,
+        stored.completed,
+        stored.lastVerifiedAt,
+        stored.fontCatalog,
+        stored.fontFamilies,
+        installedFonts,
+      );
     }
 
     if (deployedVersion) manifestUrl.searchParams.set('__oobv', deployedVersion);
@@ -222,23 +407,77 @@ export class RuntimeCacheController {
     });
     if (!fontResponse.ok) throw new Error(`Font manifest request failed (${fontResponse.status}).`);
     const fonts = (await fontResponse.json()) as FontManifest;
+    const installedFonts = readInstalledFonts(storage, [
+      ...(fonts.defaultFonts || (fonts.defaultFont ? [fonts.defaultFont] : [])),
+      ...(fonts.builtInFonts || []),
+    ]);
+    const fontInventory = fontAssets(fonts, version);
+    const fontCatalog = fontInventory
+      .filter((asset) => asset.path.startsWith('fonts/'))
+      .map(
+        (asset) =>
+          ({
+            path: asset.path,
+            bytes: asset.bytes,
+            revision: asset.revision,
+            category: 'fonts',
+            families: asset.families || [],
+          }) satisfies RuntimeFontPackage,
+      );
+    const fontFamilies = parseFontFamilies(fonts.fontFamilies) || [];
     const byPath = new Map(
       runtime.assets.map((asset) => [
         asset.path,
-        { path: asset.path, bytes: asset.bytes, category: asset.pack } satisfies RuntimeCacheAsset,
+        {
+          path: asset.path,
+          bytes: asset.bytes,
+          category: asset.pack,
+          revision: asset.revision,
+        } satisfies RuntimeCacheAsset,
       ]),
     );
     byPath.set(FONT_MANIFEST_PATH.slice(1), {
       path: FONT_MANIFEST_PATH.slice(1),
       bytes: Number(fontResponse.headers.get('content-length')) || 0,
       category: 'fonts',
+      revision: version,
     });
-    for (const asset of fontAssets(fonts)) {
+    for (const asset of fontInventory.filter(
+      (asset) => !asset.path.startsWith('fonts/') || installedFonts.has(asset.path),
+    )) {
       byPath.set(asset.path, { ...asset, category: 'fonts' });
     }
     const assets = [...byPath.values()];
-    const controller = new RuntimeCacheController(assets, version || runtime.generatedAt, storage, fetchImpl);
-    writeStoredProgress(storage, controller.version, controller.completed, controller.assets);
+    const previous = readStoredProgress(storage);
+    const previousByPath = new Map((previous.assets || []).map((asset) => [asset.path, asset]));
+    const completed = new Set(
+      assets
+        .filter((asset) => {
+          const oldAsset = previousByPath.get(asset.path);
+          return previous.completed.has(asset.path) && oldAsset?.revision === asset.revision;
+        })
+        .map((asset) => asset.path),
+    );
+    const controller = new RuntimeCacheController(
+      assets,
+      version || runtime.generatedAt,
+      storage,
+      fetchImpl,
+      completed,
+      previous.version === version ? previous.lastVerifiedAt : 0,
+      fontCatalog,
+      fontFamilies,
+      installedFonts,
+    );
+    writeStoredProgress(
+      storage,
+      controller.version,
+      controller.completed,
+      controller.assets,
+      controller.lastVerifiedAt,
+      controller.fontCatalog,
+      controller.fontFamilies,
+    );
     return controller;
   }
 
@@ -273,9 +512,86 @@ export class RuntimeCacheController {
     return this.assets.length > 0 && this.assets.every((asset) => this.completed.has(asset.path));
   }
 
-  private versionedUrl(path: string): string {
-    const url = new URL(path, window.location.origin);
-    url.searchParams.set('__oobv', this.version);
+  shouldCheckHealth(now = Date.now()): boolean {
+    return this.isComplete() && now - this.lastVerifiedAt >= HEALTH_CHECK_INTERVAL_MS;
+  }
+
+  remainingBytes(): number {
+    return this.assets
+      .filter((asset) => !this.completed.has(asset.path))
+      .reduce((total, asset) => total + asset.bytes, 0);
+  }
+
+  listFonts(): RuntimeFontFamily[] {
+    const fontsByPath = new Map(this.fontCatalog.map((font) => [font.path, font]));
+    return this.fontFamilies
+      .map(({ name, paths }) => {
+        const fonts = paths.map((path) => fontsByPath.get(path)).filter((font): font is RuntimeFontPackage => !!font);
+        return {
+          id: name.toLocaleLowerCase(),
+          name,
+          bytes: fonts.reduce((total, font) => total + font.bytes, 0),
+          paths: fonts.map((font) => font.path),
+          downloaded: fonts.length > 0 && fonts.every((font) => this.completed.has(font.path)),
+        };
+      })
+      .filter((family) => family.paths.length > 0);
+  }
+
+  async downloadFontFamily(
+    id: string,
+    onProgress: (progress: RuntimeCacheProgress) => void,
+  ): Promise<RuntimeCacheProgress> {
+    const family = this.listFonts().find((candidate) => candidate.id === id);
+    if (!family) throw new Error(`Unknown font family: ${id}`);
+    let failedFiles = 0;
+    for (const path of family.paths) {
+      const font = this.fontCatalog.find((candidate) => candidate.path === path)!;
+      if (!this.assets.some((asset) => asset.path === path)) this.assets.push(font);
+      if (this.completed.has(path)) continue;
+
+      onProgress(this.getProgress('loading'));
+      let verified = false;
+      for (const cacheMode of ['force-cache', 'reload'] as const) {
+        try {
+          await this.downloadAndVerify(font, cacheMode, () => onProgress(this.getProgress('loading')));
+          verified = true;
+          break;
+        } catch {
+          // Retry once while bypassing a missing or corrupt HTTP-cache entry.
+        }
+      }
+      if (!verified) {
+        const index = this.assets.findIndex((asset) => asset.path === path);
+        if (index >= 0) this.assets.splice(index, 1);
+        failedFiles += 1;
+        continue;
+      }
+      this.completed.add(path);
+      this.installedFonts.add(path);
+    }
+    writeInstalledFonts(this.storage, this.installedFonts);
+    writeStoredProgress(
+      this.storage,
+      this.version,
+      this.completed,
+      this.assets,
+      this.lastVerifiedAt,
+      this.fontCatalog,
+      this.fontFamilies,
+    );
+    const progress = this.getProgress(failedFiles === 0 ? 'complete' : 'error', failedFiles);
+    onProgress(progress);
+    return progress;
+  }
+
+  private expectedIntegrity(asset: RuntimeCacheAsset): string | undefined {
+    return asset.path === FONT_MANIFEST_PATH.slice(1) ? undefined : asset.revision;
+  }
+
+  private versionedUrl(asset: RuntimeCacheAsset): string {
+    const url = new URL(asset.path, window.location.origin);
+    url.searchParams.set('__oobv', asset.revision || this.version);
     return url.href;
   }
 
@@ -286,7 +602,7 @@ export class RuntimeCacheController {
       while (cursor < unknown.length) {
         const asset = unknown[cursor++];
         try {
-          const response = await this.fetchImpl(this.versionedUrl(asset.path), {
+          const response = await this.fetchImpl(this.versionedUrl(asset), {
             method: 'HEAD',
             cache: 'no-cache',
           });
@@ -298,6 +614,20 @@ export class RuntimeCacheController {
       }
     };
     await Promise.all(Array.from({ length: Math.min(6, unknown.length) }, worker));
+  }
+
+  private async downloadAndVerify(
+    asset: RuntimeCacheAsset,
+    cache: RequestCache,
+    onChunk: (bytes: number) => void,
+  ): Promise<number> {
+    const response = await this.fetchImpl(this.versionedUrl(asset), {
+      cache,
+      credentials: 'omit',
+      mode: 'same-origin',
+    });
+    if (!response.ok) throw new Error(`${asset.path}: HTTP ${response.status}`);
+    return responseBytes(response, onChunk, this.expectedIntegrity(asset));
   }
 
   async loadAll(onProgress: (progress: RuntimeCacheProgress) => void): Promise<RuntimeCacheProgress> {
@@ -317,28 +647,48 @@ export class RuntimeCacheController {
       while (cursor < pending.length) {
         const asset = pending[cursor++];
         try {
-          const response = await this.fetchImpl(this.versionedUrl(asset.path), { cache: 'force-cache' });
-          if (!response.ok) throw new Error(`${asset.path}: HTTP ${response.status}`);
           let received = 0;
-          await responseBytes(response, (bytes) => {
-            received += bytes;
-            downloadedBytes += bytes;
-            onProgress({
-              phase: 'loading',
-              completedFiles,
-              totalFiles,
-              completedBytes: Math.min(downloadedBytes, totalBytes),
-              totalBytes,
-              failedFiles,
-              categories: this.categoryProgress(this.assets.filter((candidate) => this.completed.has(candidate.path))),
-            });
-          });
+          let verified = false;
+          for (const cacheMode of ['force-cache', 'reload'] as const) {
+            let attemptReceived = 0;
+            try {
+              received = await this.downloadAndVerify(asset, cacheMode, (bytes) => {
+                attemptReceived += bytes;
+                downloadedBytes += bytes;
+                onProgress({
+                  phase: 'loading',
+                  completedFiles,
+                  totalFiles,
+                  completedBytes: Math.min(downloadedBytes, totalBytes),
+                  totalBytes,
+                  failedFiles,
+                  categories: this.categoryProgress(
+                    this.assets.filter((candidate) => this.completed.has(candidate.path)),
+                  ),
+                });
+              });
+              verified = true;
+              break;
+            } catch {
+              downloadedBytes = Math.max(0, downloadedBytes - attemptReceived);
+              received = 0;
+            }
+          }
+          if (!verified) throw new Error(`${asset.path}: integrity verification failed`);
           if (asset.bytes === 0) asset.bytes = received;
           this.completed.add(asset.path);
           completedFiles += 1;
           writesSinceFlush += 1;
           if (writesSinceFlush >= 10) {
-            writeStoredProgress(this.storage, this.version, this.completed, this.assets);
+            writeStoredProgress(
+              this.storage,
+              this.version,
+              this.completed,
+              this.assets,
+              this.lastVerifiedAt,
+              this.fontCatalog,
+              this.fontFamilies,
+            );
             writesSinceFlush = 0;
           }
         } catch {
@@ -356,9 +706,67 @@ export class RuntimeCacheController {
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker));
-    writeStoredProgress(this.storage, this.version, this.completed, this.assets);
+    if (failedFiles === 0 && this.isComplete()) this.lastVerifiedAt = Date.now();
+    writeStoredProgress(
+      this.storage,
+      this.version,
+      this.completed,
+      this.assets,
+      this.lastVerifiedAt,
+      this.fontCatalog,
+      this.fontFamilies,
+    );
     const progress = this.getProgress(failedFiles === 0 && this.isComplete() ? 'complete' : 'error', failedFiles);
     onProgress(progress);
     return progress;
   }
+
+  async checkHealth(onProgress: (progress: RuntimeCacheProgress) => void): Promise<RuntimeCacheProgress> {
+    if (!this.isComplete()) return this.loadAll(onProgress);
+
+    let failedFiles = 0;
+    onProgress(this.getProgress('checking'));
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < this.assets.length) {
+        const asset = this.assets[cursor++];
+        try {
+          await this.downloadAndVerify(asset, 'only-if-cached', () => undefined);
+        } catch {
+          this.completed.delete(asset.path);
+          writeStoredProgress(
+            this.storage,
+            this.version,
+            this.completed,
+            this.assets,
+            this.lastVerifiedAt,
+            this.fontCatalog,
+            this.fontFamilies,
+          );
+          try {
+            await this.downloadAndVerify(asset, 'reload', () => undefined);
+            this.completed.add(asset.path);
+          } catch {
+            failedFiles += 1;
+          }
+        }
+        onProgress(this.getProgress(failedFiles === 0 ? 'checking' : 'error', failedFiles));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, this.assets.length) }, worker));
+    if (failedFiles === 0 && this.isComplete()) this.lastVerifiedAt = Date.now();
+    writeStoredProgress(
+      this.storage,
+      this.version,
+      this.completed,
+      this.assets,
+      this.lastVerifiedAt,
+      this.fontCatalog,
+      this.fontFamilies,
+    );
+    const progress = this.getProgress(failedFiles === 0 ? 'complete' : 'error', failedFiles);
+    onProgress(progress);
+    return progress;
+  }
 }
+import { sha256 } from '@noble/hashes/sha2.js';

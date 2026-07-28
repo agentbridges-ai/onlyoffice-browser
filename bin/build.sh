@@ -5,8 +5,14 @@ set -e
 
 echo "Starting build process..."
 
+# Bundle Workbox locally. The shell manifest is injected after the application
+# build so unchanged shell assets retain their existing Workbox cache entries.
+ONLYOFFICE_SW_OUT_DIR=.onlyoffice-sw ./node_modules/.bin/vite build -c vite.sw.config.ts
+
 # Run Vite build through the project-local binary.
 ./node_modules/.bin/vite build
+
+node scripts/inject-service-worker.mjs
 
 # Keep the deployable demo/runtime lean by removing low-frequency bundled
 # assets and emitting canonical path packs for per-document-type CDN sync.

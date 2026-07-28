@@ -80,6 +80,8 @@ export interface CreateOfficeEditorOptions {
   interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
   plugins?: OfficePluginOptions;
+  /** Font asset paths explicitly downloaded by the embedding application. */
+  downloadedFonts?: string[];
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
   destroyTimeoutMs?: number;
@@ -512,6 +514,7 @@ async function prepareHostInit(
       interfaceTheme: options.interfaceTheme,
       lang: options.lang,
       plugins: options.plugins,
+      downloadedFonts: options.downloadedFonts,
       saveBehavior: options.saveBehavior,
       source,
     },

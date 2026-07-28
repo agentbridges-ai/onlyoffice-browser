@@ -117,8 +117,14 @@ export interface CreateOfficeEditorOptions {
   onReady?: (instance: OfficeEditorInstance) => void;
   saveBehavior?: OfficeSaveBehavior;
   onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
-  onSaveAs?: (file: File, instance: OfficeEditorInstance) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
-  onDownload?: (file: File, instance: OfficeEditorInstance) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
+  onSaveAs?: (
+    file: File,
+    instance: OfficeEditorInstance,
+  ) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
+  onDownload?: (
+    file: File,
+    instance: OfficeEditorInstance,
+  ) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onStateChange?: (state: OfficeEditorState, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
@@ -367,12 +373,12 @@ type RuntimeWindow = typeof window & {
 };
 
 type OnlyOfficeFrameWindow = Window & {
-	  AscCommon?: {
-	    CKeyboardEvent?: new () => {
-	      CtrlKey?: boolean;
-	      KeyCode?: number;
-	    };
-	    baseEditorsApi?: {
+  AscCommon?: {
+    CKeyboardEvent?: new () => {
+      CtrlKey?: boolean;
+      KeyCode?: number;
+    };
+    baseEditorsApi?: {
       prototype?: {
         sync_InitEditorFonts?: (guiFonts: unknown[]) => unknown;
         __onlyOfficeBrowserFontPickerFilter?: boolean;
@@ -512,7 +518,10 @@ function resolveInitialMode(options: CreateOfficeEditorOptions): OfficeEditorMod
   return options.mode || (options.readonly ? 'readonly' : 'edit');
 }
 
-function normalizeOfficeInterfaceTheme(value: unknown, fallback: OnlyOfficeUiTheme = 'theme-system'): OnlyOfficeUiTheme {
+function normalizeOfficeInterfaceTheme(
+  value: unknown,
+  fallback: OnlyOfficeUiTheme = 'theme-system',
+): OnlyOfficeUiTheme {
   if (typeof value !== 'string') return fallback;
   const normalized = value.trim().toLowerCase();
   if (normalized === 'system' || normalized === 'theme-system') return 'theme-system';
@@ -542,9 +551,9 @@ function persistOnlyOfficeInterfaceTheme(theme: OnlyOfficeUiTheme): void {
 function filterModernOnlyOfficeThemeMap(themeMap: Record<string, unknown> | undefined): Record<string, unknown> {
   const source = themeMap || {};
   return Object.fromEntries(
-    MODERN_ONLYOFFICE_UI_THEME_IDS
-      .filter((themeId) => Object.prototype.hasOwnProperty.call(source, themeId))
-      .map((themeId) => [themeId, source[themeId]]),
+    MODERN_ONLYOFFICE_UI_THEME_IDS.filter((themeId) => Object.prototype.hasOwnProperty.call(source, themeId)).map(
+      (themeId) => [themeId, source[themeId]],
+    ),
   );
 }
 
@@ -573,7 +582,8 @@ function installModernOnlyOfficeThemeFilter(frameWindow: OnlyOfficeFrameWindow |
     themes.get = (theme: string) => originalGet(normalizeOfficeInterfaceTheme(theme));
   }
   if (originalSetTheme) {
-    themes.setTheme = (theme: OnlyOfficeUiTheme, source?: string) => originalSetTheme(normalizeOfficeInterfaceTheme(theme), source);
+    themes.setTheme = (theme: OnlyOfficeUiTheme, source?: string) =>
+      originalSetTheme(normalizeOfficeInterfaceTheme(theme), source);
   }
   themes.defaultThemeId = () => 'theme-white';
   if (originalGet) {
@@ -697,7 +707,9 @@ function normalizeDownloadFileType(value: unknown): string | number | undefined 
   return undefined;
 }
 
-function getNativeDownloadAsFileType(options: NativeDownloadAsOptions | string | number | undefined): string | number | undefined {
+function getNativeDownloadAsFileType(
+  options: NativeDownloadAsOptions | string | number | undefined,
+): string | number | undefined {
   const direct = normalizeDownloadFileType(options);
   if (direct !== undefined) return direct;
   if (!options || typeof options !== 'object') return undefined;
@@ -1107,7 +1119,10 @@ function getPrintResourceUrl(fileName: string): string {
   const pdfFileName = safeFileName.toLowerCase().endsWith('.pdf')
     ? safeFileName
     : replaceFileExtension(safeFileName, 'pdf');
-  const url = new URL(`${PRINT_PDF_ROUTE_PREFIX}${randomId}/${encodeURIComponent(pdfFileName)}`, window.location.origin);
+  const url = new URL(
+    `${PRINT_PDF_ROUTE_PREFIX}${randomId}/${encodeURIComponent(pdfFileName)}`,
+    window.location.origin,
+  );
   url.searchParams.set('filename', pdfFileName);
   return url.href;
 }
@@ -1215,7 +1230,10 @@ function looksLikeJpegDocument(bytes: Uint8Array): boolean {
 }
 
 function decodeUtf8Loose(bytes: Uint8Array): string {
-  return new TextDecoder('utf-8', { fatal: false }).decode(bytes).replace(/^\ufeff/, '').trimStart();
+  return new TextDecoder('utf-8', { fatal: false })
+    .decode(bytes)
+    .replace(/^\ufeff/, '')
+    .trimStart();
 }
 
 function looksLikePngDocument(bytes: Uint8Array): boolean {
@@ -1446,7 +1464,9 @@ function decodeDataUriBase64(value: string): Uint8Array | null {
 }
 
 function getExtensionFileNameSuffix(fileName: string): string {
-  const extension = getFileExtension(fileName).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const extension = getFileExtension(fileName)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
   return extension ? `_${extension}` : '';
 }
 
@@ -1933,8 +1953,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.editorLang = options.lang || getOnlyOfficeLang();
     const initialMode = resolveInitialMode(options);
     this.editorMode = initialMode;
-    this.previewEditAllowed = options.readonly !== true
-      && (initialMode === 'preview' || options.canReturnToPreview === true);
+    this.previewEditAllowed =
+      options.readonly !== true && (initialMode === 'preview' || options.canReturnToPreview === true);
     this.readonlyMode = { value: initialMode !== 'edit' };
   }
 
@@ -2032,9 +2052,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           },
           plugins: this.options.plugins?.configUrls.length
             ? {
-                pluginsData: this.options.plugins.configUrls.map(
-                  (url) => new URL(url, window.location.origin).href,
-                ),
+                pluginsData: this.options.plugins.configUrls.map((url) => new URL(url, window.location.origin).href),
                 autostart: this.options.plugins.autostart,
               }
             : undefined,
@@ -2202,12 +2220,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     const getNativeModeCaption = () =>
       frameDocument
         .querySelector('#slot-btn-edit-mode .btn.dropdown-toggle .caption')
-        ?.textContent
-        ?.replace(/\s+/g, ' ')
+        ?.textContent?.replace(/\s+/g, ' ')
         .trim()
         .toLowerCase() || '';
     const isVisibleElement = (element: Element | null) => {
-      const FrameHTMLElement = (frameWindow as Window & { HTMLElement?: typeof HTMLElement }).HTMLElement || HTMLElement;
+      const FrameHTMLElement =
+        (frameWindow as Window & { HTMLElement?: typeof HTMLElement }).HTMLElement || HTMLElement;
       if (!element || !(element instanceof FrameHTMLElement)) return false;
       const style = frameWindow.getComputedStyle(element);
       if (style.display === 'none' || style.visibility === 'hidden') return false;
@@ -2339,7 +2357,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     };
     const isNativePreviewMode = () => {
       const caption = getNativeModeCaption();
-      return caption.startsWith('view') || caption.startsWith('查看') || caption.startsWith('preview') || caption.startsWith('预览');
+      return (
+        caption.startsWith('view') ||
+        caption.startsWith('查看') ||
+        caption.startsWith('preview') ||
+        caption.startsWith('预览')
+      );
     };
     const syncNativeEditMode = () => {
       checkTimeoutId = null;
@@ -2366,9 +2389,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     };
 
     const editModeSlot = frameDocument.getElementById('slot-btn-edit-mode');
-    const observer = typeof MutationObserver === 'function'
-      ? new MutationObserver(scheduleSync)
-      : null;
+    const observer = typeof MutationObserver === 'function' ? new MutationObserver(scheduleSync) : null;
     observer?.observe(editModeSlot || frameDocument.body, {
       childList: true,
       subtree: true,
@@ -2506,10 +2527,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       const originalTrigger = notificationCenter.trigger.bind(notificationCenter);
       notificationCenter.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal = originalTrigger;
       notificationCenter.trigger = (eventName?: unknown, ...args: unknown[]) => {
-        if (
-          eventName === 'file:print' &&
-          !frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel
-        ) {
+        if (eventName === 'file:print' && !frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel) {
           this.closeSpreadsheetPdfPrintPanel(frameWindow, { restoreSourcePanel: false });
           frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = null;
         }
@@ -2591,10 +2609,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     printSettings.__onlyOfficeBrowserSpreadsheetPdfPrintShowPatched = true;
   }
 
-  private openSpreadsheetPdfPrintPanel(
-    frameWindow: OnlyOfficeFrameWindow,
-    mode: SpreadsheetPdfPrintExportMode,
-  ): void {
+  private openSpreadsheetPdfPrintPanel(frameWindow: OnlyOfficeFrameWindow, mode: SpreadsheetPdfPrintExportMode): void {
     this.installSpreadsheetPdfPrintControllerPatch(frameWindow);
     this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true, restoreSourcePanel: false });
     frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = mode;
@@ -2641,7 +2656,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       } else if (typeof leftMenuController?.clickToolbarPrint === 'function') {
         leftMenuController.clickToolbarPrint();
       } else {
-        frameWindow.Common?.NotificationCenter?.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal?.('file:print', this);
+        frameWindow.Common?.NotificationCenter?.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal?.(
+          'file:print',
+          this,
+        );
       }
     } finally {
       frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel = false;
@@ -2779,7 +2797,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     const statusbarController = getOnlyOfficeController<{ getSelectTabs?: () => unknown }>(frameWindow, 'Statusbar');
     const activeSheets =
       range === printTypes?.Selection || range === printTypes?.ActiveSheets
-        ? statusbarController?.getSelectTabs?.() ?? null
+        ? (statusbarController?.getSelectTabs?.() ?? null)
         : null;
     adjustPrintParams.asc_setActiveSheetsArray?.(activeSheets);
 
@@ -2804,11 +2822,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     const pageWidth = getOnlyOfficeNumber(pageSetup?.asc_getWidth?.(), 0);
     const pageHeight = getOnlyOfficeNumber(pageSetup?.asc_getHeight?.(), 0);
     const orientationRecord = printSettings.cmbPaperOrientation?.getSelectedRecord?.();
-    const paperOrientation = orientationRecord?.value === 'auto'
-      ? 'auto'
-      : pageSetup?.asc_getOrientation?.()
-        ? 'landscape'
-        : 'portrait';
+    const paperOrientation =
+      orientationRecord?.value === 'auto' ? 'auto' : pageSetup?.asc_getOrientation?.() ? 'landscape' : 'portrait';
     const printer = printSettings.cmbPrinter?.getSelectedRecord?.();
     const colorMode = printSettings.cmbColorPrinting?.getValue?.();
     adjustPrintParams.asc_setNativeOptions?.({
@@ -2835,8 +2850,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true });
     frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = null;
     api.asc_DownloadAs(options);
-    const toolbarView = getOnlyOfficeController<{ getView?: (name: string) => unknown }>(frameWindow, 'Toolbar')
-      ?.getView?.('Toolbar');
+    const toolbarView = getOnlyOfficeController<{ getView?: (name: string) => unknown }>(
+      frameWindow,
+      'Toolbar',
+    )?.getView?.('Toolbar');
     frameWindow.Common?.NotificationCenter?.trigger?.('edit:complete', toolbarView);
   }
 
@@ -3045,7 +3062,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     }
 
     try {
-      const result: BinConversionResult = await convertBinToDocument(sourceBytes, this.fileName, targetFormat, this.media);
+      const result: BinConversionResult = await convertBinToDocument(
+        sourceBytes,
+        this.fileName,
+        targetFormat,
+        this.media,
+      );
       let fileName = result.fileName;
       let bytes = toUint8Array(result.data);
       let validationTargetExt = normalizedTargetFormat;
@@ -3250,7 +3272,11 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   private async createDownloadAsFileFromEvent(event: DownloadAsEvent): Promise<File> {
-    const targetExt = getDownloadTargetExtension(event.data?.fileType, event.data?.url, getFileExtension(this.fileName));
+    const targetExt = getDownloadTargetExtension(
+      event.data?.fileType,
+      event.data?.url,
+      getFileExtension(this.fileName),
+    );
     const url = event.data?.url;
     if (!url) {
       const file = await this.convertDownloadAsFile(targetExt, event.nativeOptions);
@@ -3498,7 +3524,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   getState(): OfficeEditorState {
-    const mode: OfficeEditorMode = this.editorMode === 'preview' ? 'preview' : this.readonlyMode.value ? 'readonly' : 'edit';
+    const mode: OfficeEditorMode =
+      this.editorMode === 'preview' ? 'preview' : this.readonlyMode.value ? 'readonly' : 'edit';
     return {
       id: this.id,
       fileName: this.fileName,

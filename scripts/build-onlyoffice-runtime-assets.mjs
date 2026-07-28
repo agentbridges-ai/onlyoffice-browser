@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -267,6 +268,11 @@ export function collectRuntimeAssets(input, options) {
         path: relativePath,
         pack,
         bytes: fs.statSync(path.join(input, relativePath)).size,
+        revision: crypto
+          .createHash('sha256')
+          .update(fs.readFileSync(path.join(input, relativePath)))
+          .digest('hex')
+          .slice(0, 16),
       });
     } else if (isRuntimeAsset(relativePath)) {
       excluded.push(relativePath);

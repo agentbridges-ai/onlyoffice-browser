@@ -21,6 +21,9 @@ interface GeneratorModule {
   collectFontFiles(inputDir: string): string[];
   dockerGenerationScript(options: { fontSet: string; keepFonts: string[] }): string;
   generateOnlyOfficeFontAssets(options: GeneratorOptions): void;
+  readGeneratedBuiltInFonts(source: string, keptFamilyNames: string[]): string[];
+  readGeneratedFallbackFonts(source: string): Record<string, string[]>;
+  readGeneratedFontFamilies(source: string): Array<{ name: string; paths: string[] }>;
   isSupportedFontFileName(fileName: string): boolean;
   parseGenerateFontAssetsArgs(argv: string[], env?: Record<string, string>): GeneratorOptions;
   validateGenerateFontAssetsOptions(options: GeneratorOptions): {
@@ -44,6 +47,9 @@ const {
   collectFontFiles,
   dockerGenerationScript,
   generateOnlyOfficeFontAssets,
+  readGeneratedBuiltInFonts,
+  readGeneratedFallbackFonts,
+  readGeneratedFontFamilies,
   isSupportedFontFileName,
   parseGenerateFontAssetsArgs,
   validateGenerateFontAssetsOptions,
@@ -189,11 +195,19 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(script).toContain('MS Gothic');
     expect(script).toContain('MS PGothic');
     expect(script).toContain('MS UI Gothic');
+    expect(script).toContain('Noto Emoji');
+    expect(script).toContain('Noto Naskh Arabic');
+    expect(script).toContain('Noto Sans KR');
     expect(script).toContain('symbol.ttf');
     expect(script).toContain('wingdings.ttf');
     expect(script).toContain('mtextra.ttf');
     expect(script).toContain('seguisym.ttf');
     expect(script).toContain('msgothic.ttc');
+    expect(script).toContain('NotoEmoji-Regular.ttf');
+    expect(script).toContain('NotoNaskhArabic-Regular.ttf');
+    expect(script).toContain('NotoNaskhArabic-Bold.ttf');
+    expect(script).toContain('NotoSansKR-Regular.otf');
+    expect(script).toContain('NotoSansKR-Bold.otf');
     expect(script).toContain('ASC.ttf');
     expect(script).toContain('ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY');
     expect(script).toContain('EXTRA_DIR="$EXTRA"');
@@ -206,6 +220,13 @@ describe('generate-onlyoffice-font-assets options', () => {
     );
     expect(script).toContain('info[slot_index + 1] = exact_source_face_index');
     expect(script).toContain('info[0] in zh_core_hidden_font_families');
+    expect(script).toContain('fallback_source_index_for_family');
+    expect(script).toContain('is_japanese_family_name');
+    expect(script).toContain('is_korean_family_name');
+    expect(script).toContain('is_arabic_family_name');
+    expect(script).toContain('is_emoji_family_name');
+    expect(script).toContain('is_math_family_name');
+    expect(script).toContain('"styles": sorted(styles_by_source_index.get(old_index, set()))');
     expect(script).toContain('visible_family_names = {info[0] for info in web_infos');
     expect(script).toContain('"visibleFamilies": sorted(visible_family_names)');
   });
@@ -218,5 +239,51 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(source.indexOf('createFontStagingDirectory(validated.fontFiles)')).toBeLessThan(
       source.indexOf('prepareOutputDirectory(validated.output)'),
     );
+  });
+
+  it('uses the same visible font-family list and face files as generated AllFonts.js', () => {
+    const source = `
+      window["__fonts_files"] = [
+        "arial.ttf",
+        "arialbd.ttf",
+        "msyh.ttc",
+        "wingdings.ttf",
+        "msgothic.ttc",
+        "NotoSansKR-Regular.otf",
+        "NotoNaskhArabic-Regular.ttf",
+        "NotoEmoji-Regular.ttf",
+        "cambria.ttc",
+        "seguisym.ttf"
+      ];
+      window["__fonts_visible_names"] = ["Arial", "Microsoft YaHei"];
+      window["__fonts_infos"] = [
+        ["Arial", 0, 0, -1, -1, 1, 0, -1, -1],
+        ["Microsoft YaHei", 2, 0, -1, -1, 2, 1, -1, -1],
+        ["Wingdings", 3, 0, -1, -1, -1, -1, -1, -1],
+        ["MS Gothic", 4, 0, -1, -1, -1, -1, -1, -1],
+        ["Noto Sans KR", 5, 0, -1, -1, 5, 0, -1, -1],
+        ["Noto Naskh Arabic", 6, 0, -1, -1, 6, 0, -1, -1],
+        ["Noto Emoji", 7, 0, -1, -1, -1, -1, -1, -1],
+        ["Cambria Math", 8, 1, -1, -1, -1, -1, -1, -1],
+        ["Segoe UI Symbol", 9, 0, -1, -1, -1, -1, -1, -1]
+      ];
+    `;
+
+    expect(readGeneratedFontFamilies(source)).toEqual([
+      { name: 'Arial', paths: ['fonts/arial.ttf', 'fonts/arialbd.ttf'] },
+      { name: 'Microsoft YaHei', paths: ['fonts/msyh.ttc'] },
+    ]);
+    expect(readGeneratedBuiltInFonts(source, ['Arial', 'Microsoft YaHei', 'Wingdings'])).toEqual([
+      'fonts/wingdings.ttf',
+    ]);
+    expect(readGeneratedFallbackFonts(source)).toEqual({
+      default: ['fonts/msyh.ttc'],
+      japanese: ['fonts/msgothic.ttc'],
+      korean: ['fonts/NotoSansKR-Regular.otf'],
+      arabic: ['fonts/NotoNaskhArabic-Regular.ttf'],
+      emoji: ['fonts/NotoEmoji-Regular.ttf'],
+      math: ['fonts/cambria.ttc'],
+      symbol: ['fonts/seguisym.ttf'],
+    });
   });
 });
