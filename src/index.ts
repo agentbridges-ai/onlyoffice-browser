@@ -106,6 +106,16 @@ let runtimeCacheLoading = false;
 
 if ('serviceWorker' in navigator) {
   const workbox = new Workbox('/sw.js', { scope: '/' });
+  let reloadingForServiceWorkerUpdate = false;
+  workbox.addEventListener('waiting', () => {
+    // Activate a new shell only when no editor can lose unsaved work.
+    if (records.length === 0) void workbox.messageSkipWaiting();
+  });
+  workbox.addEventListener('controlling', () => {
+    if (records.length > 0 || reloadingForServiceWorkerUpdate) return;
+    reloadingForServiceWorkerUpdate = true;
+    window.location.reload();
+  });
   void workbox.register().then(() => {
     const updateInterval = window.setInterval(() => void workbox.update(), 60 * 60 * 1000);
     window.addEventListener('pagehide', () => window.clearInterval(updateInterval), { once: true });

@@ -101,6 +101,16 @@ describe('SW fetch routing', () => {
     expect(sw).not.toContain("self.addEventListener('install'");
   });
 
+  it('activates a waiting shell update only when no editor can lose unsaved work', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'src/index.ts'), 'utf8');
+
+    expect(source).toContain("workbox.addEventListener('waiting'");
+    expect(source).toContain('if (records.length === 0) void workbox.messageSkipWaiting()');
+    expect(source).toContain("workbox.addEventListener('controlling'");
+    expect(source).toContain('if (records.length > 0 || reloadingForServiceWorkerUpdate) return');
+    expect(source).toContain('window.location.reload()');
+  });
+
   it('proxies isolated-host shared assets directly to the immutable canonical URL', () => {
     const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
 
