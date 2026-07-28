@@ -44,10 +44,14 @@ describe('generated font assets runtime checks', () => {
   });
 
   it('probes the canonical generated font asset paths before editor startup', async () => {
+    const manifest = {
+      ...MANIFEST,
+      defaultFonts: ['fonts/default.ttf'],
+    };
     const fetchMock = vi.fn((url: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(url), window.location.href).pathname;
       if (path === '/onlyoffice-browser-font-assets.json') {
-        return Promise.resolve(new Response(JSON.stringify(MANIFEST), { status: 200 }));
+        return Promise.resolve(new Response(JSON.stringify(manifest), { status: 200 }));
       }
       if (init?.headers && (init.headers as Record<string, string>).Range === 'bytes=0-0') {
         return Promise.resolve(new Response(null, { status: 200 }));
@@ -56,19 +60,20 @@ describe('generated font assets runtime checks', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(assertGeneratedFontAssetsAvailable()).resolves.toMatchObject(MANIFEST);
+    await expect(assertGeneratedFontAssetsAvailable()).resolves.toMatchObject(manifest);
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/sdkjs/common/AllFonts.js'), {
       cache: 'no-cache',
       headers: {
         Range: 'bytes=0-0',
       },
     });
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/fonts/000.ttf'), {
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/fonts/default.ttf'), {
       cache: 'no-cache',
       headers: {
         Range: 'bytes=0-0',
       },
     });
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/fonts/000.ttf'), expect.anything());
   });
 
   it('loads generated binary assets through the canonical runtime path', async () => {

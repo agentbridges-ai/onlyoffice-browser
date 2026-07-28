@@ -324,3 +324,40 @@ npm run test:real-load -- \
 By default each cycle opens 3 real files simultaneously and covers `edit`, `readonly`, and `preview` in the same batch; it waits for every instance to fire `onDocumentReady`, then waits 2 seconds, closes them through the demo Close All control, repeats 60 times, and writes JSON/CSV reports to `test-results/memory/`. Pass `--batch-size=N` to change concurrency; real-file mode requires at least N `--file` arguments.
 
 Use `--modes=preview` to stress only the upstream embedded preview shell, or `--modes=edit,readonly,preview --batch-size=3` for explicit mixed-mode batches.
+
+## Runtime resources and downloadable fonts
+
+The package exports `createOfficeRuntimeResourceManager()` for applications that
+want to expose explicit resource management instead of downloading the compact
+runtime automatically. The manager is browser-local: its verified cache and
+installed-font state are not application user preferences.
+
+```ts
+import { createOfficeRuntimeResourceManager } from '@agentbridges-ai/onlyoffice-browser';
+
+const resources = createOfficeRuntimeResourceManager({
+  assetBaseUrl: 'https://onlyoffice.example.com/',
+});
+
+resources.subscribe((snapshot) => {
+  console.log(snapshot.progress, snapshot.fontPacks);
+});
+
+await resources.initialize();
+await resources.downloadAll();
+await resources.checkAndRepair();
+await resources.downloadFont('Microsoft YaHei');
+await resources.removeFont('Microsoft YaHei');
+
+const downloadedFonts = await resources.getVerifiedFontPaths();
+```
+
+`DengXian` is the required default font and cannot be removed. `Microsoft YaHei`
+is an optional downloadable font. Pass `getVerifiedFontPaths()` to the editor's
+`downloadedFonts` option when mounting a new editor. Existing editors are not
+reloaded automatically, so unsaved document state remains untouched.
+
+Concurrent identical operations share one promise, all mutating operations are
+serialized, and manifest-version changes invalidate stale verification records.
+Only resources downloaded and integrity-checked against the current manifest
+are reported as complete; ordinary HTTP cache hits are not counted as verified.

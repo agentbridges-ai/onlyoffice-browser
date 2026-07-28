@@ -73,7 +73,7 @@ app.innerHTML = `
       <section class="font-downloads" aria-labelledby="font-downloads-title">
         <h3 id="font-downloads-title">Font family</h3>
         <p>
-          Microsoft YaHei is the default fallback. The first font package also installs the shared
+          DengXian is the default fallback. The first font package also installs the shared
           thumbnails, indexes, and compatibility fonts once; later families reuse them.
         </p>
         <div id="font-download-list" class="font-download-list"></div>
@@ -196,8 +196,14 @@ function renderFontDownloads(): void {
       label.textContent = `${font.name} · ${formatBytes(font.bytes)}`;
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = font.downloaded ? (font.removable ? 'Remove' : 'Downloaded') : 'Download';
-      button.disabled = font.downloaded && !font.removable;
+      button.textContent = !font.removable
+        ? font.downloaded
+          ? 'Downloaded'
+          : 'Required'
+        : font.downloaded
+          ? 'Remove'
+          : 'Download';
+      button.disabled = !font.removable;
       button.addEventListener('click', async () => {
         if (!runtimeCacheController) return;
         button.disabled = true;

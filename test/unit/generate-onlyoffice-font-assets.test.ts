@@ -257,6 +257,8 @@ describe('generate-onlyoffice-font-assets options', () => {
       window["__fonts_files"] = [
         "arial.ttf",
         "arialbd.ttf",
+        "Deng.ttf",
+        "Dengb.ttf",
         "msyh.ttc",
         "wingdings.ttf",
         "msgothic.ttc",
@@ -266,29 +268,31 @@ describe('generate-onlyoffice-font-assets options', () => {
         "cambria.ttc",
         "seguisym.ttf"
       ];
-      window["__fonts_visible_names"] = ["Arial", "Microsoft YaHei"];
+      window["__fonts_visible_names"] = ["Arial", "DengXian", "Microsoft YaHei"];
       window["__fonts_infos"] = [
         ["Arial", 0, 0, -1, -1, 1, 0, -1, -1],
-        ["Microsoft YaHei", 2, 0, -1, -1, 2, 1, -1, -1],
-        ["Wingdings", 3, 0, -1, -1, -1, -1, -1, -1],
-        ["MS Gothic", 4, 0, -1, -1, -1, -1, -1, -1],
-        ["Noto Sans KR", 5, 0, -1, -1, 5, 0, -1, -1],
-        ["Noto Naskh Arabic", 6, 0, -1, -1, 6, 0, -1, -1],
-        ["Noto Emoji", 7, 0, -1, -1, -1, -1, -1, -1],
-        ["Cambria Math", 8, 1, -1, -1, -1, -1, -1, -1],
-        ["Segoe UI Symbol", 9, 0, -1, -1, -1, -1, -1, -1]
+        ["DengXian", 2, 0, 2, 0, 3, 0, 3, 0],
+        ["Microsoft YaHei", 4, 0, -1, -1, 4, 1, -1, -1],
+        ["Wingdings", 5, 0, -1, -1, -1, -1, -1, -1],
+        ["MS Gothic", 6, 0, -1, -1, -1, -1, -1, -1],
+        ["Noto Sans KR", 7, 0, -1, -1, 7, 0, -1, -1],
+        ["Noto Naskh Arabic", 8, 0, -1, -1, 8, 0, -1, -1],
+        ["Noto Emoji", 9, 0, -1, -1, -1, -1, -1, -1],
+        ["Cambria Math", 10, 1, -1, -1, -1, -1, -1, -1],
+        ["Segoe UI Symbol", 11, 0, -1, -1, -1, -1, -1, -1]
       ];
     `;
 
     expect(readGeneratedFontFamilies(source)).toEqual([
       { name: 'Arial', paths: ['fonts/arial.ttf', 'fonts/arialbd.ttf'] },
+      { name: 'DengXian', paths: ['fonts/Deng.ttf', 'fonts/Dengb.ttf'] },
       { name: 'Microsoft YaHei', paths: ['fonts/msyh.ttc'] },
     ]);
     expect(readGeneratedBuiltInFonts(source, ['Arial', 'Microsoft YaHei', 'Wingdings'])).toEqual([
       'fonts/wingdings.ttf',
     ]);
     expect(readGeneratedFallbackFonts(source)).toEqual({
-      default: ['fonts/msyh.ttc'],
+      default: ['fonts/Deng.ttf', 'fonts/Dengb.ttf'],
       japanese: ['fonts/msgothic.ttc'],
       korean: ['fonts/NotoSansKR-Regular.otf'],
       arabic: ['fonts/NotoNaskhArabic-Regular.ttf'],

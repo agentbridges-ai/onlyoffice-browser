@@ -26,3 +26,19 @@ export {
   type OfficeSaveCallbackResult,
   type OfficeSaveToNewFormatConfirmationOptions,
 } from './lib/office-editor';
+export {
+  createOfficeRuntimeResourceManager,
+  OfficeRuntimeResourceManager,
+  type OfficeRuntimeResourceListener,
+  type OfficeRuntimeResourceManagerOptions,
+  type OfficeRuntimeResourceOperation,
+  type OfficeRuntimeResourceSnapshot,
+} from './lib/runtime-resources';
+export type {
+  RuntimeCacheAsset,
+  RuntimeCacheCategory,
+  RuntimeCacheCategoryProgress,
+  RuntimeCacheProgress,
+  RuntimeFontFamily,
+  RuntimeFontPackage,
+} from './lib/runtime-cache';

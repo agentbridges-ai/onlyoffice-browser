@@ -32,8 +32,8 @@ const root = document.querySelector<HTMLElement>('#office-host') ?? document.bod
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
 /** Bump whenever already-open host frames must be recreated. */
-const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.34';
-const OFFICE_HOST_BUILD_ID = 'office-host-0.3.34-r2';
+const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.35';
+const OFFICE_HOST_BUILD_ID = 'office-host-0.3.35-r1';
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const OFFICE_SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
 const OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS = 30_000;
@@ -613,7 +613,9 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
   startStartupHeartbeat();
 
   try {
-    const visibleFontNames = await resolveInitialFontState(message.options.downloadedFonts || []);
+    const { visibleFontNames, fallbackFontNames } = await resolveInitialFontState(
+      message.options.downloadedFonts || [],
+    );
     (window as PrintTitleHostWindow).__onlyOfficeBrowserSetPrintTitle = (title, durationMs = 45_000) => {
       postPortMessage({
         protocol: OFFICE_HOST_PROTOCOL,
@@ -635,6 +637,7 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       lang: message.options.lang,
       plugins: message.options.plugins,
       visibleFontNames,
+      fallbackFontNames,
       saveBehavior: message.options.saveBehavior,
       onReady: (instance) => {
         postState('STATE', instance.getState());
@@ -673,13 +676,22 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
   }
 }
 
-async function resolveInitialFontState(paths: string[]): Promise<string[]> {
+async function resolveInitialFontState(
+  paths: string[],
+): Promise<{ visibleFontNames: string[]; fallbackFontNames: string[] }> {
   const downloadedFontPaths = [...new Set(paths.filter((path) => /^fonts\/[^/]+$/.test(path)))];
   const [manifest] = await Promise.all([
     fetchGeneratedFontAssetsManifest(),
     configureDownloadedFonts(downloadedFontPaths),
   ]);
-  return resolveAvailableFontFamilyNames(manifest, downloadedFontPaths);
+  const visibleFontNames = resolveAvailableFontFamilyNames(manifest, downloadedFontPaths);
+  const visibleFontNameSet = new Set(visibleFontNames);
+  return {
+    visibleFontNames,
+    fallbackFontNames: (manifest.fontFamilies || [])
+      .map((family) => family.name)
+      .filter((name) => !visibleFontNameSet.has(name)),
+  };
 }
 
 async function configureDownloadedFonts(paths: string[]): Promise<void> {

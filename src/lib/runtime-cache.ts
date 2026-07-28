@@ -348,6 +348,7 @@ export class RuntimeCacheController {
   readonly completed: Set<string>;
   private readonly storage: Storage;
   private readonly fetchImpl: typeof fetch;
+  private readonly assetBaseUrl: URL;
   private readonly installedFonts: Set<string>;
   private readonly downloadedFonts: Set<string>;
   private readonly cacheStorage?: CacheStorage;
@@ -367,6 +368,7 @@ export class RuntimeCacheController {
     downloadedFonts = new Set<string>(),
     requiredFontPaths: string[] = [],
     cacheStorage?: CacheStorage,
+    assetBaseUrl: string | URL = window.location.origin,
   ) {
     this.assets = assets;
     this.fontCatalog = fontCatalog;
@@ -382,6 +384,7 @@ export class RuntimeCacheController {
     this.version = version;
     this.storage = storage;
     this.fetchImpl = fetchImpl;
+    this.assetBaseUrl = new URL('/', assetBaseUrl);
     this.completed = completed || readStoredProgress(storage, version).completed;
     this.lastVerifiedAt = lastVerifiedAt;
     this.installedFonts = installedFonts;
@@ -393,8 +396,10 @@ export class RuntimeCacheController {
     storage: Storage = window.localStorage,
     fetchImpl: typeof fetch = window.fetch.bind(window),
     cacheStorage: CacheStorage | undefined = window.caches,
+    assetBaseUrl: string | URL = window.location.origin,
   ): Promise<RuntimeCacheController> {
-    const manifestUrl = new URL(RUNTIME_MANIFEST_PATH, window.location.origin);
+    const baseUrl = new URL('/', assetBaseUrl);
+    const manifestUrl = new URL(RUNTIME_MANIFEST_PATH, baseUrl);
     const versionResponse = await fetchImpl(manifestUrl.href, {
       method: 'HEAD',
       cache: 'no-cache',
@@ -426,6 +431,7 @@ export class RuntimeCacheController {
         downloadedFonts,
         stored.requiredFonts,
         cacheStorage,
+        baseUrl,
       );
       await controller.reconcileFontPackageCache();
       return controller;
@@ -441,7 +447,7 @@ export class RuntimeCacheController {
     try {
       runtime = parseRuntimeManifest(runtimeValue);
     } catch {
-      const recoveryUrl = new URL(RUNTIME_MANIFEST_PATH, window.location.origin);
+      const recoveryUrl = new URL(RUNTIME_MANIFEST_PATH, baseUrl);
       recoveryUrl.searchParams.set('__cache_status', String(Date.now()));
       recoveryUrl.searchParams.set('retry', '1');
       runtimeResponse = await fetchImpl(recoveryUrl.href, { cache: 'reload', credentials: 'omit' });
@@ -457,7 +463,7 @@ export class RuntimeCacheController {
       runtimeResponse.headers.get('etag')?.replaceAll('"', '') ||
       runtime.generatedAt;
 
-    const fontManifestUrl = new URL(FONT_MANIFEST_PATH, window.location.origin);
+    const fontManifestUrl = new URL(FONT_MANIFEST_PATH, baseUrl);
     if (version) fontManifestUrl.searchParams.set('__oobv', version);
     const fontResponse = await fetchImpl(fontManifestUrl.href, {
       cache: version ? 'force-cache' : 'reload',
@@ -530,6 +536,7 @@ export class RuntimeCacheController {
       downloadedFonts,
       requiredFontPaths,
       cacheStorage,
+      baseUrl,
     );
     await controller.reconcileFontPackageCache();
     writeStoredProgress(
@@ -681,7 +688,7 @@ export class RuntimeCacheController {
       if (cache) {
         await Promise.all([
           cache.delete(this.versionedUrl(asset)),
-          cache.delete(new URL(asset.path, window.location.origin).href),
+          cache.delete(new URL(asset.path, this.assetBaseUrl).href),
         ]);
       }
       this.completed.delete(path);
@@ -750,7 +757,7 @@ export class RuntimeCacheController {
   }
 
   private versionedUrl(asset: RuntimeCacheAsset): string {
-    const url = new URL(asset.path, window.location.origin);
+    const url = new URL(asset.path, this.assetBaseUrl);
     url.searchParams.set('__oobv', asset.revision || this.version);
     return url.href;
   }
@@ -784,7 +791,7 @@ export class RuntimeCacheController {
     const response = await this.fetchImpl(this.versionedUrl(asset), {
       cache,
       credentials: 'omit',
-      mode: 'same-origin',
+      mode: this.assetBaseUrl.origin === window.location.origin ? 'same-origin' : 'cors',
     });
     if (!response.ok) throw new Error(`${asset.path}: HTTP ${response.status}`);
     const cacheResponse = asset.category === 'fonts' ? response.clone() : null;

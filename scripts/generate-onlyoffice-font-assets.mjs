@@ -154,6 +154,7 @@ const ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY = {
 };
 const LATIN_FALLBACK_FONT_FAMILIES = ['Calibri', 'Arial', 'Carlito', 'Liberation Sans', 'DejaVu Sans', 'Open Sans'];
 const CJK_FALLBACK_FONT_FAMILIES = [
+  'DengXian',
   'Microsoft YaHei',
   'SimSun',
   'Noto Sans SC',
@@ -171,7 +172,7 @@ const ARABIC_FALLBACK_FONT_FAMILIES = ['Noto Naskh Arabic', 'Noto Naskh Arabic U
 const EMOJI_FALLBACK_FONT_FAMILIES = ['Noto Emoji'];
 const MATH_FALLBACK_FONT_FAMILIES = ['Cambria Math', 'Asana Math'];
 const FALLBACK_FONT_FAMILY_BY_ROLE = {
-  default: 'Microsoft YaHei',
+  default: 'DengXian',
   japanese: 'MS Gothic',
   korean: 'Noto Sans KR',
   arabic: 'Noto Naskh Arabic',
@@ -931,7 +932,7 @@ export function writeGeneratedManifest(output, options) {
     ]),
   );
   const defaultFonts = (fontSourceMapValue.fonts || [])
-    .filter((font) => ['msyh.ttc', 'msyhbd.ttc'].includes(path.basename(font.source || '').toLowerCase()))
+    .filter((font) => ['deng.ttf', 'dengb.ttf'].includes(path.basename(font.source || '').toLowerCase()))
     .map((font) => font.file);
   if (defaultFonts.length === 0 && fonts[0]) defaultFonts.push(fonts[0]);
   const builtInFonts = readGeneratedBuiltInFonts(allFontsSource, BUILT_IN_FONT_FAMILIES);

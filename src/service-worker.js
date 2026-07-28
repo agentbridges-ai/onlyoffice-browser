@@ -3,6 +3,10 @@ import { ExpirationPlugin } from 'workbox-expiration';
 import { cleanupOutdatedCaches, matchPrecache, precacheAndRoute } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
 import { NetworkFirst, StaleWhileRevalidate } from 'workbox-strategies';
+import {
+  buildAllFontsMetadataFallbackBootstrap,
+  resolveFontMetadataFallbackConfig,
+} from './lib/font-metadata-fallback';
 
 const SERVICE_WORKER_VERSION = 'SW_VERSION_PLACEHOLDER';
 const PRINT_PDF_CACHE_NAME = 'onlyoffice-browser-print-pdfs';
@@ -31,44 +35,6 @@ const canonicalOfficeOrigin = isLocalEditorHost
   : `https://${CANONICAL_OFFICE_HOST}`;
 let sharedAssetManifestPromise;
 let downloadedFontPaths = new Set();
-
-const fontFallbackRole = (families = []) => {
-  const names = families.join(' ').toLowerCase();
-  if (names.includes('emoji')) return 'emoji';
-  if (/(?:\bmath\b|stix)/.test(names)) return 'math';
-  if (/(?:arabic|amiri|kacst|kufi|naskh|scheherazade)/.test(names)) return 'arabic';
-  if (/(?:batang|dotum|gulim|gungsuh|malgun|nanum|noto sans kr)/.test(names)) return 'korean';
-  if (/(?:meiryo|ms (?:p?gothic|p?mincho)|noto sans jp|takao|yu (?:gothic|mincho))/.test(names)) {
-    return 'japanese';
-  }
-  if (/(?:symbol|wingdings|webdings|dingbats|marlett|monotype sorts|mt extra)/.test(names)) return 'symbol';
-  return 'default';
-};
-
-const selectFallbackFont = ({ requested, fallbackFonts, defaultFonts, fontAssets }) => {
-  const role = fontFallbackRole(requested?.families);
-  const candidates = fallbackFonts[role] || fallbackFonts.default || defaultFonts;
-  const requestedStyles = new Set(requested?.styles || []);
-  const wantsBold = requestedStyles.has('bold') || requestedStyles.has('boldItalic');
-  const wantsItalic = requestedStyles.has('italic') || requestedStyles.has('boldItalic');
-  const exactStyle = candidates.find((candidatePath) => {
-    const styles = new Set(fontAssets.get(candidatePath)?.styles || []);
-    return (
-      (styles.has('bold') || styles.has('boldItalic')) === wantsBold &&
-      (styles.has('italic') || styles.has('boldItalic')) === wantsItalic
-    );
-  });
-  if (exactStyle) return exactStyle;
-  return (
-    candidates.find((candidatePath) => {
-      const styles = new Set(fontAssets.get(candidatePath)?.styles || []);
-      return (styles.has('bold') || styles.has('boldItalic')) === wantsBold;
-    }) ||
-    candidates[0] ||
-    defaultFonts[0]
-  );
-};
-
 setCacheNameDetails({
   prefix: 'onlyoffice-browser',
   precache: 'shell-v1',
@@ -125,11 +91,9 @@ const resolveSharedAssetManifest = async () => {
           loadVersionedJson(FONT_MANIFEST_PATH, version),
         ]);
         const revisions = new Map();
-        const fontAssets = new Map();
         for (const asset of [...(runtime.assets || []), ...(fonts.assets || [])]) {
           if (typeof asset?.path === 'string' && typeof asset?.revision === 'string') {
             revisions.set(asset.path, asset.revision);
-            if (asset.path.startsWith('fonts/')) fontAssets.set(asset.path, asset);
           }
         }
         revisions.set(ONLYOFFICE_RUNTIME_MANIFEST_PATH.slice(1), version);
@@ -137,17 +101,7 @@ const resolveSharedAssetManifest = async () => {
         return {
           version,
           revisions,
-          fontAssets,
-          defaultFonts: Array.isArray(fonts.defaultFonts) ? fonts.defaultFonts : [],
-          builtInFonts: Array.isArray(fonts.builtInFonts) ? fonts.builtInFonts : [],
-          fallbackFonts:
-            fonts.fallbackFonts && typeof fonts.fallbackFonts === 'object'
-              ? Object.fromEntries(
-                  Object.entries(fonts.fallbackFonts).filter(
-                    ([, paths]) => Array.isArray(paths) && paths.every((path) => typeof path === 'string'),
-                  ),
-                )
-              : {},
+          fonts,
         };
       })
       .catch((error) => {
@@ -160,27 +114,19 @@ const resolveSharedAssetManifest = async () => {
 
 const fetchSharedAsset = async (request, url) => {
   try {
-    const { version, revisions, fontAssets, defaultFonts, builtInFonts, fallbackFonts } =
-      await resolveSharedAssetManifest();
+    const { version, revisions, fonts } = await resolveSharedAssetManifest();
     const canonicalUrl = new URL(`${url.pathname}${url.search}`, canonicalOfficeOrigin);
-    let path = canonicalUrl.pathname.slice(1);
-    if (
-      path.startsWith('fonts/') &&
-      !downloadedFontPaths.has(path) &&
-      !defaultFonts.includes(path) &&
-      !builtInFonts.includes(path)
-    ) {
-      const requested = fontAssets.get(path);
-      path = selectFallbackFont({ requested, fallbackFonts, defaultFonts, fontAssets }) || path;
-      canonicalUrl.pathname = `/${path}`;
-    }
+    const path = canonicalUrl.pathname.slice(1);
+    // Keep each font URL bound to its own bytes. The x2t converter mounts the
+    // complete generated font set, while editor-only family substitution is
+    // handled by AscFonts before glyph selection.
     canonicalUrl.searchParams.set(SHARED_ASSET_VERSION_QUERY, revisions.get(path) || version);
     const headers = new Headers();
     for (const name of ['accept', 'accept-language', 'range']) {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
-    return await fetch(canonicalUrl.href, {
+    const response = await fetch(canonicalUrl.href, {
       method: request.method,
       headers,
       mode: 'cors',
@@ -188,18 +134,32 @@ const fetchSharedAsset = async (request, url) => {
       cache: 'force-cache',
       redirect: 'follow',
     });
+    if (path !== fonts.allFonts || !response.ok) return response;
+
+    const config = resolveFontMetadataFallbackConfig(fonts, downloadedFontPaths);
+    const responseHeaders = new Headers(response.headers);
+    for (const name of ['content-encoding', 'content-length', 'etag', 'last-modified']) {
+      responseHeaders.delete(name);
+    }
+    responseHeaders.set('cache-control', 'no-store');
+    responseHeaders.set('content-type', 'application/javascript; charset=utf-8');
+    return new Response(`${await response.text()}${buildAllFontsMetadataFallbackBootstrap(config)}`, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+    });
   } catch (error) {
     if (url.pathname.startsWith('/fonts/')) {
       console.error('[onlyoffice-browser] Shared font fetch failed', error);
       const diagnostic = isLocalEditorHost && error instanceof Error ? `: ${error.message}` : '';
-      return new Response(`Font fallback metadata is unavailable${diagnostic}`, {
+      return new Response(`Font metadata is unavailable${diagnostic}`, {
         status: 503,
-        statusText: 'Font Fallback Unavailable',
+        statusText: 'Font Metadata Unavailable',
       });
     }
     // Preserve the Worker redirect path as a safe fallback if version discovery
-    // is temporarily unavailable. Font requests fail closed above so an
-    // optional font can never bypass the download allowlist.
+    // is temporarily unavailable. Font requests fail closed above because
+    // loading different bytes for a font URL would corrupt glyph selection.
     return fetch(request);
   }
 };

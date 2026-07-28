@@ -126,22 +126,14 @@ describe('SW fetch routing', () => {
     expect(sw).toContain('new StaleWhileRevalidate');
     expect(sw).toContain('url.searchParams.has(SHARED_ASSET_VERSION_QUERY)');
     expect(sw).toContain("event.data?.type === 'SET_FONT_ALLOWLIST'");
-    expect(sw).toContain("path.startsWith('fonts/')");
-    expect(sw).toContain('!downloadedFontPaths.has(path)');
-    expect(sw).toContain('!builtInFonts.includes(path)');
-    expect(sw).toContain('fontFallbackRole');
-    expect(sw).toContain('selectFallbackFont');
-    expect(sw).toContain("return 'emoji'");
-    expect(sw).toContain("return 'math'");
-    expect(sw).toContain("return 'arabic'");
-    expect(sw).toContain("return 'korean'");
-    expect(sw).toContain("return 'japanese'");
-    expect(sw).toContain("return 'symbol'");
-    expect(sw).toContain('requested?.styles');
-    expect(sw).toContain('fallbackFonts[role] || fallbackFonts.default || defaultFonts');
-    expect(sw).toContain('path = selectFallbackFont({ requested, fallbackFonts, defaultFonts, fontAssets }) || path');
+    expect(sw).toContain('downloadedFontPaths = new Set(');
+    expect(sw).toContain('path !== fonts.allFonts');
+    expect(sw).toContain('buildAllFontsMetadataFallbackBootstrap(config)');
+    expect(sw).toContain("responseHeaders.set('cache-control', 'no-store')");
+    expect(sw).not.toContain("return new Response('Font is not installed'");
+    expect(sw).not.toContain('selectFallbackFont');
     expect(sw).toContain("if (url.pathname.startsWith('/fonts/'))");
-    expect(sw).toContain("'Font Fallback Unavailable'");
+    expect(sw).toContain("'Font Metadata Unavailable'");
   });
 
   it('provides root OnlyOffice desktop-mode discovery manifests', () => {

@@ -324,3 +324,38 @@ npm run test:real-load -- \
 默认每轮同时打开 3 个真实文件，并混合覆盖 `edit`、`readonly`、`preview` 三种模式；脚本会等待每个实例触发 `onDocumentReady` 后再停留 2 秒，然后通过 Demo 的 Close All 关闭，循环 60 次并输出 JSON/CSV 到 `test-results/memory/`。如果需要改变并发数，可传 `--batch-size=N`，真实文件模式下需要至少提供 N 个 `--file`。
 
 也可以通过 `--modes=preview` 单独压测上游 embedded 纯预览模式，或通过 `--modes=edit,readonly,preview --batch-size=3` 明确做三模式混合批次。
+
+## 运行时资源与可下载字体
+
+包公开导出 `createOfficeRuntimeResourceManager()`，供集成方显式管理精简
+Office 运行时资源，而不是在应用启动时自动下载。管理器的已验证缓存和字体
+安装状态只保存在当前浏览器中，不属于应用的用户偏好。
+
+```ts
+import { createOfficeRuntimeResourceManager } from '@agentbridges-ai/onlyoffice-browser';
+
+const resources = createOfficeRuntimeResourceManager({
+  assetBaseUrl: 'https://onlyoffice.example.com/',
+});
+
+resources.subscribe((snapshot) => {
+  console.log(snapshot.progress, snapshot.fontPacks);
+});
+
+await resources.initialize();
+await resources.downloadAll();
+await resources.checkAndRepair();
+await resources.downloadFont('Microsoft YaHei');
+await resources.removeFont('Microsoft YaHei');
+
+const downloadedFonts = await resources.getVerifiedFontPaths();
+```
+
+`DengXian`（等线）是必需的唯一默认字体，不能移除；`Microsoft YaHei`
+（微软雅黑）是可选下载字体。新建编辑器时，将
+`getVerifiedFontPaths()` 的结果传给 `downloadedFonts`。管理器不会自动重载
+已经打开的编辑器，因此不会打断可能含有未保存内容的文档。
+
+相同并发操作会复用同一个 Promise，所有变更操作按顺序执行；清单版本变化时
+会淘汰过期校验记录。只有按当前清单完成下载并通过完整性校验的资源才计为
+“已完成”，普通 HTTP 缓存命中不会被误报为已验证。

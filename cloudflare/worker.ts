@@ -43,6 +43,11 @@ export function isAssetRevision(value: string | null): boolean {
 
 export function shouldShareAsset(pathname: string, destination: string | null): boolean {
   const normalizedDestination = destination?.trim().toLowerCase() || '';
+  // Worker request metadata is not stable across browsers and intermediary
+  // layers. Keep both worker entrypoints and their classic importScripts
+  // dependency on the editor origin based on path, even if Sec-Fetch-Dest is
+  // missing or reported as "script"/"empty".
+  if (pathname.startsWith('/wasm/x2t/') && pathname.endsWith('.js')) return false;
   if (
     normalizedDestination === 'document' ||
     normalizedDestination === 'iframe' ||

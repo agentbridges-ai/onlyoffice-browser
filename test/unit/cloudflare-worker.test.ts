@@ -23,6 +23,10 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(shouldShareAsset('/office-host.html', 'document')).toBe(false);
     expect(shouldShareAsset('/assets/officeHost-a.js', 'script')).toBe(false);
     expect(shouldShareAsset('/wasm/x2t/worker.js', 'worker')).toBe(false);
+    expect(shouldShareAsset('/wasm/x2t/conversion-worker-a.js', null)).toBe(false);
+    expect(shouldShareAsset('/wasm/x2t/startup-heartbeat-worker-a.js', 'empty')).toBe(false);
+    expect(shouldShareAsset('/wasm/x2t/x2t.js', 'script')).toBe(false);
+    expect(shouldShareAsset('/wasm/x2t/x2t.wasm', 'empty')).toBe(true);
     expect(shouldShareAsset('/document_editor_service_worker.js', 'serviceworker')).toBe(false);
     expect(shouldShareAsset('/document_editor_service_worker.js', null)).toBe(false);
     expect(shouldShareAsset('/sw.js', 'script')).toBe(false);

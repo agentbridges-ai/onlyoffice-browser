@@ -215,12 +215,17 @@ async function assertRuntimeAssetReachable(assetPath: string): Promise<void> {
 
 export async function assertGeneratedFontAssetsAvailable(): Promise<GeneratedFontAssetsManifest> {
   const manifest = await fetchGeneratedFontAssetsManifest();
+  const startupFont =
+    manifest.defaultFonts?.[0] ||
+    manifest.defaultFont ||
+    manifest.builtInFonts?.[0] ||
+    manifest.fonts[0];
   await Promise.all([
     assertRuntimeAssetReachable(manifest.allFonts),
     assertRuntimeAssetReachable(manifest.fontSelection),
     ...(manifest.fontSourceMap ? [assertRuntimeAssetReachable(manifest.fontSourceMap)] : []),
     assertRuntimeAssetReachable(manifest.fontThumbnails[0]),
-    assertRuntimeAssetReachable(manifest.fonts[0]),
+    assertRuntimeAssetReachable(startupFont),
   ]);
   return manifest;
 }
