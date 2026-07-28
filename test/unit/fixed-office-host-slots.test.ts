@@ -27,9 +27,12 @@ describe('fixed production Office host slots', () => {
     const second = pool.acquire();
     expect(first).toBe('https://office-misaka.getpi.work/office-host.html');
     expect(second).toBe('https://office-pectics.getpi.work/office-host.html');
+    expect(pool.isLeased(first!)).toBe(true);
+    expect(pool.isLeased(second!)).toBe(true);
     expect(pool.acquire()).toBeNull();
 
     pool.release(first!);
+    expect(pool.isLeased(first!)).toBe(false);
     expect(pool.acquire()).toBe(first);
   });
 });

@@ -27,6 +27,10 @@ export class OfficeHostSlotPool {
     this.leasedOrigins.delete(new URL(hostUrl).origin);
   }
 
+  isLeased(hostUrl: string): boolean {
+    return this.leasedOrigins.has(new URL(hostUrl).origin);
+  }
+
   get size(): number {
     return this.available.length;
   }

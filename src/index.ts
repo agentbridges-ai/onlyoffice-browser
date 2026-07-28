@@ -21,6 +21,7 @@ type DemoRecord = {
   closing: boolean;
 };
 type DemoEditorOptions = Omit<Parameters<typeof createOfficeEditor>[1], 'hostUrl'> & { hostUrl?: string };
+type FixedSlotPreparationState = 'checking' | 'preparing' | 'ready' | 'error';
 
 const records: DemoRecord[] = [];
 let nextPanelId = 1;
@@ -41,7 +42,10 @@ app.innerHTML = `
         <span id="runtime-cache-label">Shared static assets: checking…</span>
         <progress id="runtime-cache-progress" max="1" value="0"></progress>
       </button>
-      <p id="offline-slot-status" aria-live="polite">Offline editor slots: checking…</p>
+      <div id="offline-slot-status" class="offline-slot-status" aria-live="polite">
+        <strong>Fixed editor slots:</strong>
+        <ul id="offline-slot-list"></ul>
+      </div>
     </div>
     <div class="demo-actions">
       <fieldset class="mode-selector" aria-label="Open mode">
@@ -84,6 +88,15 @@ app.innerHTML = `
       </div>
     </form>
   </dialog>
+  <dialog id="offline-slot-capacity-dialog" class="runtime-cache-dialog">
+    <form method="dialog">
+      <h2>Offline editor slots are full</h2>
+      <p>Misaka and Pectics are both in use. Close an editor before opening another while offline.</p>
+      <div class="runtime-cache-dialog-actions">
+        <button value="default" type="submit">OK</button>
+      </div>
+    </form>
+  </dialog>
 `;
 
 const grid = document.querySelector<HTMLElement>('#editor-grid')!;
@@ -94,7 +107,14 @@ const defaultOfficeHostUrl = resolveDemoHostUrl(new URL(window.location.href));
 const fixedHostSlotPool = new OfficeHostSlotPool(
   productionOfficeHostSlots(new URL(window.location.href)),
 );
+const fixedHostSlots = productionOfficeHostSlots(new URL(window.location.href));
+const fixedSlotPreparation = new Map<string, FixedSlotPreparationState>(
+  fixedHostSlots.map((hostUrl) => [hostUrl, 'checking']),
+);
 const offlineSlotStatus = document.querySelector<HTMLElement>('#offline-slot-status')!;
+const offlineSlotList = document.querySelector<HTMLElement>('#offline-slot-list')!;
+const offlineSlotCapacityDialog =
+  document.querySelector<HTMLDialogElement>('#offline-slot-capacity-dialog')!;
 const cacheStatusButton = document.querySelector<HTMLButtonElement>('#runtime-cache-status')!;
 const cacheLabel = document.querySelector<HTMLElement>('#runtime-cache-label')!;
 const cacheProgress = document.querySelector<HTMLProgressElement>('#runtime-cache-progress')!;
@@ -107,6 +127,35 @@ const cacheLoadButton = document.querySelector<HTMLButtonElement>('#runtime-cach
 const cacheLaterButton = document.querySelector<HTMLButtonElement>('#runtime-cache-later')!;
 let runtimeCacheController: RuntimeCacheController | null = null;
 let runtimeCacheLoading = false;
+
+function fixedSlotLabel(hostUrl: string): string {
+  const hostname = new URL(hostUrl).hostname;
+  if (hostname === 'office-misaka.getpi.work') return 'Misaka';
+  if (hostname === 'office-pectics.getpi.work') return 'Pectics';
+  return hostname;
+}
+
+function refreshFixedSlotStatus(): void {
+  if (fixedHostSlots.length === 0) {
+    offlineSlotStatus.hidden = true;
+    return;
+  }
+  offlineSlotStatus.hidden = false;
+  offlineSlotList.replaceChildren(
+    ...fixedHostSlots.map((hostUrl) => {
+      const item = document.createElement('li');
+      const preparation = fixedSlotPreparation.get(hostUrl) || 'checking';
+      const state = fixedHostSlotPool.isLeased(hostUrl)
+        ? 'in use'
+        : preparation === 'ready'
+          ? 'available'
+          : preparation;
+      item.dataset.slotOrigin = new URL(hostUrl).origin;
+      item.textContent = `${fixedSlotLabel(hostUrl)}: ${state}`;
+      return item;
+    }),
+  );
+}
 
 async function prewarmFixedHostSlot(hostUrl: string): Promise<void> {
   const origin = new URL(hostUrl).origin;
@@ -145,25 +194,22 @@ async function prewarmFixedHostSlot(hostUrl: string): Promise<void> {
 }
 
 async function initializeFixedHostSlots(): Promise<void> {
-  const slots = productionOfficeHostSlots(new URL(window.location.href));
-  if (slots.length === 0) {
-    offlineSlotStatus.hidden = true;
-    return;
-  }
-  let completed = 0;
-  offlineSlotStatus.textContent = `Offline editor slots: preparing · ${completed} / ${slots.length}`;
-  const results = await Promise.allSettled(
-    slots.map(async (hostUrl) => {
-      await prewarmFixedHostSlot(hostUrl);
-      completed += 1;
-      offlineSlotStatus.textContent = `Offline editor slots: preparing · ${completed} / ${slots.length}`;
+  if (fixedHostSlots.length === 0) return refreshFixedSlotStatus();
+  for (const hostUrl of fixedHostSlots) fixedSlotPreparation.set(hostUrl, 'preparing');
+  refreshFixedSlotStatus();
+  await Promise.allSettled(
+    fixedHostSlots.map(async (hostUrl) => {
+      try {
+        await prewarmFixedHostSlot(hostUrl);
+        fixedSlotPreparation.set(hostUrl, 'ready');
+      } catch (error) {
+        fixedSlotPreparation.set(hostUrl, 'error');
+        throw error;
+      } finally {
+        refreshFixedSlotStatus();
+      }
     }),
   );
-  const failed = results.filter((result) => result.status === 'rejected');
-  offlineSlotStatus.textContent =
-    failed.length === 0
-      ? `Offline editor slots: ready · ${slots.length} / ${slots.length}`
-      : `Offline editor slots: incomplete · ${slots.length - failed.length} / ${slots.length}`;
 }
 
 function formatBytes(bytes: number): string {
@@ -329,15 +375,20 @@ async function removeRecord(record: DemoRecord): Promise<void> {
     records.splice(index, 1);
   }
   await record.instance.destroy();
-  if (record.hostUrl) fixedHostSlotPool.release(record.hostUrl);
+  if (record.hostUrl) {
+    fixedHostSlotPool.release(record.hostUrl);
+    refreshFixedSlotStatus();
+  }
   record.panel.remove();
 }
 
 async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
   const hostUrl = fixedHostSlotPool.size > 0 ? fixedHostSlotPool.acquire() : null;
-  if (fixedHostSlotPool.size > 0 && !hostUrl) {
-    throw new Error(`All ${fixedHostSlotPool.size} offline editor slots are in use`);
+  if (fixedHostSlotPool.size > 0 && !hostUrl && !navigator.onLine) {
+    if (!offlineSlotCapacityDialog.open) offlineSlotCapacityDialog.showModal();
+    throw new Error('Offline editor slots are full');
   }
+  refreshFixedSlotStatus();
   const id = nextPanelId++;
   const title =
     options.fileName ||
@@ -389,7 +440,10 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
       },
     });
   } catch (error) {
-    if (hostUrl) fixedHostSlotPool.release(hostUrl);
+    if (hostUrl) {
+      fixedHostSlotPool.release(hostUrl);
+      refreshFixedSlotStatus();
+    }
     panel.remove();
     throw error;
   }
@@ -420,7 +474,7 @@ function openEmpty(emptyType: 'docx' | 'xlsx' | 'pptx' | 'csv'): void {
     emptyType,
     fileName: `New_Document.${emptyType}`,
     mode: getSelectedMode(),
-  });
+  }).catch(() => undefined);
 }
 
 for (const input of document.querySelectorAll<HTMLInputElement>('input[name="open-mode"]')) {
@@ -448,7 +502,7 @@ fileInput.addEventListener('change', () => {
   }
 
   for (const file of files) {
-    void openEditor({ file, fileName: file.name, mode: getSelectedMode() });
+    void openEditor({ file, fileName: file.name, mode: getSelectedMode() }).catch(() => undefined);
   }
   fileInput.value = '';
 });
