@@ -23,6 +23,7 @@ const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
   throw new Error('Missing #app root');
 }
+app.dataset.runtimeRevision = 'font-packages-v1';
 
 app.innerHTML = `
   <section class="demo-toolbar" aria-label="Office editor demo controls">

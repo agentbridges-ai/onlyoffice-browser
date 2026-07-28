@@ -26,6 +26,7 @@ const PLUGIN_REQUEST_TIMEOUT_MS = 45_000;
 const HOST_SELF_RESET_PATH = '/reset.html?stay=1&officeHostReset=1';
 const SUPPORTED_EMPTY_TYPES = ['docx', 'xlsx', 'pptx', 'csv'] as const;
 const OUTER_IFRAME_ALLOW = 'clipboard-read; clipboard-write; fullscreen';
+const OFFICE_EDITOR_PROXY_RUNTIME_REVISION = 'font-packages-v1';
 const PRINT_TITLE_RESTORE_MS = 45_000;
 
 function isHTMLElementContainer(value: unknown): value is HTMLElement {
@@ -670,6 +671,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
     const iframe = this.container.ownerDocument.createElement('iframe');
     iframe.className = 'office-editor-host-frame';
+    iframe.dataset.officeEditorProxyRevision = OFFICE_EDITOR_PROXY_RUNTIME_REVISION;
     iframe.title = this.descriptor.initialState.fileName || 'Office editor';
     // Do not sandbox: native PDF printing needs same-origin script access inside
     // the independent editor host's nested print iframe.
