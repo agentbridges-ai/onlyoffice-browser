@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isIsolatedEditorHost,
+  isFixedOfflineEditorHost,
   isOnlyOfficeHost,
   resolveObjectKey,
   shouldShareAsset,
@@ -15,6 +16,9 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(isOnlyOfficeHost('onlyoffice.getpi.work.example.com')).toBe(false);
     expect(isIsolatedEditorHost('office-editor-a.getpi.work')).toBe(true);
     expect(isIsolatedEditorHost('onlyoffice.getpi.work')).toBe(false);
+    expect(isFixedOfflineEditorHost('office-misaka.getpi.work')).toBe(true);
+    expect(isFixedOfflineEditorHost('office-pectics.getpi.work')).toBe(true);
+    expect(isFixedOfflineEditorHost('office-editor-a.getpi.work')).toBe(false);
   });
 
   it('keeps only origin-bound boot files and workers on each editor origin', () => {

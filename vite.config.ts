@@ -193,6 +193,7 @@ export default defineConfig({
         burstE2E: resolve(__dirname, 'pages/burst-e2e.html'),
         officeHost: resolve(__dirname, 'pages/office-host.html'),
         saveE2E: resolve(__dirname, 'pages/save-e2e.html'),
+        slotPrewarm: resolve(__dirname, 'pages/slot-prewarm.html'),
       },
     },
   },

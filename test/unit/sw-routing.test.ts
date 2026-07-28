@@ -87,6 +87,15 @@ describe('SW fetch routing', () => {
     expect(bridge).toContain("importScripts('/sw.js')");
   });
 
+  it('contains the two fixed offline editor slots and their canonical cache bridge', () => {
+    const sw = fs.readFileSync(path.join(process.cwd(), 'public/sw.js'), 'utf8');
+
+    expect(sw).toContain('office-misaka.getpi.work');
+    expect(sw).toContain('office-pectics.getpi.work');
+    expect(sw).toContain('onlyoffice-slot-prewarm-v1');
+    expect(sw).toContain("canonical.hostname = CANONICAL_OFFICE_HOST");
+  });
+
   it('provides root OnlyOffice desktop-mode discovery manifests', () => {
     const plugins = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'public/plugins.json'), 'utf8'));
     const themes = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'public/themes.json'), 'utf8'));

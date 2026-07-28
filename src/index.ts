@@ -4,6 +4,10 @@ import {
   type OfficeEditorMode,
 } from './lib/office-editor';
 import { clearLegacyDemoHostState, resolveDemoHostUrl } from './lib/demo-host-url';
+import {
+  OfficeHostSlotPool,
+  productionOfficeHostSlots,
+} from './lib/fixed-office-host-slots';
 import { RuntimeCacheController, type RuntimeCacheProgress } from './lib/runtime-cache';
 import './styles/base.css';
 
@@ -13,6 +17,7 @@ type DemoRecord = {
   panel: HTMLElement;
   status: HTMLElement;
   readonlyButton: HTMLButtonElement;
+  hostUrl: string | null;
   closing: boolean;
 };
 type DemoEditorOptions = Omit<Parameters<typeof createOfficeEditor>[1], 'hostUrl'> & { hostUrl?: string };
@@ -36,6 +41,7 @@ app.innerHTML = `
         <span id="runtime-cache-label">Shared static assets: checking…</span>
         <progress id="runtime-cache-progress" max="1" value="0"></progress>
       </button>
+      <p id="offline-slot-status" aria-live="polite">Offline editor slots: checking…</p>
     </div>
     <div class="demo-actions">
       <fieldset class="mode-selector" aria-label="Open mode">
@@ -85,6 +91,10 @@ const fileInput = document.querySelector<HTMLInputElement>('#file-input')!;
 const hardResetOnLastDestroy = new URLSearchParams(window.location.search).get('hardResetOnLastDestroy') === 'true';
 clearLegacyDemoHostState(window.location, window.localStorage);
 const defaultOfficeHostUrl = resolveDemoHostUrl(new URL(window.location.href));
+const fixedHostSlotPool = new OfficeHostSlotPool(
+  productionOfficeHostSlots(new URL(window.location.href)),
+);
+const offlineSlotStatus = document.querySelector<HTMLElement>('#offline-slot-status')!;
 const cacheStatusButton = document.querySelector<HTMLButtonElement>('#runtime-cache-status')!;
 const cacheLabel = document.querySelector<HTMLElement>('#runtime-cache-label')!;
 const cacheProgress = document.querySelector<HTMLProgressElement>('#runtime-cache-progress')!;
@@ -97,6 +107,64 @@ const cacheLoadButton = document.querySelector<HTMLButtonElement>('#runtime-cach
 const cacheLaterButton = document.querySelector<HTMLButtonElement>('#runtime-cache-later')!;
 let runtimeCacheController: RuntimeCacheController | null = null;
 let runtimeCacheLoading = false;
+
+async function prewarmFixedHostSlot(hostUrl: string): Promise<void> {
+  const origin = new URL(hostUrl).origin;
+  const iframe = document.createElement('iframe');
+  iframe.hidden = true;
+  iframe.title = `Prewarm ${origin}`;
+  const result = new Promise<void>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      window.removeEventListener('message', onMessage);
+      reject(new Error(`Timed out preparing ${origin}`));
+    }, 90_000);
+    const onMessage = (event: MessageEvent) => {
+      if (
+        event.origin !== origin ||
+        event.source !== iframe.contentWindow ||
+        event.data?.type !== 'onlyoffice-slot-prewarm-v1'
+      ) {
+        return;
+      }
+      window.clearTimeout(timeoutId);
+      window.removeEventListener('message', onMessage);
+      if (event.data.state === 'ready') resolve();
+      else reject(new Error(event.data.detail || `Failed to prepare ${origin}`));
+    };
+    window.addEventListener('message', onMessage);
+  });
+  const url = new URL('/slot-prewarm.html', origin);
+  url.searchParams.set('parentOrigin', window.location.origin);
+  iframe.src = url.href;
+  document.body.appendChild(iframe);
+  try {
+    await result;
+  } finally {
+    iframe.remove();
+  }
+}
+
+async function initializeFixedHostSlots(): Promise<void> {
+  const slots = productionOfficeHostSlots(new URL(window.location.href));
+  if (slots.length === 0) {
+    offlineSlotStatus.hidden = true;
+    return;
+  }
+  let completed = 0;
+  offlineSlotStatus.textContent = `Offline editor slots: preparing · ${completed} / ${slots.length}`;
+  const results = await Promise.allSettled(
+    slots.map(async (hostUrl) => {
+      await prewarmFixedHostSlot(hostUrl);
+      completed += 1;
+      offlineSlotStatus.textContent = `Offline editor slots: preparing · ${completed} / ${slots.length}`;
+    }),
+  );
+  const failed = results.filter((result) => result.status === 'rejected');
+  offlineSlotStatus.textContent =
+    failed.length === 0
+      ? `Offline editor slots: ready · ${slots.length} / ${slots.length}`
+      : `Offline editor slots: incomplete · ${slots.length - failed.length} / ${slots.length}`;
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -214,6 +282,7 @@ async function initializeRuntimeCache(): Promise<void> {
 cacheLoadButton.addEventListener('click', () => void loadAllRuntimeAssets());
 cacheStatusButton.addEventListener('click', showCacheDialog);
 void initializeRuntimeCache();
+void initializeFixedHostSlots();
 
 function isOfficeEditorMode(value: string): value is OfficeEditorMode {
   return value === 'edit' || value === 'readonly' || value === 'preview';
@@ -260,10 +329,15 @@ async function removeRecord(record: DemoRecord): Promise<void> {
     records.splice(index, 1);
   }
   await record.instance.destroy();
+  if (record.hostUrl) fixedHostSlotPool.release(record.hostUrl);
   record.panel.remove();
 }
 
 async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
+  const hostUrl = fixedHostSlotPool.size > 0 ? fixedHostSlotPool.acquire() : null;
+  if (fixedHostSlotPool.size > 0 && !hostUrl) {
+    throw new Error(`All ${fixedHostSlotPool.size} offline editor slots are in use`);
+  }
   const id = nextPanelId++;
   const title =
     options.fileName ||
@@ -291,29 +365,36 @@ async function openEditor(options: DemoEditorOptions): Promise<DemoRecord> {
   const readonlyButton = panel.querySelector<HTMLButtonElement>('[data-action="readonly"]')!;
   grid.appendChild(panel);
 
-  const instance = await createOfficeEditor(slot, {
-    ...options,
-    hostUrl: defaultOfficeHostUrl,
-    saveBehavior: options.saveBehavior || 'download',
-    hardResetOnLastDestroy,
-    onReady: (readyInstance) => {
-      const state = readyInstance.getState();
-      status.textContent = `${state.fileType.toUpperCase()} ${getModeLabel(state.mode)}`;
-    },
-    onSave: (file) => {
-      status.textContent = `saved ${file.name} (${file.size} bytes)`;
-      refreshPanelActions(record);
-    },
-    onDirtyChange: (dirty) => {
-      status.textContent = dirty ? 'modified' : 'clean';
-      refreshPanelActions(record);
-    },
-    onError: (error) => {
-      status.textContent = `error: ${error.message}`;
-    },
-  });
+  let instance: OfficeEditorInstance;
+  try {
+    instance = await createOfficeEditor(slot, {
+      ...options,
+      hostUrl: hostUrl || defaultOfficeHostUrl,
+      saveBehavior: options.saveBehavior || 'download',
+      hardResetOnLastDestroy,
+      onReady: (readyInstance) => {
+        const state = readyInstance.getState();
+        status.textContent = `${state.fileType.toUpperCase()} ${getModeLabel(state.mode)}`;
+      },
+      onSave: (file) => {
+        status.textContent = `saved ${file.name} (${file.size} bytes)`;
+        refreshPanelActions(record);
+      },
+      onDirtyChange: (dirty) => {
+        status.textContent = dirty ? 'modified' : 'clean';
+        refreshPanelActions(record);
+      },
+      onError: (error) => {
+        status.textContent = `error: ${error.message}`;
+      },
+    });
+  } catch (error) {
+    if (hostUrl) fixedHostSlotPool.release(hostUrl);
+    panel.remove();
+    throw error;
+  }
 
-  const record: DemoRecord = { id, instance, panel, status, readonlyButton, closing: false };
+  const record: DemoRecord = { id, instance, panel, status, readonlyButton, hostUrl, closing: false };
   records.push(record);
   const initialState = instance.getState();
   setStatus(record, `${initialState.fileType.toUpperCase()} ${getModeLabel(initialState.mode)}`);
