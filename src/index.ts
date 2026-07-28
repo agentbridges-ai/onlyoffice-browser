@@ -117,7 +117,7 @@ async function prewarmFixedHostSlot(hostUrl: string): Promise<void> {
     const timeoutId = window.setTimeout(() => {
       window.removeEventListener('message', onMessage);
       reject(new Error(`Timed out preparing ${origin}`));
-    }, 90_000);
+    }, 12 * 60_000);
     const onMessage = (event: MessageEvent) => {
       if (
         event.origin !== origin ||

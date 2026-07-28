@@ -9,6 +9,15 @@ type RuntimeManifest = {
   assets?: Array<{ path?: string }>;
 };
 
+type FontManifest = {
+  allFonts?: string;
+  fontSelection?: string;
+  fontSourceMap?: string;
+  fontThumbnails?: string[];
+  fonts?: string[];
+  assets?: Array<{ path?: string }>;
+};
+
 function report(state: 'ready' | 'error', detail?: string): void {
   if (statusElement) {
     statusElement.textContent =
@@ -48,7 +57,7 @@ async function hostShellPaths(): Promise<string[]> {
   return paths;
 }
 
-async function runtimeShellPaths(): Promise<{ paths: string[]; version: string }> {
+async function runtimeAssetPaths(): Promise<{ paths: string[]; version: string }> {
   const manifestUrl = new URL(RUNTIME_MANIFEST_PATH, window.location.origin);
   manifestUrl.searchParams.set('__cache_status', String(Date.now()));
   const response = await fetch(manifestUrl, { cache: 'reload' });
@@ -61,36 +70,61 @@ async function runtimeShellPaths(): Promise<{ paths: string[]; version: string }
   const paths = (manifest.assets || [])
     .map((asset) => asset.path)
     .filter(safePath)
-    .filter(
-      (path) =>
-        path.endsWith('.html') ||
-        /^wasm\/x2t\/(?:conversion-worker|startup-heartbeat-worker)-.+\.js$/.test(path),
-    )
     .map((path) => `/${path}`);
+  const fontManifestUrl = new URL('/onlyoffice-browser-font-assets.json', window.location.origin);
+  fontManifestUrl.searchParams.set('__cache_status', String(Date.now()));
+  const fontResponse = await fetch(fontManifestUrl, { cache: 'reload' });
+  if (!fontResponse.ok) throw new Error(`Font manifest prewarm failed (${fontResponse.status}).`);
+  const fonts = (await fontResponse.json()) as FontManifest;
+  paths.push('/onlyoffice-browser-font-assets.json');
+  if (Array.isArray(fonts.assets)) {
+    paths.push(
+      ...fonts.assets
+        .map((asset) => asset.path)
+        .filter(safePath)
+        .map((path) => `/${path}`),
+    );
+  } else {
+    paths.push(
+      ...[
+        fonts.allFonts,
+        fonts.fontSelection,
+        fonts.fontSourceMap,
+        ...(fonts.fontThumbnails || []),
+        ...(fonts.fonts || []),
+      ]
+        .filter(safePath)
+        .map((path) => `/${path}`),
+    );
+  }
   return { paths, version };
 }
 
 async function sendPrewarm(
   worker: ServiceWorker,
   version: string,
-  paths: string[],
+  shellPaths: string[],
+  runtimePaths: string[],
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const channel = new MessageChannel();
-    const timeoutId = window.setTimeout(() => reject(new Error('Offline slot prewarm timed out.')), 60_000);
+    const timeoutId = window.setTimeout(
+      () => reject(new Error('Offline slot prewarm timed out.')),
+      10 * 60_000,
+    );
     channel.port1.onmessage = (event) => {
       window.clearTimeout(timeoutId);
       if (event.data?.ok === true) resolve();
       else reject(new Error(event.data?.error || 'Offline slot prewarm failed.'));
     };
-    worker.postMessage({ type: PREWARM_MESSAGE, version, paths }, [channel.port2]);
+    worker.postMessage({ type: PREWARM_MESSAGE, version, shellPaths, runtimePaths }, [channel.port2]);
   });
 }
 
 async function prewarm(): Promise<void> {
   if (!('serviceWorker' in navigator)) throw new Error('Service Worker is unavailable.');
   const [{ paths: runtimePaths, version }, shellPaths] = await Promise.all([
-    runtimeShellPaths(),
+    runtimeAssetPaths(),
     hostShellPaths(),
   ]);
   const registration = await navigator.serviceWorker.register('/document_editor_service_worker.js', {
@@ -100,7 +134,7 @@ async function prewarm(): Promise<void> {
   await navigator.serviceWorker.ready;
   const worker = registration.active || registration.waiting || registration.installing;
   if (!worker) throw new Error('Offline slot Service Worker is unavailable.');
-  await sendPrewarm(worker, version, [...new Set([...shellPaths, ...runtimePaths])]);
+  await sendPrewarm(worker, version, [...new Set(shellPaths)], [...new Set(runtimePaths)]);
 }
 
 void prewarm()

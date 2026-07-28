@@ -30,18 +30,38 @@ const fixedSlotShellRequest = (path) => {
   return new Request(url.href, { cache: 'reload' });
 };
 
-const prewarmFixedSlot = async (version, paths) => {
-  const cache = await caches.open(CACHE_NAME);
+const cacheSlotPaths = async (cache, paths, requestForPath) => {
   let cursor = 0;
   const workers = Array.from({ length: Math.min(6, paths.length) }, async () => {
     while (cursor < paths.length) {
       const path = paths[cursor++];
-      const response = await fetch(fixedSlotShellRequest(path));
-      if (!response.ok) throw new Error(`Slot shell request failed (${response.status}): ${path}`);
+      const response = await requestForPath(path);
+      if (!response.ok) throw new Error(`Slot cache request failed (${response.status}): ${path}`);
       await cache.put(new Request(new URL(path, self.location.origin).href), response);
     }
   });
   await Promise.all(workers);
+};
+
+const canonicalSlotResponse = async (path, version) => {
+  const url = new URL(path, `https://${CANONICAL_OFFICE_HOST}`);
+  url.searchParams.set('__oobv', version);
+  const response = await fetch(url.href, { cache: 'force-cache' });
+  if (!response.ok) return response;
+  const headers = new Headers(response.headers);
+  headers.delete('content-encoding');
+  headers.delete('content-length');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+const prewarmFixedSlot = async (version, shellPaths, runtimePaths) => {
+  const cache = await caches.open(CACHE_NAME);
+  await cacheSlotPaths(cache, shellPaths, (path) => fetch(fixedSlotShellRequest(path)));
+  await cacheSlotPaths(cache, runtimePaths, (path) => canonicalSlotResponse(path, version));
   const meta = await caches.open(FIXED_OFFLINE_SLOT_META_CACHE);
   await meta.put(
     FIXED_OFFLINE_SLOT_VERSION_KEY,
@@ -53,18 +73,21 @@ if (isFixedOfflineSlot) {
   self.addEventListener('message', (event) => {
     if (event.data?.type !== FIXED_OFFLINE_SLOT_MESSAGE) return;
     const version = typeof event.data.version === 'string' ? event.data.version.trim() : '';
-    const paths = Array.isArray(event.data.paths)
-      ? [...new Set(event.data.paths)].filter(
+    const safePaths = (value) =>
+      Array.isArray(value)
+        ? [...new Set(value)].filter(
           (path) =>
             typeof path === 'string' &&
             path.startsWith('/') &&
             !path.includes('..') &&
             !path.includes('\0'),
         )
-      : [];
+        : [];
+    const shellPaths = safePaths(event.data.shellPaths);
+    const runtimePaths = safePaths(event.data.runtimePaths);
     event.waitUntil(
-      (version && paths.length > 0
-        ? prewarmFixedSlot(version, paths)
+      (version && shellPaths.length > 0 && runtimePaths.length > 0
+        ? prewarmFixedSlot(version, shellPaths, runtimePaths)
         : Promise.reject(new Error('Invalid fixed slot prewarm payload'))
       )
         .then(() => event.ports[0]?.postMessage({ ok: true }))
