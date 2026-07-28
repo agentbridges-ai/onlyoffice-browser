@@ -94,6 +94,7 @@ describe('SW fetch routing', () => {
     expect(sw).toContain('office-pectics.getpi.work');
     expect(sw).toContain('onlyoffice-slot-prewarm-v1');
     expect(sw).toContain("canonical.hostname = CANONICAL_OFFICE_HOST");
+    expect(sw).toContain('!isFixedOfflineSlot');
   });
 
   it('provides root OnlyOffice desktop-mode discovery manifests', () => {

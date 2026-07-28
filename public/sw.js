@@ -221,7 +221,13 @@ self.addEventListener('fetch', (event) => {
   // 4. Only the Office host documents are allowed to be handled as navigations.
   // Do not cache or serve the parent application's root/login page from an
   // isolated host subdomain.
-  if (event.request.mode === 'navigate' && !ONLYOFFICE_NAVIGATION_PATHS.has(url.pathname)) return;
+  if (
+    event.request.mode === 'navigate' &&
+    !ONLYOFFICE_NAVIGATION_PATHS.has(url.pathname) &&
+    !isFixedOfflineSlot
+  ) {
+    return;
+  }
 
   // 5. Never intercept application/API surfaces if this service worker is
   // installed at a broad scope by the host integration.
