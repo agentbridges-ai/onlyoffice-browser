@@ -50,6 +50,7 @@ export type OfficeRuntimeResourceManagerOptions = {
 function cloneProgress(progress: RuntimeCacheProgress): RuntimeCacheProgress {
   return {
     ...progress,
+    failures: (progress.failures || []).map((failure) => ({ ...failure })),
     categories: progress.categories.map((category) => ({ ...category })),
   };
 }
@@ -218,7 +219,12 @@ export class OfficeRuntimeResourceManager {
         } catch (error) {
           const nextError = error instanceof Error ? error : new Error(String(error));
           this.publish(
-            this.controller.getProgress('error', Math.max(1, this.snapshot.progress.failedFiles)),
+            this.controller.getProgress('error', [
+              {
+                path: 'runtime',
+                reason: nextError.message,
+              },
+            ]),
             null,
             nextError,
           );

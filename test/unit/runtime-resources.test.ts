@@ -74,7 +74,7 @@ describe('OfficeRuntimeResourceManager', () => {
       expect.objectContaining({ name: 'Microsoft YaHei', downloaded: false, removable: true }),
     ]);
     expect(manager.getSnapshot()).toMatchObject({
-      packageVersion: '0.3.36',
+      packageVersion: '0.3.37',
       assetVersion: 'resource-v1',
       readiness: 'needs-download',
       packs: expect.arrayContaining([expect.objectContaining({ id: 'word', ready: false })]),

@@ -22,6 +22,8 @@ export type OfficeCopy = {
   resourcesNeeded: string;
   resourcesUpdating: string;
   resourcesError: string;
+  failedResources: string;
+  repairFailedHint: string;
   resourceIntro: string;
   basicPreset: string;
   compatPreset: string;
@@ -73,6 +75,8 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     resourcesNeeded: '按需下载',
     resourcesUpdating: '正在更新资源',
     resourcesError: '资源需要修复',
+    failedResources: '未能修复',
+    repairFailedHint: '请重试；若仍失败，可能是在线资源暂时缺失。',
     resourceIntro: '编辑器会按需下载当前文档所需资源，并在空闲时准备基础资源。',
     basicPreset: '准备基础资源',
     compatPreset: '安装 Office 兼容字体',
@@ -122,6 +126,8 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     resourcesNeeded: 'Downloads on demand',
     resourcesUpdating: 'Updating resources',
     resourcesError: 'Resources need repair',
+    failedResources: 'Not repaired',
+    repairFailedHint: 'Try again. If it still fails, an online resource may be temporarily unavailable.',
     resourceIntro: 'The editor downloads resources for the current document and prepares essentials when idle.',
     basicPreset: 'Prepare essentials',
     compatPreset: 'Install Office-compatible fonts',

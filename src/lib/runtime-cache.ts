@@ -40,7 +40,13 @@ export type RuntimeCacheProgress = {
   completedBytes: number;
   totalBytes: number;
   failedFiles: number;
+  failures?: RuntimeCacheFailure[];
   categories: RuntimeCacheCategoryProgress[];
+};
+
+export type RuntimeCacheFailure = {
+  path: string;
+  reason: string;
 };
 
 type RuntimeManifest = {
@@ -552,7 +558,10 @@ export class RuntimeCacheController {
     return controller;
   }
 
-  getProgress(phase: RuntimeCacheProgress['phase'] = 'ready', failedFiles = 0): RuntimeCacheProgress {
+  getProgress(
+    phase: RuntimeCacheProgress['phase'] = 'ready',
+    failures: RuntimeCacheFailure[] = [],
+  ): RuntimeCacheProgress {
     const completedAssets = this.assets.filter((asset) => this.completed.has(asset.path));
     return {
       phase,
@@ -560,7 +569,8 @@ export class RuntimeCacheController {
       totalFiles: this.assets.length,
       completedBytes: completedAssets.reduce((total, asset) => total + asset.bytes, 0),
       totalBytes: this.assets.reduce((total, asset) => total + asset.bytes, 0),
-      failedFiles,
+      failedFiles: failures.length,
+      failures: failures.map((failure) => ({ ...failure })),
       categories: this.categoryProgress(completedAssets),
     };
   }
@@ -620,14 +630,14 @@ export class RuntimeCacheController {
   ): Promise<RuntimeCacheProgress> {
     const family = this.listFonts().find((candidate) => candidate.id === id);
     if (!family) throw new Error(`Unknown font family: ${id}`);
-    let failedFiles = 0;
+    const failures: RuntimeCacheFailure[] = [];
     const packagePaths = [...new Set([...this.fontPackageSharedPaths, ...family.paths])];
     for (const path of packagePaths) {
       const asset =
         this.assets.find((candidate) => candidate.path === path) ||
         this.fontCatalog.find((candidate) => candidate.path === path);
       if (!asset) {
-        failedFiles += 1;
+        failures.push({ path, reason: 'Asset is missing from the font manifest.' });
         continue;
       }
       if (!this.assets.some((candidate) => candidate.path === path)) this.assets.push(asset);
@@ -640,14 +650,19 @@ export class RuntimeCacheController {
           await this.downloadAndVerify(asset, cacheMode, () => onProgress(this.getProgress('loading')));
           verified = true;
           break;
-        } catch {
+        } catch (error) {
           // Retry once while bypassing a missing or corrupt HTTP-cache entry.
+          if (cacheMode === 'reload') {
+            failures.push({
+              path,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
       }
       if (!verified) {
         const index = this.assets.findIndex((asset) => asset.path === path);
         if (index >= 0) this.assets.splice(index, 1);
-        failedFiles += 1;
         continue;
       }
       this.completed.add(path);
@@ -668,8 +683,8 @@ export class RuntimeCacheController {
       this.requiredFontPaths,
     );
     const progress = this.getProgress(
-      failedFiles === 0 ? (this.isComplete() ? 'complete' : 'ready') : 'error',
-      failedFiles,
+      failures.length === 0 ? (this.isComplete() ? 'complete' : 'ready') : 'error',
+      failures,
     );
     onProgress(progress);
     return progress;
@@ -788,6 +803,14 @@ export class RuntimeCacheController {
     cache: RequestCache,
     onChunk: (bytes: number) => void,
   ): Promise<number> {
+    if (asset.category === 'fonts' && cache === 'only-if-cached') {
+      const requestUrl = this.versionedUrl(asset);
+      const fontCache = await this.openFontPackageCache();
+      const cached = (await fontCache?.match(requestUrl)) || (await this.cacheStorage?.match(requestUrl));
+      if (!cached) throw new Error(`${asset.path}: not found in the installed font cache`);
+      if (!cached.ok) throw new Error(`${asset.path}: cached HTTP ${cached.status}`);
+      return responseBytes(cached, onChunk, this.expectedIntegrity(asset));
+    }
     const response = await this.fetchImpl(this.versionedUrl(asset), {
       cache,
       credentials: 'omit',
@@ -815,7 +838,7 @@ export class RuntimeCacheController {
     const selected = new Set(categories);
     const pending = this.assets.filter((asset) => selected.has(asset.category) && !this.completed.has(asset.path));
     let cursor = 0;
-    let failedFiles = 0;
+    const failures: RuntimeCacheFailure[] = [];
     const initialProgress = this.getProgress();
     let completedFiles = initialProgress.completedFiles;
     let downloadedBytes = initialProgress.completedBytes;
@@ -830,6 +853,7 @@ export class RuntimeCacheController {
         try {
           let received = 0;
           let verified = false;
+          let lastError: unknown;
           for (const cacheMode of ['force-cache', 'reload'] as const) {
             let attemptReceived = 0;
             try {
@@ -842,7 +866,8 @@ export class RuntimeCacheController {
                   totalFiles,
                   completedBytes: Math.min(downloadedBytes, totalBytes),
                   totalBytes,
-                  failedFiles,
+                  failedFiles: failures.length,
+                  failures: failures.map((failure) => ({ ...failure })),
                   categories: this.categoryProgress(
                     this.assets.filter((candidate) => this.completed.has(candidate.path)),
                   ),
@@ -850,12 +875,17 @@ export class RuntimeCacheController {
               });
               verified = true;
               break;
-            } catch {
+            } catch (error) {
+              lastError = error;
               downloadedBytes = Math.max(0, downloadedBytes - attemptReceived);
               received = 0;
             }
           }
-          if (!verified) throw new Error(`${asset.path}: integrity verification failed`);
+          if (!verified) {
+            throw lastError instanceof Error
+              ? lastError
+              : new Error(`${asset.path}: integrity verification failed`);
+          }
           if (asset.bytes === 0) asset.bytes = received;
           this.completed.add(asset.path);
           completedFiles += 1;
@@ -873,8 +903,11 @@ export class RuntimeCacheController {
             );
             writesSinceFlush = 0;
           }
-        } catch {
-          failedFiles += 1;
+        } catch (error) {
+          failures.push({
+            path: asset.path,
+            reason: error instanceof Error ? error.message : String(error),
+          });
         }
         onProgress({
           phase: 'loading',
@@ -882,13 +915,14 @@ export class RuntimeCacheController {
           totalFiles,
           completedBytes: Math.min(downloadedBytes, totalBytes),
           totalBytes,
-          failedFiles,
+          failedFiles: failures.length,
+          failures: failures.map((failure) => ({ ...failure })),
           categories: this.categoryProgress(this.assets.filter((candidate) => this.completed.has(candidate.path))),
         });
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker));
-    if (failedFiles === 0 && this.isComplete()) this.lastVerifiedAt = Date.now();
+    if (failures.length === 0 && this.isComplete()) this.lastVerifiedAt = Date.now();
     writeStoredProgress(
       this.storage,
       this.version,
@@ -900,8 +934,8 @@ export class RuntimeCacheController {
       this.requiredFontPaths,
     );
     const progress = this.getProgress(
-      failedFiles === 0 ? (this.isComplete() ? 'complete' : 'ready') : 'error',
-      failedFiles,
+      failures.length === 0 ? (this.isComplete() ? 'complete' : 'ready') : 'error',
+      failures,
     );
     onProgress(progress);
     return progress;
@@ -910,7 +944,7 @@ export class RuntimeCacheController {
   async checkHealth(onProgress: (progress: RuntimeCacheProgress) => void): Promise<RuntimeCacheProgress> {
     if (!this.isComplete()) return this.loadAll(onProgress);
 
-    let failedFiles = 0;
+    const failures: RuntimeCacheFailure[] = [];
     onProgress(this.getProgress('checking'));
     let cursor = 0;
     const worker = async () => {
@@ -933,15 +967,18 @@ export class RuntimeCacheController {
           try {
             await this.downloadAndVerify(asset, 'reload', () => undefined);
             this.completed.add(asset.path);
-          } catch {
-            failedFiles += 1;
+          } catch (error) {
+            failures.push({
+              path: asset.path,
+              reason: error instanceof Error ? error.message : String(error),
+            });
           }
         }
-        onProgress(this.getProgress(failedFiles === 0 ? 'checking' : 'error', failedFiles));
+        onProgress(this.getProgress(failures.length === 0 ? 'checking' : 'error', failures));
       }
     };
     await Promise.all(Array.from({ length: Math.min(3, this.assets.length) }, worker));
-    if (failedFiles === 0 && this.isComplete()) this.lastVerifiedAt = Date.now();
+    if (failures.length === 0 && this.isComplete()) this.lastVerifiedAt = Date.now();
     writeStoredProgress(
       this.storage,
       this.version,
@@ -952,7 +989,7 @@ export class RuntimeCacheController {
       this.fontFamilies,
       this.requiredFontPaths,
     );
-    const progress = this.getProgress(failedFiles === 0 ? 'complete' : 'error', failedFiles);
+    const progress = this.getProgress(failures.length === 0 ? 'complete' : 'error', failures);
     onProgress(progress);
     return progress;
   }

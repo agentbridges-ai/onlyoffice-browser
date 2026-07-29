@@ -43,6 +43,7 @@ export type {
   RuntimeCacheAsset,
   RuntimeCacheCategory,
   RuntimeCacheCategoryProgress,
+  RuntimeCacheFailure,
   RuntimeCacheProgress,
   RuntimeFontFamily,
   RuntimeFontPackage,

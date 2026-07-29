@@ -142,6 +142,10 @@ const elements = {
   resourceDialog: document.querySelector<HTMLDialogElement>('#resource-dialog')!,
   resourceSummary: document.querySelector<HTMLElement>('#resource-summary')!,
   fontList: document.querySelector<HTMLElement>('#font-list')!,
+  basicPreset: document.querySelector<HTMLButtonElement>('#basic-preset')!,
+  compatibilityPreset: document.querySelector<HTMLButtonElement>('#compat-preset')!,
+  loadAllButton: document.querySelector<HTMLButtonElement>('#load-all-button')!,
+  repairButton: document.querySelector<HTMLButtonElement>('#repair-button')!,
   updateBanner: document.querySelector<HTMLElement>('#update-banner')!,
   updateButton: document.querySelector<HTMLButtonElement>('#update-button')!,
   dirtyDialog: document.querySelector<HTMLDialogElement>('#dirty-dialog')!,
@@ -480,20 +484,36 @@ function renderResources(snapshot: OfficeRuntimeResourceSnapshot): void {
           : copy.resourcesNeeded;
   elements.resourceButton.lastElementChild!.textContent = label;
   elements.resourceButton.dataset.state = snapshot.readiness;
-  elements.resourceSummary.replaceChildren(
-    ...snapshot.packs.map((pack) => {
-      const row = document.createElement('div');
-      row.className = 'resource-pack';
-      const text = document.createElement('span');
-      text.textContent = packLabel(pack.id);
-      const state = document.createElement('span');
-      state.textContent = pack.ready
-        ? copy.installed
-        : `${formatBytes(pack.completedBytes)} / ${formatBytes(pack.totalBytes)}`;
-      row.append(text, state);
-      return row;
-    }),
-  );
+  const summaryRows = snapshot.packs.map((pack) => {
+    const row = document.createElement('div');
+    row.className = 'resource-pack';
+    const text = document.createElement('span');
+    text.textContent = packLabel(pack.id);
+    const state = document.createElement('span');
+    state.textContent = pack.ready
+      ? copy.installed
+      : `${formatBytes(pack.completedBytes)} / ${formatBytes(pack.totalBytes)}`;
+    row.append(text, state);
+    return row;
+  });
+  const failures = snapshot.progress.failures || [];
+  if (failures.length > 0) {
+    const failure = document.createElement('div');
+    failure.className = 'resource-failure';
+    const paths = failures.map(({ path }) => path).join(', ');
+    const title = document.createElement('strong');
+    title.textContent = `${copy.failedResources}: ${paths}`;
+    const hint = document.createElement('span');
+    hint.textContent = copy.repairFailedHint;
+    failure.append(title, hint);
+    summaryRows.push(failure);
+  }
+  elements.resourceSummary.replaceChildren(...summaryRows);
+  const busy = Boolean(snapshot.operation);
+  elements.basicPreset.disabled = busy;
+  elements.compatibilityPreset.disabled = busy;
+  elements.loadAllButton.disabled = busy;
+  elements.repairButton.disabled = busy;
   elements.fontList.replaceChildren(
     ...snapshot.fonts.map((font) => {
       const row = document.createElement('div');

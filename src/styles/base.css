@@ -583,6 +583,24 @@ button:disabled {
   font-weight: 600;
 }
 
+.resource-failure {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 3px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
+  border-radius: var(--control-radius);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.resource-failure strong {
+  color: var(--danger);
+  font-weight: 650;
+}
+
 .preset-actions {
   justify-content: flex-end;
   gap: 8px;

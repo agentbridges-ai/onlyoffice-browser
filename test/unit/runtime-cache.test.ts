@@ -501,4 +501,116 @@ describe('RuntimeCacheController', () => {
     expect(result.phase).toBe('complete');
     expect(fetchMock.mock.calls.some(([, init]) => init?.cache === 'reload')).toBe(true);
   });
+
+  it('verifies installed fonts from the dedicated Cache Storage before using the network', async () => {
+    const cacheStorage = memoryCacheStorage();
+    let thumbnailOnline = true;
+    const thumbnailPath = '/sdkjs/common/Images/fonts_thumbnail@1.75x.png';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/onlyoffice-runtime-assets.json') {
+        return response(
+          JSON.stringify({
+            version: 2,
+            generatedAt: '2026-07-29T00:00:00.000Z',
+            assets: runtimeAssets,
+          }),
+          { headers: { 'X-OnlyOffice-Asset-Version': 'font-cache-v1' } },
+        );
+      }
+      if (url.pathname === '/onlyoffice-browser-font-assets.json') {
+        return response(
+          JSON.stringify({
+            defaultFonts: [],
+            builtInFonts: [],
+            fontFamilies: [],
+            assets: [
+              {
+                path: thumbnailPath.slice(1),
+                bytes: 4,
+                revision: '9f64a747e1b97f13',
+              },
+            ],
+          }),
+        );
+      }
+      if (url.pathname === thumbnailPath && !thumbnailOnline) return response(null, { status: 404 });
+      return response(new Uint8Array([1, 2, 3, 4]));
+    });
+    const controller = await RuntimeCacheController.create(
+      window.localStorage,
+      fetchMock as unknown as typeof fetch,
+      cacheStorage.storage,
+    );
+    await controller.loadAll(() => undefined);
+    thumbnailOnline = false;
+    fetchMock.mockClear();
+
+    const result = await controller.checkHealth(() => undefined);
+
+    expect(result.phase).toBe('complete');
+    expect(result.failures).toEqual([]);
+    expect(
+      fetchMock.mock.calls.some(([input]) => new URL(String(input), window.location.origin).pathname === thumbnailPath),
+    ).toBe(false);
+  });
+
+  it('reports a missing asset precisely and completes a later repair when it returns', async () => {
+    let thumbnailOnline = true;
+    const thumbnailPath = '/sdkjs/common/Images/fonts_thumbnail@1.75x.png';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/onlyoffice-runtime-assets.json') {
+        return response(
+          JSON.stringify({
+            version: 2,
+            generatedAt: '2026-07-29T00:00:00.000Z',
+            assets: runtimeAssets,
+          }),
+          { headers: { 'X-OnlyOffice-Asset-Version': 'missing-font-v1' } },
+        );
+      }
+      if (url.pathname === '/onlyoffice-browser-font-assets.json') {
+        return response(
+          JSON.stringify({
+            defaultFonts: [],
+            builtInFonts: [],
+            fontFamilies: [],
+            assets: [
+              {
+                path: thumbnailPath.slice(1),
+                bytes: 4,
+                revision: '9f64a747e1b97f13',
+              },
+            ],
+          }),
+        );
+      }
+      if (url.pathname === thumbnailPath && !thumbnailOnline) return response(null, { status: 404 });
+      if (init?.method === 'HEAD') return response(null, { headers: { 'content-length': '4' } });
+      return response(new Uint8Array([1, 2, 3, 4]));
+    });
+    const controller = await RuntimeCacheController.create(
+      window.localStorage,
+      fetchMock as unknown as typeof fetch,
+      undefined,
+    );
+    await controller.loadAll(() => undefined);
+    thumbnailOnline = false;
+
+    const failed = await controller.checkHealth(() => undefined);
+
+    expect(failed).toMatchObject({
+      phase: 'error',
+      failedFiles: 1,
+      failures: [{ path: thumbnailPath.slice(1), reason: expect.stringContaining('HTTP 404') }],
+    });
+    expect(controller.isComplete()).toBe(false);
+
+    thumbnailOnline = true;
+    const repaired = await controller.checkHealth(() => undefined);
+    expect(repaired.phase).toBe('complete');
+    expect(repaired.failures).toEqual([]);
+    expect(controller.isComplete()).toBe(true);
+  });
 });

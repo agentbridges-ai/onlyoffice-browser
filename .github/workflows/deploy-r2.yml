@@ -84,6 +84,8 @@ jobs:
           curl --fail --silent --show-error \
             "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}" \
             --output "${RUNNER_TEMP}/onlyoffice-browser-font-assets.json"
+          node scripts/verify-deployed-font-assets.mjs \
+            --manifest-url "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}"
           ASSET_VERSION="$(
             node scripts/runtime-asset-version.mjs \
               --root dist \
@@ -117,5 +119,7 @@ jobs:
           done
           curl --fail --silent --show-error https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json |
             node -e "let body=''; process.stdin.on('data', chunk => body += chunk).on('end', () => { const manifest = JSON.parse(body); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected) process.exit(1) })"
+          node scripts/verify-deployed-font-assets.mjs \
+            --manifest-url "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}"
           curl --fail --silent --show-error --head \
             https://office-github-actions-smoke.getpi.work/office-host.html >/dev/null
