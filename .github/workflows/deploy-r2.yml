@@ -46,6 +46,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rclone
       - run: pnpm install --frozen-lockfile
       - name: Verify runtime
         run: |
