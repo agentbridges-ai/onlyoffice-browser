@@ -37,6 +37,7 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
   const completed = verifying ? snapshot.verifiedBytes : snapshot.downloadedBytes;
   const total = verifying ? snapshot.verifyBytes : snapshot.downloadBytes;
   const progressValue = percent(completed, total);
+  const showProgress = busy || (snapshot.readiness !== 'ready' && total > 0);
   const profileLabels = {
     core: copy.core,
     word: copy.word,
@@ -65,7 +66,7 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
         </span>
       </div>
 
-      {(busy || total > 0) && (
+      {showProgress && (
         <ProgressBar
           aria-label={copy.resourceProgress}
           className="resource-progress"

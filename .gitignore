@@ -19,9 +19,11 @@ dist
 # test artifacts
 coverage/
 playwright-report/
+playwright-report-cloudflare/
 test-results/
 /public/fonts/
 .onlyoffice-font-assets/
 .onlyoffice-runtime-assets/
 .onlyoffice-runtime-asset-packs/
 .onlyoffice-release/
+.onlyoffice-cloudflare-matrix-cache/

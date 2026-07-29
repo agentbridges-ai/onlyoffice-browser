@@ -3398,6 +3398,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   ): Promise<File> {
     const normalizedTargetExt = normalizeDownloadTargetExtension(targetExt);
     const htmlBytes = utf8Bytes(this.getNativeHtmlData(nativeOptions));
+    if (normalizedTargetExt === 'html') {
+      const fileName = replaceFileExtension(this.fileName, 'html');
+      assertValidDownloadFileBytes(htmlBytes, fileName, normalizedTargetExt);
+      return new File([htmlBytes as BlobPart], fileName, { type: getSavedFileMimeType(fileName) });
+    }
+
     const result = await convertHtmlToDocument(htmlBytes, this.fileName, normalizedTargetExt);
     let fileName = result.fileName;
     let bytes = toUint8Array(result.data);

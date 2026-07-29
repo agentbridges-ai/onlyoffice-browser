@@ -7,12 +7,17 @@ test('demo host loads without page errors', async ({ page }) => {
   await page.goto('/');
 
   await expect(page.locator('#app')).toBeVisible();
-  await expect(page.locator('#new-word-button')).toBeVisible();
-  await expect(page.locator('#upload-button')).toBeVisible();
-  await expect(page.locator('input[name="open-mode"][value="edit"]')).toBeChecked();
-  await expect(page.locator('input[name="open-mode"][value="readonly"]')).toBeAttached();
-  await expect(page.locator('input[name="open-mode"][value="preview"]')).toBeAttached();
-  await expect(page.locator('#editor-grid')).toBeAttached();
+  await expect(page.locator('#resource-button')).toBeVisible();
+  await expect(page.locator('#open-button')).toBeVisible();
+  await expect(page.locator('.new-menu > summary')).toBeVisible();
+  await expect(page.locator('[data-new="docx"]')).toBeAttached();
+  await expect(page.locator('[data-new="xlsx"]')).toBeAttached();
+  await expect(page.locator('[data-new="pptx"]')).toBeAttached();
+  await expect(page.locator('#empty-open-button')).toBeVisible();
+  await expect(page.locator('#editor-panel')).toBeAttached();
+  await expect(page.locator('#dirty-dialog [value="cancel"]')).toHaveCount(1);
+  await expect(page.locator('#dirty-dialog [value="discard"]')).toHaveCount(1);
+  await expect(page.locator('#dirty-dialog [value="save"]')).toHaveCount(1);
   expect(pageErrors).toEqual([]);
 });
 

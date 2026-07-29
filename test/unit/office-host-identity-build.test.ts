@@ -14,6 +14,13 @@ describe('Office Host build identity', () => {
     expect(viteConfig).toContain('entryFileNames: `assets/[name]-v${packageJson.version}-[hash].js`');
     expect(viteConfig).toContain('chunkFileNames: `assets/[name]-v${packageJson.version}-[hash].js`');
     expect(viteConfig).toContain('assetFileNames: `assets/[name]-v${packageJson.version}-[hash][extname]`');
-    expect(packageJson.version).toBe('0.4.6');
+    expect(packageJson.version).toBe('0.4.7');
+  });
+
+  it('returns saved bytes to the embedding parent instead of downloading inside the isolated iframe', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/office-host.ts'), 'utf8');
+    expect(source).toContain("saveBehavior: 'callback'");
+    expect(source).not.toContain('saveBehavior: message.options.saveBehavior');
+    expect(source).toContain('onSave: (file) => postSavedFile(file, activeSaveRequestId)');
   });
 });

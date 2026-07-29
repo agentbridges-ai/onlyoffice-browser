@@ -9,6 +9,7 @@ import {
   resolveObjectKey,
   resolveReleaseRequest,
   releaseIdFromReferrer,
+  resolveRuntimeHost,
   shouldDisableResponseTransform,
   shouldShareAsset,
 } from '../../cloudflare/worker';
@@ -22,6 +23,29 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(isOnlyOfficeHost('onlyoffice.getpi.work.example.com')).toBe(false);
     expect(isIsolatedEditorHost('office-editor-a.getpi.work')).toBe(true);
     expect(isIsolatedEditorHost('onlyoffice.getpi.work')).toBe(false);
+  });
+
+  it('maps loopback matrix origins onto the production host classes only when enabled', () => {
+    expect(resolveRuntimeHost('onlyoffice.localhost', true)).toEqual({
+      logicalHostname: 'onlyoffice.getpi.work',
+      canonicalHostname: 'assets.office.localhost',
+    });
+    expect(resolveRuntimeHost('assets.office.localhost', true)).toEqual({
+      logicalHostname: 'onlyoffice.getpi.work',
+      canonicalHostname: 'assets.office.localhost',
+    });
+    expect(resolveRuntimeHost('office-editor-matrix.localhost', true)).toEqual({
+      logicalHostname: 'office-editor-matrix.getpi.work',
+      canonicalHostname: 'assets.office.localhost',
+    });
+    expect(resolveRuntimeHost('host-office-editor-matrix.office.localhost', true)).toEqual({
+      logicalHostname: 'office-editor-matrix.getpi.work',
+      canonicalHostname: 'assets.office.localhost',
+    });
+    expect(resolveRuntimeHost('office-editor-matrix.localhost', false)).toEqual({
+      logicalHostname: 'office-editor-matrix.localhost',
+      canonicalHostname: 'onlyoffice.getpi.work',
+    });
   });
 
   it('keeps only origin-bound boot files and workers on each editor origin', () => {
@@ -42,6 +66,7 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
   it('maps the public root and rejects traversal keys', () => {
     expect(resolveObjectKey('/')).toBe('index.html');
     expect(resolveObjectKey('/sdkjs/word/sdk-all.js')).toBe('sdkjs/word/sdk-all.js');
+    expect(resolveObjectKey('/sdkjs/slide/themes//themes.js')).toBe('sdkjs/slide/themes/themes.js');
     expect(resolveObjectKey('/sdkjs/%2e%2e/secret')).toBeNull();
     expect(resolveObjectKey('/%E0%A4%A')).toBeNull();
   });
@@ -83,6 +108,9 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
       '/r/v0.4.0-abcd/sdkjs/word/word.js',
     );
     expect(canonicalReleasePathname('/sdkjs/word/word.js', 'v0.4.0-next')).toBe('/r/v0.4.0-next/sdkjs/word/word.js');
+    expect(canonicalReleasePathname('/sdkjs/slide/themes//themes.js', 'v0.4.0-next')).toBe(
+      '/r/v0.4.0-next/sdkjs/slide/themes/themes.js',
+    );
   });
 
   it('prevents automatic analytics injection only in isolated Office HTML', () => {

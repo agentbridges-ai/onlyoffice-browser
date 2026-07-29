@@ -639,7 +639,10 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       plugins: message.options.plugins,
       visibleFontNames,
       fallbackFontNames,
-      saveBehavior: message.options.saveBehavior,
+      // Persistence belongs to the embedding parent. The isolated Host must
+      // always return bytes through SAVE_RESULT; downloading inside the iframe
+      // leaves the parent request unresolved and can create duplicate files.
+      saveBehavior: 'callback',
       onReady: (instance) => {
         postState('STATE', instance.getState());
       },

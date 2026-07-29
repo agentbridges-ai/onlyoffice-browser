@@ -8,8 +8,8 @@ import { OfficeResourcePanel } from '../../src/pwa/resource-panel';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const snapshot: OfficeRuntimeResourceSnapshot = {
-  packageVersion: '0.4.6',
-  assetVersion: 'v0.4.6-test',
+  packageVersion: '0.4.7',
+  assetVersion: 'v0.4.7-test',
   readiness: 'ready',
   packs: [
     { id: 'core', ready: true, completedBytes: 4, totalBytes: 4 },
@@ -31,14 +31,14 @@ const snapshot: OfficeRuntimeResourceSnapshot = {
   verifiedFontPaths: [],
   operation: null,
   error: null,
-  installedRelease: 'v0.4.6-test',
-  targetRelease: 'v0.4.6-test',
-  availableRelease: 'v0.4.6-test',
+  installedRelease: 'v0.4.7-test',
+  targetRelease: 'v0.4.7-test',
+  availableRelease: 'v0.4.7-test',
   storageMode: 'http-cache',
   phase: 'idle',
   currentChunk: null,
   downloadedBytes: 0,
-  downloadBytes: 0,
+  downloadBytes: 329 * 1024 * 1024,
   verifiedBytes: 0,
   verifyBytes: 0,
   bytesPerSecond: 0,
@@ -80,9 +80,10 @@ describe('OfficeResourcePanel', () => {
         root.render(<OfficeResourcePanel manager={manager} copy={officeCopy[locale]} />);
       });
 
-      expect(host.textContent).toContain('OnlyOffice 0.4.6');
+      expect(host.textContent).toContain('OnlyOffice 0.4.7');
       expect(host.textContent).toContain(officeCopy[locale].advancedFonts);
       expect(host.querySelectorAll('button').length).toBeGreaterThan(0);
+      expect(host.querySelector('[role="progressbar"]')).toBeNull();
       expect(error).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalled();
 

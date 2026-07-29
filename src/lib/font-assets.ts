@@ -197,10 +197,12 @@ async function assertRuntimeAssetReachable(assetPath: string): Promise<void> {
   let response: Response;
   try {
     response = await fetch(assetUrl, {
-      cache: runtimeAssetCacheMode(),
-      headers: {
-        Range: 'bytes=0-0',
-      },
+      method: 'HEAD',
+      // A byte-range probe can poison the browser HTTP cache when the server
+      // transparently compresses JavaScript: Chrome may combine the cached
+      // identity byte with a later gzip representation. HEAD verifies the
+      // immutable object without downloading or caching a partial body.
+      cache: 'no-store',
     });
   } catch (error) {
     throw createMissingFontAssetsError(

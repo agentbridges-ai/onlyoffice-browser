@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "onlyoffice-browser-local-r2-seeder",
+  "main": "cloudflare/local-r2-seeder.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": false,
+  "r2_buckets": [
+    {
+      "binding": "ASSETS",
+      "bucket_name": "onlyoffice-getpi-work",
+    },
+  ],
+}

@@ -133,6 +133,8 @@ describe('SW fetch routing', () => {
     expect(sw).toContain("event.data?.type === 'SET_FONT_ALLOWLIST'");
     expect(sw).toContain('downloadedFontPaths = new Set(');
     expect(sw).toContain('path !== fonts.allFonts');
+    expect(sw).toContain("request.headers.has('range')");
+    expect(sw).toContain('response.status !== 200');
     expect(sw).toContain('buildAllFontsMetadataFallbackBootstrap(config)');
     expect(sw).toContain("responseHeaders.set('cache-control', 'no-store')");
     expect(sw).not.toContain("return new Response('Font is not installed'");

@@ -150,6 +150,7 @@ let waitingWorkbox: Workbox | null = null;
 let updateActivationPending = false;
 let editorGeneration = 0;
 const hardResetOnLastDestroy = new URLSearchParams(location.search).get('hardResetOnLastDestroy') === 'true';
+const manualResourcePrefetch = new URLSearchParams(location.search).get('resourcePrefetch') === 'manual';
 clearLegacyDemoHostState(location, localStorage);
 const resolvedDemoHost = resolveDemoHostUrl(new URL(location.href));
 const officeHostUrl = (context: OfficeHostUrlContext) => {
@@ -549,7 +550,9 @@ async function initializeResources(): Promise<void> {
     resourceManager = await createOfficeRuntimeResourceManager();
     resourceManager.subscribe(renderResources);
     renderResources(resourceManager.getSnapshot());
-    scheduleIdle(() => resourceManager?.prefetchRecommended() || Promise.resolve());
+    if (!manualResourcePrefetch) {
+      scheduleIdle(() => resourceManager?.prefetchRecommended() || Promise.resolve());
+    }
   } catch {
     elements.resourceButton.lastElementChild!.textContent = copy.resourcesError;
     elements.resourceButton.dataset.state = 'error';
@@ -660,6 +663,9 @@ addEventListener('beforeunload', (event) => {
 window.__officeDemo = {
   get tabs() {
     return tabs;
+  },
+  get editor() {
+    return editor;
   },
   openEmpty: createEmpty,
   closeAll: async () => {

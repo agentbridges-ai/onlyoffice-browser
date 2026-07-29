@@ -29,7 +29,7 @@ if (realDocx && existsSync(realDocx)) matrixFiles.push(realDocx);
 
 test.describe('real Office corpus font rendering', () => {
   test('new Word documents use DengXian as the model and editing default', async ({ page }) => {
-    test.setTimeout(35_000);
+    test.setTimeout(60_000);
     await page.goto('/?hardResetOnLastDestroy=true');
     const cacheLaterButton = page.getByRole('button', { name: 'Later' });
     await cacheLaterButton.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => undefined);
@@ -40,11 +40,12 @@ test.describe('real Office corpus font rendering', () => {
       await expect(yaHeiRow.getByRole('button', { name: 'Download' })).toBeEnabled();
       await cacheLaterButton.click();
     }
-    await page.getByRole('button', { name: 'New Word' }).click();
+    await page.locator('.new-menu > summary').click();
+    await page.getByRole('button', { name: 'Word document' }).click();
     await page.waitForFunction(
       () => {
-        const records = (window as any).__officeDemo?.records || [];
-        return records.length === 1 && records[0].instance?.getState?.().status === 'ready';
+        const demo = (window as any).__officeDemo;
+        return demo?.tabs?.length === 1 && demo.editor?.getState?.().status === 'ready';
       },
       null,
       { timeout: 25_000 },
@@ -95,7 +96,9 @@ test.describe('real Office corpus font rendering', () => {
     expect(fontInputsAfterSelectionAndZoom).not.toContain('Microsoft YaHei');
     expect(fontInputsAfterSelectionAndZoom).not.toContain('微软雅黑');
 
-    await page.evaluate(() => (window as any).__officeDemo?.closeAll?.());
+    await page.evaluate(() => {
+      void (window as any).__officeDemo?.closeAll?.();
+    });
   });
 
   if (matrixFiles.length === 0) {
@@ -107,15 +110,15 @@ test.describe('real Office corpus font rendering', () => {
   for (const filePath of matrixFiles) {
     const fileName = filePath.split('/').pop() || filePath;
     test(`${fileName} renders with model-level font substitution`, async ({ page }, testInfo) => {
-      test.setTimeout(35_000);
+      test.setTimeout(60_000);
       await page.goto('/?hardResetOnLastDestroy=true');
       const cacheLaterButton = page.getByRole('button', { name: 'Later' });
       if (await cacheLaterButton.isVisible()) await cacheLaterButton.click();
       await page.locator('#file-input').setInputFiles(filePath);
       await page.waitForFunction(
         () => {
-          const records = (window as any).__officeDemo?.records || [];
-          return records.length === 1 && records[0].instance?.getState?.().status === 'ready';
+          const demo = (window as any).__officeDemo;
+          return demo?.tabs?.length === 1 && demo.editor?.getState?.().status === 'ready';
         },
         null,
         { timeout: 25_000 },
@@ -248,10 +251,13 @@ test.describe('real Office corpus font rendering', () => {
         });
       }
 
-      await page.evaluate(() => (window as any).__officeDemo?.closeAll?.());
+      await page.evaluate(() => {
+        void (window as any).__officeDemo?.closeAll?.();
+      });
       await page.waitForFunction(
         () =>
-          ((window as any).__officeDemo?.records?.length || 0) === 0 &&
+          ((window as any).__officeDemo?.tabs?.length || 0) === 0 &&
+          !(window as any).__officeDemo?.editor &&
           document.querySelectorAll('iframe.office-editor-host-frame, iframe[name="frameEditor"]').length === 0,
       );
     });

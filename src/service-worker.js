@@ -134,7 +134,18 @@ const fetchSharedAsset = async (request, url) => {
       cache: 'force-cache',
       redirect: 'follow',
     });
-    if (path !== fonts.allFonts || !response.ok) return response;
+    // Never append the JavaScript bootstrap to a partial response: doing so
+    // corrupts the 206 body and can poison a later full-script fetch in the
+    // HTTP cache. Current reachability checks use HEAD, but this remains a
+    // protocol-level safeguard for third-party callers.
+    if (
+      path !== fonts.allFonts ||
+      request.method !== 'GET' ||
+      request.headers.has('range') ||
+      response.status !== 200
+    ) {
+      return response;
+    }
 
     const config = resolveFontMetadataFallbackConfig(fonts, downloadedFontPaths);
     const responseHeaders = new Headers(response.headers);
