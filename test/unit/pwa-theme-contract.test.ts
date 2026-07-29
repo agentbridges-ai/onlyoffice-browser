@@ -3,6 +3,11 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const css = readFileSync(resolve(process.cwd(), 'src/styles/base.css'), 'utf8');
+const page = readFileSync(resolve(process.cwd(), 'pages/index.html'), 'utf8');
+const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'public/manifest.webmanifest'), 'utf8')) as {
+  background_color: string;
+  theme_color: string;
+};
 
 describe('standalone PWA theme contract', () => {
   it('shares Piwork light and dark semantic tokens', () => {
@@ -27,5 +32,14 @@ describe('standalone PWA theme contract', () => {
     expect(css).toContain('outline: 2px solid var(--focus);');
     expect(css).toContain('cursor: not-allowed;');
     expect(css).toContain('opacity: 0.5;');
+  });
+
+  it('uses the neutral theme in browser and install surfaces', () => {
+    expect(page).toContain('<meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)" />');
+    expect(page).toContain('<meta name="theme-color" content="#1c1c1c" media="(prefers-color-scheme: dark)" />');
+    expect(manifest).toMatchObject({
+      background_color: '#faf9f7',
+      theme_color: '#30302e',
+    });
   });
 });

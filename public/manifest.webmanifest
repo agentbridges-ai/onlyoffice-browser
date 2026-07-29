@@ -6,8 +6,8 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f4f6fa",
-  "theme_color": "#315efb",
+  "background_color": "#faf9f7",
+  "theme_color": "#30302e",
   "icons": [
     {
       "src": "/onlyoffice-icon.svg",
