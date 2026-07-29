@@ -111,6 +111,17 @@ export function resolveReleaseRequest(pathname: string): { releaseId: string; pa
   return assetPath ? { releaseId, path: assetPath } : null;
 }
 
+export function resolveEditorAssetRoute(pathname: string): { releaseId: string | null; pathname: string } {
+  const releaseRequest = resolveReleaseRequest(pathname);
+  return releaseRequest
+    ? { releaseId: releaseRequest.releaseId, pathname: `/${releaseRequest.path}` }
+    : { releaseId: null, pathname };
+}
+
+export function canonicalReleasePathname(pathname: string, releaseId: string): string {
+  return resolveReleaseRequest(pathname) ? pathname : `/r/${releaseId}/${pathname.replace(/^\/+/, '')}`;
+}
+
 async function readJsonObject<T>(env: WorkerEnv, key: string): Promise<T | null> {
   const object = await env.ASSETS.get(key);
   if (!object?.body) return null;
@@ -324,12 +335,13 @@ export default {
 
     const isolated = isIsolatedEditorHost(hostname);
     const pinnedReleaseId = releaseIdFromReferrer(request.headers.get('referer'));
-    if (isolated && shouldShareAsset(url.pathname, request.headers.get('sec-fetch-dest'))) {
-      const releaseId = pinnedReleaseId || (await stableReleaseId(env));
+    const editorAssetRoute = resolveEditorAssetRoute(url.pathname);
+    if (isolated && shouldShareAsset(editorAssetRoute.pathname, request.headers.get('sec-fetch-dest'))) {
+      const releaseId = editorAssetRoute.releaseId || pinnedReleaseId || (await stableReleaseId(env));
       if (releaseId) {
         const canonical = new URL(url);
         canonical.hostname = CANONICAL_HOST;
-        canonical.pathname = `/r/${releaseId}/${url.pathname.replace(/^\/+/, '')}`;
+        canonical.pathname = canonicalReleasePathname(url.pathname, releaseId);
         canonical.searchParams.delete(VERSION_QUERY);
         return Response.redirect(canonical.href, 307);
       }
