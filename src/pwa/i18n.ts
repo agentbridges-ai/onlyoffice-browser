@@ -52,6 +52,20 @@ export type OfficeCopy = {
   officeDocument: string;
   officeDocuments: string;
   writePermissionError: string;
+  planning: string;
+  downloading: string;
+  verifying: string;
+  activating: string;
+  paused: string;
+  pause: string;
+  resume: string;
+  retry: string;
+  resourceProgress: string;
+  resourceUpdateAvailable: string;
+  resourceErrors: Record<
+    'offline' | 'network' | 'timeout' | 'integrity' | 'quota' | 'manifest' | 'incompatible' | 'storage' | 'aborted',
+    string
+  >;
 };
 
 export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
@@ -105,6 +119,27 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     officeDocument: 'Office 文档',
     officeDocuments: 'Office 文档',
     writePermissionError: '未获得文件写入权限。',
+    planning: '正在规划',
+    downloading: '正在下载',
+    verifying: '正在校验',
+    activating: '正在完成更新',
+    paused: '已暂停',
+    pause: '暂停',
+    resume: '继续',
+    retry: '重试',
+    resourceProgress: 'Office 资源进度',
+    resourceUpdateAvailable: '有可用更新',
+    resourceErrors: {
+      offline: '网络已断开，联网后可继续',
+      network: '资源下载失败',
+      timeout: '资源下载超时',
+      integrity: '资源完整性校验失败',
+      quota: '浏览器存储空间不足',
+      manifest: '资源清单无效',
+      incompatible: '资源版本与当前应用不兼容',
+      storage: '无法保存资源安装状态',
+      aborted: '资源操作已取消',
+    },
   },
   'en-US': {
     product: 'OnlyOffice Browser',
@@ -156,6 +191,27 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     officeDocument: 'Office document',
     officeDocuments: 'Office documents',
     writePermissionError: 'Write permission was not granted.',
+    planning: 'Planning',
+    downloading: 'Downloading',
+    verifying: 'Verifying',
+    activating: 'Finishing update',
+    paused: 'Paused',
+    pause: 'Pause',
+    resume: 'Resume',
+    retry: 'Retry',
+    resourceProgress: 'Office resource progress',
+    resourceUpdateAvailable: 'Update available',
+    resourceErrors: {
+      offline: 'Offline. The download can resume when the connection returns.',
+      network: 'A resource download failed.',
+      timeout: 'A resource download timed out.',
+      integrity: 'A resource failed integrity verification.',
+      quota: 'There is not enough browser storage.',
+      manifest: 'The resource manifest is invalid.',
+      incompatible: 'The resource release is incompatible with this app.',
+      storage: 'The installation state could not be saved.',
+      aborted: 'The resource operation was cancelled.',
+    },
   },
 };
 

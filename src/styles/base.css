@@ -1,3 +1,7 @@
+@import 'tailwindcss';
+@import '@heroui/styles';
+@source '../../node_modules/@heroui/react/dist/**/*.{js,ts,jsx,tsx}';
+
 :root {
   color-scheme: light;
   color: var(--foreground);
@@ -237,6 +241,110 @@ button:disabled {
 
 .status-button[data-state='error'] .status-dot {
   background: var(--danger);
+}
+
+.resource-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.resource-panel__identity,
+.resource-profile-row,
+.resource-font-row,
+.resource-actions,
+.resource-progress__label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.resource-panel__identity > div {
+  display: grid;
+  gap: 3px;
+}
+
+.resource-panel__identity strong {
+  font-size: 14px;
+}
+
+.resource-panel__identity span,
+.resource-profile-row span:last-child,
+.resource-font-row > span:last-child,
+.resource-progress__label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.resource-panel__identity > span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--default);
+  font-weight: 650;
+}
+
+.resource-panel__identity > span[data-state='ready'] {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.resource-panel__identity > span[data-state='error'],
+.resource-panel__identity > span[data-state='repair-needed'] {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.resource-progress {
+  display: grid;
+  gap: 6px;
+}
+
+.resource-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.resource-profile-row {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.resource-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.resource-disclosure {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.resource-font-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.resource-font-row {
+  min-height: 36px;
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .resource-profile-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .resource-actions > button {
+    flex: 1 1 auto;
+  }
 }
 
 @keyframes pulse {

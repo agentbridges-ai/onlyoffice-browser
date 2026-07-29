@@ -1,4 +1,4 @@
-import { createOfficeEditor, type OfficeEditorInstance } from './lib/office-editor';
+import { createOfficeEditor, type OfficeEditorInstance, type OfficeHostUrlContext } from './lib/office-editor';
 import {
   createOfficeRuntimeResourceManager,
   type OfficeRuntimeResourceManager,
@@ -21,6 +21,9 @@ import {
 } from './pwa/i18n';
 import { ONLYOFFICE_BROWSER_VERSION } from './version';
 import { Workbox } from 'workbox-window';
+import { createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { OfficeResourcePanel } from './pwa/resource-panel';
 import './styles/base.css';
 
 declare global {
@@ -108,17 +111,7 @@ app.innerHTML = `
   <dialog id="resource-dialog" class="settings-dialog">
     <form method="dialog">
       <header><div><h2 data-i18n="resources">${copy.resources}</h2><p data-i18n="resourceIntro">${copy.resourceIntro}</p></div><button value="cancel" aria-label="${copy.closeDialog}" type="submit">×</button></header>
-      <div id="resource-summary" class="resource-summary"></div>
-      <div class="preset-actions">
-        <button id="basic-preset" data-i18n="basicPreset" type="button">${copy.basicPreset}</button>
-        <button id="compat-preset" class="primary-button" data-i18n="compatPreset" type="button">${copy.compatPreset}</button>
-      </div>
-      <details>
-        <summary data-i18n="advancedFonts">${copy.advancedFonts}</summary>
-        <div id="font-list" class="font-list"></div>
-        <button id="load-all-button" data-i18n="allResources" type="button">${copy.allResources}</button>
-      </details>
-      <footer><button id="repair-button" data-i18n="repair" type="button">${copy.repair}</button></footer>
+      <div id="resource-react-root"></div>
     </form>
   </dialog>
   <dialog id="dirty-dialog" class="confirm-dialog">
@@ -140,12 +133,6 @@ const elements = {
   fileInput: document.querySelector<HTMLInputElement>('#file-input')!,
   resourceButton: document.querySelector<HTMLButtonElement>('#resource-button')!,
   resourceDialog: document.querySelector<HTMLDialogElement>('#resource-dialog')!,
-  resourceSummary: document.querySelector<HTMLElement>('#resource-summary')!,
-  fontList: document.querySelector<HTMLElement>('#font-list')!,
-  basicPreset: document.querySelector<HTMLButtonElement>('#basic-preset')!,
-  compatibilityPreset: document.querySelector<HTMLButtonElement>('#compat-preset')!,
-  loadAllButton: document.querySelector<HTMLButtonElement>('#load-all-button')!,
-  repairButton: document.querySelector<HTMLButtonElement>('#repair-button')!,
   updateBanner: document.querySelector<HTMLElement>('#update-banner')!,
   updateButton: document.querySelector<HTMLButtonElement>('#update-button')!,
   dirtyDialog: document.querySelector<HTMLDialogElement>('#dirty-dialog')!,
@@ -157,12 +144,23 @@ const tabStore = new DocumentTabStore();
 let activeTab: DocumentTab | null = null;
 let editor: OfficeEditorInstance | null = null;
 let resourceManager: OfficeRuntimeResourceManager | null = null;
+let resourcePanelRoot: Root | null = null;
 let latestResourceSnapshot: OfficeRuntimeResourceSnapshot | null = null;
 let waitingWorkbox: Workbox | null = null;
+let updateActivationPending = false;
 let editorGeneration = 0;
 const hardResetOnLastDestroy = new URLSearchParams(location.search).get('hardResetOnLastDestroy') === 'true';
 clearLegacyDemoHostState(location, localStorage);
-const officeHostUrl = resolveDemoHostUrl(new URL(location.href));
+const resolvedDemoHost = resolveDemoHostUrl(new URL(location.href));
+const officeHostUrl = (context: OfficeHostUrlContext) => {
+  const base = typeof resolvedDemoHost === 'function' ? resolvedDemoHost(context) : resolvedDemoHost;
+  const resolved = new URL(base, location.href);
+  const releaseId = resourceManager?.getSnapshot().targetRelease;
+  if (releaseId && resolved.hostname.endsWith('.getpi.work')) {
+    resolved.pathname = `/r/${encodeURIComponent(releaseId)}/office-host.html`;
+  }
+  return resolved.href;
+};
 
 function applyLocale(nextLocale: OfficeLocale): void {
   locale = nextLocale;
@@ -177,7 +175,7 @@ function applyLocale(nextLocale: OfficeLocale): void {
     ?.setAttribute('aria-label', copy.closeDialog);
   document.querySelectorAll<HTMLElement>('[data-i18n]').forEach((element) => {
     const key = element.dataset.i18n as keyof OfficeCopy | undefined;
-    if (key) element.textContent = copy[key];
+    if (key && typeof copy[key] === 'string') element.textContent = copy[key];
   });
   try {
     localStorage.setItem(OFFICE_LOCALE_STORAGE_KEY, locale);
@@ -192,13 +190,64 @@ function applyLocale(nextLocale: OfficeLocale): void {
   }
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 ** 2).toFixed(bytes >= 100 * 1024 ** 2 ? 0 : 1)} MB`;
+function hasUnsafeWork(): boolean {
+  const resourcePhase = resourceManager?.getSnapshot().phase;
+  return (
+    tabs.some((tab) => tab.dirty || !tab.handle) ||
+    Boolean(resourcePhase && resourcePhase !== 'idle' && resourcePhase !== 'paused')
+  );
 }
 
-function hasUnsafeWork(): boolean {
-  return tabs.some((tab) => tab.dirty || !tab.handle);
+const updateChannel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('onlyoffice-pwa-update-v1');
+const updateTabId = crypto.randomUUID();
+const updatePeers = new Map<string, number>();
+const updateResponses = new Map<string, Map<string, boolean>>();
+
+function announceUpdatePresence(): void {
+  updateChannel?.postMessage({ type: 'PRESENCE', tabId: updateTabId, protocol: 1 });
+}
+
+updateChannel?.addEventListener('message', (event) => {
+  const message = event.data;
+  if (!message || message.tabId === updateTabId) return;
+  if (message.type === 'PRESENCE' && message.protocol === 1) {
+    updatePeers.set(message.tabId, Date.now());
+  } else if (message.type === 'PREPARE_UPDATE' && message.protocol === 1) {
+    updateChannel.postMessage({
+      type: 'UPDATE_STATUS',
+      protocol: 1,
+      requestId: message.requestId,
+      tabId: updateTabId,
+      unsafe: hasUnsafeWork(),
+    });
+  } else if (message.type === 'UPDATE_STATUS' && message.protocol === 1) {
+    updateResponses.get(message.requestId)?.set(message.tabId, Boolean(message.unsafe));
+  }
+});
+announceUpdatePresence();
+const updatePresenceInterval = window.setInterval(announceUpdatePresence, 5_000);
+addEventListener(
+  'pagehide',
+  () => {
+    clearInterval(updatePresenceInterval);
+    updateChannel?.close();
+  },
+  { once: true },
+);
+
+async function allTabsSafeForUpdate(): Promise<boolean> {
+  if (hasUnsafeWork()) return false;
+  if (!updateChannel) return true;
+  const requestId = crypto.randomUUID();
+  const responses = new Map<string, boolean>();
+  updateResponses.set(requestId, responses);
+  updateChannel.postMessage({ type: 'PREPARE_UPDATE', protocol: 1, requestId, tabId: updateTabId });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  updateResponses.delete(requestId);
+  const livePeers = [...updatePeers.entries()]
+    .filter(([, seenAt]) => Date.now() - seenAt < 15_000)
+    .map(([tabId]) => tabId);
+  return livePeers.every((tabId) => responses.get(tabId) === false);
 }
 
 function renderTabs(): void {
@@ -278,7 +327,7 @@ async function saveFile(tab: DocumentTab, file: File): Promise<boolean> {
   tab.dirty = false;
   await persistTab(tab);
   renderTabs();
-  tryActivateUpdate();
+  void tryActivateUpdate();
   return true;
 }
 
@@ -349,7 +398,7 @@ async function activateTab(tab: DocumentTab): Promise<void> {
         tab.dirty = dirty;
         setDocumentStatus(dirty ? '●' : editor?.getState().fileType.toUpperCase() || '');
         renderTabs();
-        if (!dirty) tryActivateUpdate();
+        if (!dirty) void tryActivateUpdate();
       },
       onError: (error) => {
         if (generation === editorGeneration) setDocumentStatus(`${copy.error}: ${error.message}`);
@@ -401,7 +450,7 @@ async function closeTab(tab: DocumentTab): Promise<void> {
   const next = tabs[Math.min(index, tabs.length - 1)];
   if (next) await activateTab(next);
   else setView('empty');
-  tryActivateUpdate();
+  void tryActivateUpdate();
 }
 
 async function addFile(handle: FileSystemFileHandle | undefined, file: File): Promise<void> {
@@ -468,72 +517,31 @@ function createEmpty(emptyType: 'docx' | 'xlsx' | 'pptx' | 'csv'): void {
   void activateTab(tab);
 }
 
-function packLabel(id: string): string {
-  return copy[id as 'word' | 'cell' | 'slide' | 'core' | 'fonts'] || id;
-}
-
 function renderResources(snapshot: OfficeRuntimeResourceSnapshot): void {
   latestResourceSnapshot = snapshot;
-  const label =
+  const state =
     snapshot.readiness === 'ready'
+      ? 'ready'
+      : snapshot.readiness === 'updating' || snapshot.readiness === 'paused'
+        ? 'updating'
+        : snapshot.readiness === 'error' || snapshot.readiness === 'repair-needed'
+          ? 'error'
+          : 'needed';
+  elements.resourceButton.dataset.state = state;
+  elements.resourceButton.lastElementChild!.textContent =
+    state === 'ready'
       ? copy.resourcesReady
-      : snapshot.readiness === 'updating'
+      : state === 'updating'
         ? copy.resourcesUpdating
-        : snapshot.readiness === 'error'
+        : state === 'error'
           ? copy.resourcesError
           : copy.resourcesNeeded;
-  elements.resourceButton.lastElementChild!.textContent = label;
-  elements.resourceButton.dataset.state = snapshot.readiness;
-  const summaryRows = snapshot.packs.map((pack) => {
-    const row = document.createElement('div');
-    row.className = 'resource-pack';
-    const text = document.createElement('span');
-    text.textContent = packLabel(pack.id);
-    const state = document.createElement('span');
-    state.textContent = pack.ready
-      ? copy.installed
-      : `${formatBytes(pack.completedBytes)} / ${formatBytes(pack.totalBytes)}`;
-    row.append(text, state);
-    return row;
-  });
-  const failures = snapshot.progress.failures || [];
-  if (failures.length > 0) {
-    const failure = document.createElement('div');
-    failure.className = 'resource-failure';
-    const paths = failures.map(({ path }) => path).join(', ');
-    const title = document.createElement('strong');
-    title.textContent = `${copy.failedResources}: ${paths}`;
-    const hint = document.createElement('span');
-    hint.textContent = copy.repairFailedHint;
-    failure.append(title, hint);
-    summaryRows.push(failure);
+  if (!resourcePanelRoot) {
+    resourcePanelRoot = createRoot(document.querySelector<HTMLElement>('#resource-react-root')!);
   }
-  elements.resourceSummary.replaceChildren(...summaryRows);
-  const busy = Boolean(snapshot.operation);
-  elements.basicPreset.disabled = busy;
-  elements.compatibilityPreset.disabled = busy;
-  elements.loadAllButton.disabled = busy;
-  elements.repairButton.disabled = busy;
-  elements.fontList.replaceChildren(
-    ...snapshot.fonts.map((font) => {
-      const row = document.createElement('div');
-      row.className = 'font-row';
-      const label = document.createElement('span');
-      label.textContent = `${font.name} · ${formatBytes(font.bytes)}`;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = font.removable ? (font.downloaded ? copy.remove : copy.download) : copy.required;
-      button.disabled = !font.removable || Boolean(snapshot.operation);
-      button.addEventListener('click', () => {
-        if (!resourceManager) return;
-        void (font.downloaded
-          ? resourceManager.uninstallFontFamily(font.id)
-          : resourceManager.downloadFontFamily(font.id));
-      });
-      row.append(label, button);
-      return row;
-    }),
-  );
+  if (resourceManager) {
+    resourcePanelRoot.render(createElement(OfficeResourcePanel, { manager: resourceManager, copy }));
+  }
 }
 
 async function initializeResources(): Promise<void> {
@@ -548,10 +556,15 @@ async function initializeResources(): Promise<void> {
   }
 }
 
-function tryActivateUpdate(): void {
-  if (!waitingWorkbox || hasUnsafeWork()) return;
+async function tryActivateUpdate(): Promise<void> {
+  if (!waitingWorkbox || updateActivationPending || !(await allTabsSafeForUpdate())) return;
+  updateActivationPending = true;
   elements.updateButton.disabled = true;
-  void waitingWorkbox.messageSkipWaiting();
+  try {
+    await waitingWorkbox.messageSkipWaiting();
+  } finally {
+    updateActivationPending = false;
+  }
 }
 
 function initializeServiceWorker(): void {
@@ -561,16 +574,38 @@ function initializeServiceWorker(): void {
   workbox.addEventListener('waiting', () => {
     waitingWorkbox = workbox;
     elements.updateBanner.hidden = false;
-    tryActivateUpdate();
+    void tryActivateUpdate();
   });
   workbox.addEventListener('controlling', () => {
     if (reloading || hasUnsafeWork()) return;
+    const reloadKey = `onlyoffice-browser:pwa-reload:${ONLYOFFICE_BROWSER_VERSION}`;
+    if (sessionStorage.getItem(reloadKey)) {
+      elements.updateBanner.hidden = false;
+      elements.updateButton.disabled = false;
+      return;
+    }
+    sessionStorage.setItem(reloadKey, '1');
     reloading = true;
     location.reload();
   });
   void workbox.register().then(() => {
-    const interval = window.setInterval(() => void workbox.update(), 60 * 60 * 1000);
-    addEventListener('pagehide', () => clearInterval(interval), { once: true });
+    const check = () => void workbox.update();
+    check();
+    const interval = window.setInterval(check, 10 * 60 * 1000);
+    const visible = () => {
+      if (document.visibilityState === 'visible') check();
+    };
+    addEventListener('online', check);
+    document.addEventListener('visibilitychange', visible);
+    addEventListener(
+      'pagehide',
+      () => {
+        clearInterval(interval);
+        removeEventListener('online', check);
+        document.removeEventListener('visibilitychange', visible);
+      },
+      { once: true },
+    );
   });
 }
 
@@ -608,15 +643,7 @@ elements.fileInput.addEventListener('change', () => {
   for (const file of Array.from(elements.fileInput.files || [])) void addFile(undefined, file);
 });
 elements.resourceButton.addEventListener('click', () => elements.resourceDialog.showModal());
-elements.updateButton.addEventListener('click', tryActivateUpdate);
-document
-  .querySelector('#basic-preset')
-  ?.addEventListener('click', () => void resourceManager?.installFontPreset('basic'));
-document
-  .querySelector('#compat-preset')
-  ?.addEventListener('click', () => void resourceManager?.installFontPreset('office-compatibility'));
-document.querySelector('#repair-button')?.addEventListener('click', () => void resourceManager?.repair());
-document.querySelector('#load-all-button')?.addEventListener('click', () => void resourceManager?.loadAll());
+elements.updateButton.addEventListener('click', () => void tryActivateUpdate());
 document.querySelector('#authorize-button')?.addEventListener('click', () => {
   if (!activeTab?.handle) return;
   void requestReadWritePermission(activeTab.handle).then((granted) => {

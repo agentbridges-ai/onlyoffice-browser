@@ -74,7 +74,7 @@ describe('OfficeRuntimeResourceManager', () => {
       expect.objectContaining({ name: 'Microsoft YaHei', downloaded: false, removable: true }),
     ]);
     expect(manager.getSnapshot()).toMatchObject({
-      packageVersion: '0.3.37',
+      packageVersion: '0.4.0',
       assetVersion: 'resource-v1',
       readiness: 'needs-download',
       packs: expect.arrayContaining([expect.objectContaining({ id: 'word', ready: false })]),
@@ -142,7 +142,11 @@ describe('OfficeRuntimeResourceManager', () => {
 
     await manager.downloadFontFamily('microsoft yahei');
 
-    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('https://onlyoffice.example.test/onlyoffice-runtime-assets.json');
+    expect(
+      fetchMock.mock.calls.some(
+        ([input]) => String(input) === 'https://onlyoffice.example.test/onlyoffice-runtime-assets.json',
+      ),
+    ).toBe(true);
     expect(fetchMock.mock.calls.find(([input]) => String(input).includes('/fonts/yahei.ttf'))?.[1]).toMatchObject({
       mode: 'cors',
       credentials: 'omit',

@@ -4,6 +4,8 @@ import {
   isAssetRevision,
   isOnlyOfficeHost,
   resolveObjectKey,
+  resolveReleaseRequest,
+  releaseIdFromReferrer,
   shouldDisableResponseTransform,
   shouldShareAsset,
 } from '../../cloudflare/worker';
@@ -39,6 +41,18 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(resolveObjectKey('/sdkjs/word/sdk-all.js')).toBe('sdkjs/word/sdk-all.js');
     expect(resolveObjectKey('/sdkjs/%2e%2e/secret')).toBeNull();
     expect(resolveObjectKey('/%E0%A4%A')).toBeNull();
+  });
+
+  it('maps immutable release URLs without allowing traversal', () => {
+    expect(resolveReleaseRequest('/r/v0.4.0-abcd/sdkjs/word/word.js')).toEqual({
+      releaseId: 'v0.4.0-abcd',
+      path: 'sdkjs/word/word.js',
+    });
+    expect(resolveReleaseRequest('/r/v0.4.0-abcd/sdkjs/%2e%2e/secret')).toBeNull();
+    expect(releaseIdFromReferrer('https://office-editor-a.getpi.work/r/v0.4.0-abcd/office-host.html')).toBe(
+      'v0.4.0-abcd',
+    );
+    expect(releaseIdFromReferrer('not a url')).toBeNull();
   });
 
   it('prevents automatic analytics injection only in isolated Office HTML', () => {

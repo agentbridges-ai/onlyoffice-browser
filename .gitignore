@@ -24,3 +24,4 @@ test-results/
 .onlyoffice-font-assets/
 .onlyoffice-runtime-assets/
 .onlyoffice-runtime-asset-packs/
+.onlyoffice-release/

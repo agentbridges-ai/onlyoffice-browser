@@ -105,12 +105,15 @@ describe('SW fetch routing', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'src/index.ts'), 'utf8');
 
     expect(source).toContain("workbox.addEventListener('waiting'");
-    expect(source).toContain('if (!waitingWorkbox || hasUnsafeWork()) return');
-    expect(source).toContain('void waitingWorkbox.messageSkipWaiting()');
+    expect(source).toContain('PREPARE_UPDATE');
+    expect(source).toContain('allTabsSafeForUpdate()');
+    expect(source).toContain('await waitingWorkbox.messageSkipWaiting()');
     expect(source).toContain("workbox.addEventListener('controlling'");
     expect(source).toContain('if (reloading || hasUnsafeWork()) return');
+    expect(source).toContain('onlyoffice-browser:pwa-reload:');
     expect(source).toContain('location.reload()');
-    expect(source).toContain('return tabs.some((tab) => tab.dirty || !tab.handle)');
+    expect(source).toContain('tabs.some((tab) => tab.dirty || !tab.handle)');
+    expect(source).toContain('10 * 60 * 1000');
   });
 
   it('proxies isolated-host shared assets directly to the immutable canonical URL', () => {

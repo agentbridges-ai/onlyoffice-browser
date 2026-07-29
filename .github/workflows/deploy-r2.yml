@@ -27,6 +27,14 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: https://40a503f1c86c028edfcd6f113c562b5b.r2.cloudflarestorage.com
+      RCLONE_CONFIG_R2_ACL: private
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
@@ -44,13 +52,44 @@ jobs:
           pnpm build
           node -e "const manifest = require('./dist/onlyoffice-runtime-assets.json'); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected || manifest.totalBytes <= 0) process.exit(1)"
       - run: rclone version
-      - name: Sync runtime assets
+      - name: Hydrate the retained font release
         run: |
-          rclone sync dist r2:onlyoffice-getpi-work \
+          rclone copy r2:onlyoffice-getpi-work dist \
             --fast-list \
             --checkers 32 \
             --transfers 16 \
-            --delete-after \
+            --include "/fonts/**" \
+            --include "/onlyoffice-browser-font-assets.json" \
+            --include "/onlyoffice-browser-font-source-map.json" \
+            --include "/sdkjs/common/AllFonts.js" \
+            --include "/sdkjs/common/Images/fonts_thumbnail*.png" \
+            --include "/server/FileConverter/bin/AllFonts.js" \
+            --include "/server/FileConverter/bin/font_selection.bin" \
+            --exclude "*" \
+            --stats-one-line
+          pnpm release:build
+      - name: Upload additive immutable release
+        run: |
+          rclone copy .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs \
+            --fast-list \
+            --checkers 32 \
+            --transfers 16 \
+            --immutable \
+            --stats-one-line
+          rclone copy .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases \
+            --fast-list \
+            --checkers 16 \
+            --transfers 8 \
+            --immutable \
+            --stats-one-line
+          rclone check .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs --one-way --checksum
+          rclone check .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases --one-way --checksum
+      - name: Update v2 compatibility files without deleting retained releases
+        run: |
+          rclone copy dist r2:onlyoffice-getpi-work \
+            --fast-list \
+            --checkers 32 \
+            --transfers 16 \
             --exclude "/fonts/**" \
             --exclude "/onlyoffice-browser-font-assets.json" \
             --exclude "/onlyoffice-browser-font-source-map.json" \
@@ -60,25 +99,6 @@ jobs:
             --exclude "/server/FileConverter/bin/font_selection.bin" \
             --exclude "/onlyoffice-plugin/**" \
             --stats-one-line
-          rclone check dist r2:onlyoffice-getpi-work \
-            --one-way \
-            --size-only \
-            --exclude "/fonts/**" \
-            --exclude "/onlyoffice-browser-font-assets.json" \
-            --exclude "/onlyoffice-browser-font-source-map.json" \
-            --exclude "/sdkjs/common/AllFonts.js" \
-            --exclude "/sdkjs/common/Images/fonts_thumbnail*.png" \
-            --exclude "/server/FileConverter/bin/AllFonts.js" \
-            --exclude "/server/FileConverter/bin/font_selection.bin" \
-            --exclude "/onlyoffice-plugin/**"
-        env:
-          RCLONE_CONFIG_R2_TYPE: s3
-          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          RCLONE_CONFIG_R2_ENDPOINT: https://40a503f1c86c028edfcd6f113c562b5b.r2.cloudflarestorage.com
-          RCLONE_CONFIG_R2_ACL: private
-          RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
       - name: Deploy wildcard runtime Worker
         run: |
           curl --fail --silent --show-error \
@@ -95,6 +115,11 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Switch stable release pointer
+        run: |
+          rclone copyto \
+            .onlyoffice-release/channels/stable.json \
+            r2:onlyoffice-getpi-work/channels/stable.json
       - name: Verify production deployment
         run: |
           EXPECTED_VERSION="$(
@@ -121,5 +146,9 @@ jobs:
             node -e "let body=''; process.stdin.on('data', chunk => body += chunk).on('end', () => { const manifest = JSON.parse(body); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected) process.exit(1) })"
           node scripts/verify-deployed-font-assets.mjs \
             --manifest-url "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}"
+          export RELEASE_ID="$(node -p "require('./.onlyoffice-release/channels/stable.json').releaseId")"
+          curl --fail --silent --show-error \
+            https://onlyoffice.getpi.work/channels/stable.json |
+            node -e "let body=''; process.stdin.on('data', chunk => body += chunk).on('end', () => { const pointer = JSON.parse(body); if (pointer.releaseId !== process.env.RELEASE_ID) process.exit(1) })"
           curl --fail --silent --show-error --head \
-            https://office-github-actions-smoke.getpi.work/office-host.html >/dev/null
+            "https://office-editor-github-actions-smoke.getpi.work/r/${RELEASE_ID}/office-host.html" >/dev/null

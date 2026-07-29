@@ -426,7 +426,7 @@ describe('RuntimeCacheController', () => {
     });
   });
 
-  it('detects a corrupt cached body and repairs only that asset from the network', async () => {
+  it('deep-verifies installed resources without using cross-origin only-if-cached', async () => {
     const assets = runtimeAssets.map((asset) => ({
       path: asset.path,
       bytes: asset.bytes,
@@ -458,13 +458,14 @@ describe('RuntimeCacheController', () => {
 
     const controller = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
     expect(controller.shouldCheckHealth()).toBe(true);
-    const result = await controller.checkHealth(() => undefined);
+    const result = await controller.repairInstalled(() => undefined);
 
     expect(result.phase).toBe('complete');
     expect(controller.isComplete()).toBe(true);
     expect(
       fetchMock.mock.calls.some(([input, init]) => String(input).includes('/word.js') && init?.cache === 'reload'),
     ).toBe(true);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.cache === 'only-if-cached')).toBe(false);
     expect(controller.shouldCheckHealth()).toBe(false);
   });
 
@@ -496,7 +497,7 @@ describe('RuntimeCacheController', () => {
     });
 
     const controller = await RuntimeCacheController.create(window.localStorage, fetchMock as unknown as typeof fetch);
-    const result = await controller.checkHealth(() => undefined);
+    const result = await controller.repairInstalled(() => undefined);
 
     expect(result.phase).toBe('complete');
     expect(fetchMock.mock.calls.some(([, init]) => init?.cache === 'reload')).toBe(true);
@@ -598,7 +599,7 @@ describe('RuntimeCacheController', () => {
     await controller.loadAll(() => undefined);
     thumbnailOnline = false;
 
-    const failed = await controller.checkHealth(() => undefined);
+    const failed = await controller.repairInstalled(() => undefined);
 
     expect(failed).toMatchObject({
       phase: 'error',
@@ -608,7 +609,7 @@ describe('RuntimeCacheController', () => {
     expect(controller.isComplete()).toBe(false);
 
     thumbnailOnline = true;
-    const repaired = await controller.checkHealth(() => undefined);
+    const repaired = await controller.repairInstalled(() => undefined);
     expect(repaired.phase).toBe('complete');
     expect(repaired.failures).toEqual([]);
     expect(controller.isComplete()).toBe(true);

@@ -2,29 +2,29 @@
   "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
   "name": "onlyoffice-browser-runtime",
   "main": "cloudflare/worker.ts",
-  "compatibility_date": "2026-07-28",
+  "compatibility_date": "2026-07-29",
   "workers_dev": false,
   "routes": [
     {
       "pattern": "onlyoffice.getpi.work/*",
-      "zone_name": "getpi.work"
+      "zone_name": "getpi.work",
     },
     {
       "pattern": "*.getpi.work/*",
-      "zone_name": "getpi.work"
-    }
+      "zone_name": "getpi.work",
+    },
   ],
   "r2_buckets": [
     {
       "binding": "ASSETS",
-      "bucket_name": "onlyoffice-getpi-work"
-    }
+      "bucket_name": "onlyoffice-getpi-work",
+    },
   ],
   "vars": {
-    "ASSET_VERSION": "development"
+    "ASSET_VERSION": "development",
   },
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 0.01
-  }
+    "head_sampling_rate": 0.01,
+  },
 }

@@ -187,11 +187,13 @@ describe('build-onlyoffice-runtime-assets', () => {
   it('hashes the runtime only after all build-time content patches', () => {
     const buildScript = fs.readFileSync(path.resolve('bin/build.sh'), 'utf8');
     const patchIndex = buildScript.indexOf('node scripts/patch-onlyoffice-print-fallback.mjs dist');
-    const timestampIndex = buildScript.indexOf('s/SW_VERSION_PLACEHOLDER/$TIMESTAMP/g');
+    const revisionIndex = buildScript.indexOf('node scripts/inject-build-revision.mjs dist/sw.js');
     const manifestIndex = buildScript.indexOf('node scripts/build-onlyoffice-runtime-assets.mjs');
+    const releaseIndex = buildScript.indexOf('node scripts/build-release-manifest.mjs');
 
     expect(patchIndex).toBeGreaterThanOrEqual(0);
-    expect(timestampIndex).toBeGreaterThan(patchIndex);
-    expect(manifestIndex).toBeGreaterThan(timestampIndex);
+    expect(revisionIndex).toBeGreaterThan(patchIndex);
+    expect(manifestIndex).toBeGreaterThan(revisionIndex);
+    expect(releaseIndex).toBeGreaterThan(manifestIndex);
   });
 });

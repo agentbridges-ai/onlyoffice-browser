@@ -3,12 +3,19 @@ const EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
 const VERSION_QUERY = '__oobv';
 const ASSET_REVISION_PATTERN = /^[a-f0-9]{16,64}$/;
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
+const RELEASE_PATH_PATTERN = /^\/r\/([a-zA-Z0-9._+-]{1,128})\/(.+)$/;
 
 type R2ObjectLike = {
   body?: ReadableStream;
   httpEtag: string;
   size: number;
   writeHttpMetadata(headers: Headers): void;
+};
+
+type ReleaseManifest = {
+  version: 3;
+  releaseId: string;
+  assets: Array<{ path: string; sha256: string; mime: string; bytes: number }>;
 };
 
 type RuntimeBucket = {
@@ -89,6 +96,85 @@ function canonicalAssetUrl(url: URL, version: string): string {
   return canonical.href;
 }
 
+export function resolveReleaseRequest(pathname: string): { releaseId: string; path: string } | null {
+  const match = RELEASE_PATH_PATTERN.exec(pathname);
+  if (!match) return null;
+  const assetPath = resolveObjectKey(`/${match[2]}`);
+  return assetPath ? { releaseId: match[1], path: assetPath } : null;
+}
+
+async function readJsonObject<T>(env: WorkerEnv, key: string): Promise<T | null> {
+  const object = await env.ASSETS.get(key);
+  if (!object?.body) return null;
+  try {
+    return (await new Response(object.body).json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function readReleaseManifest(
+  env: WorkerEnv,
+  ctx: WorkerExecutionContext,
+  releaseId: string,
+): Promise<ReleaseManifest | null> {
+  const cache = (caches as CacheStorage & { default: Cache }).default;
+  const cacheKey = new Request(
+    `https://${CANONICAL_HOST}/releases/${encodeURIComponent(releaseId)}/manifest.json`,
+  );
+  const cached = await cache.match(cacheKey);
+  if (cached) return (await cached.json()) as ReleaseManifest;
+  const object = await env.ASSETS.get(`releases/${releaseId}/manifest.json`);
+  if (!object?.body) return null;
+  const response = new Response(object.body, {
+    headers: { 'Cache-Control': 'public, max-age=31536000, immutable' },
+  });
+  const cacheResponse = response.clone();
+  try {
+    const manifest = (await response.json()) as ReleaseManifest;
+    ctx.waitUntil(cache.put(cacheKey, cacheResponse));
+    return manifest;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveImmutableAsset(
+  env: WorkerEnv,
+  ctx: WorkerExecutionContext,
+  request: { releaseId: string; path: string },
+): Promise<{ key: string; version: string; publicPath: string } | null> {
+  const manifest = await readReleaseManifest(env, ctx, request.releaseId);
+  if (manifest?.version !== 3 || manifest.releaseId !== request.releaseId || !Array.isArray(manifest.assets)) {
+    return null;
+  }
+  const asset = manifest.assets.find((candidate) => candidate.path === request.path);
+  if (!asset || !/^[a-f0-9]{64}$/.test(asset.sha256)) return null;
+  return {
+    key: `blobs/sha256/${asset.sha256}`,
+    version: request.releaseId,
+    publicPath: request.path,
+  };
+}
+
+async function stableReleaseId(env: WorkerEnv): Promise<string | null> {
+  const channel = await readJsonObject<{ version?: number; releaseId?: string }>(env, 'channels/stable.json');
+  return channel?.version === 1 &&
+    typeof channel.releaseId === 'string' &&
+    /^[a-zA-Z0-9._+-]{1,128}$/.test(channel.releaseId)
+    ? channel.releaseId
+    : null;
+}
+
+export function releaseIdFromReferrer(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    return resolveReleaseRequest(new URL(value).pathname)?.releaseId || null;
+  } catch {
+    return null;
+  }
+}
+
 function applySharedHeaders(headers: Headers): void {
   headers.set('Access-Control-Allow-Origin', '*');
   headers.set('Access-Control-Expose-Headers', 'X-OnlyOffice-Asset-Version');
@@ -127,11 +213,16 @@ async function serveAsset(
   url: URL,
   isolated: boolean,
 ): Promise<Response> {
-  const key = resolveObjectKey(url.pathname);
-  if (!key) return new Response('Invalid asset path', { status: 400 });
+  const releaseRequest = resolveReleaseRequest(url.pathname);
+  const immutableAsset = releaseRequest ? await resolveImmutableAsset(env, ctx, releaseRequest) : null;
+  if (releaseRequest && !immutableAsset) return new Response('Release asset not found', { status: 404 });
+  const key = immutableAsset?.key || resolveObjectKey(url.pathname);
+  const publicPath = immutableAsset?.publicPath || key;
+  if (!key || !publicPath) return new Response('Invalid asset path', { status: 400 });
 
   const versioned = isAssetRevision(url.searchParams.get(VERSION_QUERY));
-  const immutable = !isolated && versioned;
+  const immutable = Boolean(immutableAsset) || (!isolated && (versioned || key.startsWith('releases/')));
+  const assetVersion = immutableAsset?.version || env.ASSET_VERSION;
   const cache = (caches as CacheStorage & { default: Cache }).default;
   const cacheKey = new Request(url.href, { method: 'GET' });
   const rangeHeader = request.headers.get('range');
@@ -144,7 +235,7 @@ async function serveAsset(
   if (request.method === 'HEAD') {
     const metadata = await env.ASSETS.head(key);
     if (!metadata) return new Response('Not found', { status: 404 });
-    const headers = responseHeaders(metadata, immutable, isolated, key, env.ASSET_VERSION);
+    const headers = responseHeaders(metadata, immutable, isolated, publicPath, assetVersion);
     if (matchesEtag(request, metadata.httpEtag)) return new Response(null, { status: 304, headers });
     headers.set('Content-Length', String(metadata.size));
     return new Response(null, { status: 200, headers });
@@ -164,7 +255,7 @@ async function serveAsset(
     range ? { range: new Headers({ Range: `bytes=${range.start}-${range.end}` }) } : undefined,
   );
   if (!object?.body) return new Response('Not found', { status: 404 });
-  const headers = responseHeaders(object, immutable, isolated, key, env.ASSET_VERSION);
+  const headers = responseHeaders(object, immutable, isolated, publicPath, assetVersion);
   if (matchesEtag(request, object.httpEtag)) return new Response(null, { status: 304, headers });
 
   let status = 200;
@@ -193,7 +284,11 @@ function responseHeaders(
   headers.set('ETag', object.httpEtag);
   headers.set(
     'Cache-Control',
-    immutable ? 'public, max-age=31536000, immutable' : 'public, max-age=0, must-revalidate',
+    key === 'channels/stable.json'
+      ? 'no-store'
+      : immutable
+        ? 'public, max-age=31536000, immutable'
+        : 'public, max-age=0, must-revalidate',
   );
   if (shouldDisableResponseTransform(key, isolated)) {
     headers.set('Cache-Control', `${headers.get('Cache-Control')}, no-transform`);
@@ -224,8 +319,20 @@ export default {
     }
 
     const isolated = isIsolatedEditorHost(hostname);
+    const pinnedReleaseId = releaseIdFromReferrer(request.headers.get('referer'));
     if (isolated && shouldShareAsset(url.pathname, request.headers.get('sec-fetch-dest'))) {
+      const releaseId = pinnedReleaseId || (await stableReleaseId(env));
+      if (releaseId) {
+        const canonical = new URL(url);
+        canonical.hostname = CANONICAL_HOST;
+        canonical.pathname = `/r/${releaseId}/${url.pathname.replace(/^\/+/, '')}`;
+        canonical.searchParams.delete(VERSION_QUERY);
+        return Response.redirect(canonical.href, 307);
+      }
       return Response.redirect(canonicalAssetUrl(url, env.ASSET_VERSION), 307);
+    }
+    if (isolated && pinnedReleaseId && !resolveReleaseRequest(url.pathname)) {
+      url.pathname = `/r/${pinnedReleaseId}/${url.pathname.replace(/^\/+/, '')}`;
     }
     return serveAsset(request, env, ctx, url, isolated);
   },
