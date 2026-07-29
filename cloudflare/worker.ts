@@ -160,7 +160,7 @@ async function resolveImmutableAsset(
   env: WorkerEnv,
   ctx: WorkerExecutionContext,
   request: { releaseId: string; path: string },
-): Promise<{ key: string; version: string; publicPath: string } | null> {
+): Promise<{ key: string; version: string; publicPath: string; mime: string } | null> {
   const manifest = await readReleaseManifest(env, ctx, request.releaseId);
   if (manifest?.version !== 3 || manifest.releaseId !== request.releaseId || !Array.isArray(manifest.assets)) {
     return null;
@@ -171,6 +171,7 @@ async function resolveImmutableAsset(
     key: `blobs/sha256/${asset.sha256}`,
     version: request.releaseId,
     publicPath: request.path,
+    mime: asset.mime,
   };
 }
 
@@ -250,7 +251,7 @@ async function serveAsset(
   if (request.method === 'HEAD') {
     const metadata = await env.ASSETS.head(key);
     if (!metadata) return new Response('Not found', { status: 404 });
-    const headers = responseHeaders(metadata, immutable, isolated, publicPath, assetVersion);
+    const headers = responseHeaders(metadata, immutable, isolated, publicPath, assetVersion, immutableAsset?.mime);
     if (matchesEtag(request, metadata.httpEtag)) return new Response(null, { status: 304, headers });
     headers.set('Content-Length', String(metadata.size));
     return new Response(null, { status: 200, headers });
@@ -270,7 +271,7 @@ async function serveAsset(
     range ? { range: new Headers({ Range: `bytes=${range.start}-${range.end}` }) } : undefined,
   );
   if (!object?.body) return new Response('Not found', { status: 404 });
-  const headers = responseHeaders(object, immutable, isolated, publicPath, assetVersion);
+  const headers = responseHeaders(object, immutable, isolated, publicPath, assetVersion, immutableAsset?.mime);
   if (matchesEtag(request, object.httpEtag)) return new Response(null, { status: 304, headers });
 
   let status = 200;
@@ -293,9 +294,11 @@ function responseHeaders(
   isolated: boolean,
   key: string,
   version: string,
+  releaseMime?: string,
 ): Headers {
   const headers = new Headers();
   object.writeHttpMetadata(headers);
+  applyReleaseMime(headers, releaseMime);
   headers.set('ETag', object.httpEtag);
   headers.set(
     'Cache-Control',
@@ -312,6 +315,10 @@ function responseHeaders(
   headers.set('X-OnlyOffice-Asset-Version', version);
   if (isolated && key === 'office-host.html') headers.set('Origin-Agent-Cluster', '?1');
   return headers;
+}
+
+export function applyReleaseMime(headers: Headers, releaseMime?: string): void {
+  if (releaseMime) headers.set('Content-Type', releaseMime);
 }
 
 export default {

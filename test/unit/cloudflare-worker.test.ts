@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyReleaseMime,
   canonicalReleasePathname,
   isIsolatedEditorHost,
   isAssetRevision,
@@ -81,9 +82,7 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(canonicalReleasePathname('/r/v0.4.0-abcd/sdkjs/word/word.js', 'v0.4.0-next')).toBe(
       '/r/v0.4.0-abcd/sdkjs/word/word.js',
     );
-    expect(canonicalReleasePathname('/sdkjs/word/word.js', 'v0.4.0-next')).toBe(
-      '/r/v0.4.0-next/sdkjs/word/word.js',
-    );
+    expect(canonicalReleasePathname('/sdkjs/word/word.js', 'v0.4.0-next')).toBe('/r/v0.4.0-next/sdkjs/word/word.js');
   });
 
   it('prevents automatic analytics injection only in isolated Office HTML', () => {
@@ -98,5 +97,11 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(isAssetRevision('f59fbffe31d7f98')).toBe(false);
     expect(isAssetRevision('release-v1')).toBe(false);
     expect(isAssetRevision(null)).toBe(false);
+  });
+
+  it('serves content-addressed release blobs with their manifest MIME type', () => {
+    const headers = new Headers({ 'Content-Type': 'application/octet-stream' });
+    applyReleaseMime(headers, 'text/html; charset=utf-8');
+    expect(headers.get('Content-Type')).toBe('text/html; charset=utf-8');
   });
 });
