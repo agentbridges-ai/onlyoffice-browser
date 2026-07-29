@@ -144,12 +144,7 @@ export class OfficeRuntimeResourceManager {
   }
 
   getSnapshot(): OfficeRuntimeResourceSnapshot {
-    return {
-      ...this.snapshot,
-      progress: cloneProgress(this.snapshot.progress),
-      fonts: this.snapshot.fonts.map((font) => ({ ...font, paths: [...font.paths] })),
-      verifiedFontPaths: [...this.snapshot.verifiedFontPaths],
-    };
+    return this.snapshot;
   }
 
   subscribe(listener: OfficeRuntimeResourceListener): () => void {
@@ -364,8 +359,7 @@ export class OfficeRuntimeResourceManager {
     error: { code: ResourceErrorCode; path?: string } | null,
   ): void {
     this.snapshot = this.buildSnapshot(progress, operation, error);
-    const snapshot = this.getSnapshot();
-    for (const listener of this.listeners) listener(snapshot);
+    for (const listener of this.listeners) listener(this.snapshot);
   }
 
   private run(

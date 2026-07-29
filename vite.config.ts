@@ -198,6 +198,11 @@ export default defineConfig({
         officeHost: resolve(__dirname, 'pages/office-host.html'),
         saveE2E: resolve(__dirname, 'pages/save-e2e.html'),
       },
+      output: {
+        entryFileNames: `assets/[name]-v${packageJson.version}-[hash].js`,
+        chunkFileNames: `assets/[name]-v${packageJson.version}-[hash].js`,
+        assetFileNames: `assets/[name]-v${packageJson.version}-[hash][extname]`,
+      },
     },
   },
   resolve: {
