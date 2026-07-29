@@ -113,6 +113,45 @@ describe('Release Manifest v3', () => {
 });
 
 describe('TransactionalResourceInstaller', () => {
+  it('accepts same-release snapshots without rebroadcasting and ignores stale releases', async () => {
+    const broadcast = new EventTarget() as BroadcastChannel;
+    broadcast.postMessage = vi.fn();
+    const installer = new TransactionalResourceInstaller({
+      assetBaseUrl: 'https://onlyoffice.example.test',
+      fetch: resourceFetch() as unknown as typeof fetch,
+      journal: new MemoryInstallationJournal(),
+      storageMode: 'http-cache',
+      broadcast,
+    });
+    await installer.initialize();
+    const listener = vi.fn();
+    installer.subscribeInstaller(listener);
+    vi.mocked(broadcast.postMessage).mockClear();
+
+    const current = installer.getInstallerSnapshot();
+    broadcast.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'resource-snapshot', snapshot: { ...current, phase: 'paused', readiness: 'paused' } },
+      }),
+    );
+    expect(listener).toHaveBeenCalledOnce();
+    expect(installer.getInstallerSnapshot()).toMatchObject({ phase: 'paused', readiness: 'paused' });
+    expect(broadcast.postMessage).not.toHaveBeenCalled();
+
+    listener.mockClear();
+    broadcast.dispatchEvent(
+      new MessageEvent('message', {
+        data: {
+          type: 'resource-snapshot',
+          snapshot: { ...current, targetRelease: 'v0.3.0-stale', availableRelease: 'v0.3.0-stale' },
+        },
+      }),
+    );
+    expect(listener).not.toHaveBeenCalled();
+    expect(installer.getInstallerSnapshot()).toMatchObject({ targetRelease: current.targetRelease });
+    expect(broadcast.postMessage).not.toHaveBeenCalled();
+  });
+
   it('commits each verified resource and reuses it after a restarted installer', async () => {
     const journal = new MemoryInstallationJournal();
     const fetchMock = resourceFetch();

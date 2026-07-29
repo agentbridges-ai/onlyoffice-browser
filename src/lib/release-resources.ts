@@ -500,8 +500,13 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     this.repository = new ReleaseRepository(options.assetBaseUrl, options.fetch);
     this.snapshot = initialSnapshot(options.storageMode);
     options.broadcast?.addEventListener('message', (event) => {
-      if (event.data?.type === 'resource-snapshot') this.snapshot = event.data.snapshot;
-      this.publish();
+      if (event.data?.type !== 'resource-snapshot' || !event.data.snapshot) return;
+      const incoming = event.data.snapshot as ResourceInstallerSnapshot;
+      const currentRelease = this.currentManifest?.releaseId || this.snapshot.targetRelease;
+      const incomingRelease = incoming.targetRelease || incoming.availableRelease;
+      if (currentRelease && incomingRelease && incomingRelease !== currentRelease) return;
+      this.snapshot = incoming;
+      this.publish(false);
     });
   }
 
@@ -889,10 +894,10 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
       );
   }
 
-  private publish(): void {
+  private publish(broadcast = true): void {
     const snapshot = this.getInstallerSnapshot();
     for (const listener of this.listeners) listener(snapshot);
-    this.options.broadcast?.postMessage({ type: 'resource-snapshot', snapshot });
+    if (broadcast) this.options.broadcast?.postMessage({ type: 'resource-snapshot', snapshot });
   }
 }
 
