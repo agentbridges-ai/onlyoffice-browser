@@ -164,7 +164,7 @@ jobs:
           SMOKE_RESULT="$(
             curl --fail --silent --show-error --location --max-redirs 2 \
               --output /dev/null \
-              --write-out "%{http_code} %{num_redirects}" \
+              --write-out "%{http_code} %{num_redirects} %{content_type}" \
               "https://office-editor-github-actions-smoke.getpi.work/r/${RELEASE_ID}/office-host.html"
           )"
-          test "${SMOKE_RESULT}" = "200 0"
+          test "${SMOKE_RESULT}" = "200 0 text/html; charset=utf-8"
