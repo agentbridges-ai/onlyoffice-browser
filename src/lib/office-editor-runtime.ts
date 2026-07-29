@@ -1994,13 +1994,22 @@ export function installFontPickerFilter(
   return true;
 }
 
-function installNestedFontPickerFilter(visibleFontNames?: string[], fallbackFontNames?: string[]): void {
+export function installNestedFontPickerFilter(
+  visibleFontNames?: string[],
+  fallbackFontNames?: string[],
+): () => void {
   const startedAt = Date.now();
   const timeoutMs = 10_000;
   const intervalMs = 50;
+  const runtimeDocument = document;
+  const runtimeWindow = window;
+  let cancelled = false;
+  let retryId: number | null = null;
 
   const tryInstall = () => {
-    const frame = document.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
+    retryId = null;
+    if (cancelled) return;
+    const frame = runtimeDocument.querySelector<HTMLIFrameElement>('iframe[name="frameEditor"]');
     const frameWindow = frame?.contentWindow as OnlyOfficeFrameWindow | null | undefined;
     if (frameWindow) {
       try {
@@ -2011,11 +2020,18 @@ function installNestedFontPickerFilter(visibleFontNames?: string[], fallbackFont
     }
 
     if (Date.now() - startedAt < timeoutMs) {
-      window.setTimeout(tryInstall, intervalMs);
+      retryId = runtimeWindow.setTimeout(tryInstall, intervalMs);
     }
   };
 
   tryInstall();
+  return () => {
+    cancelled = true;
+    if (retryId !== null) {
+      runtimeWindow.clearTimeout(retryId);
+      retryId = null;
+    }
+  };
 }
 
 export function loadOfficeEditorApi(): Promise<void> {
@@ -2153,6 +2169,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   private switchingPreviewMode = false;
   private nativeEditModeBridgeCleanup: (() => void) | null = null;
   private nativeEditModeBridgeRetryId: number | null = null;
+  private nestedFontPickerFilterCleanup: (() => void) | null = null;
 
   private constructor(
     container: HTMLElement,
@@ -2222,7 +2239,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     activeInstances.set(this.id, this);
 
     try {
-      installNestedFontPickerFilter(this.options.visibleFontNames, this.options.fallbackFontNames);
+      this.scheduleNestedFontPickerFilter();
       const defaultZoom = getDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       persistDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       const uiTheme = normalizeOfficeInterfaceTheme(this.options.interfaceTheme);
@@ -2289,9 +2306,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
         },
         events: {
           onAppReady: () => {
+            if (this.destroyed) return;
             this.applyNestedEditorFrameDefaults();
             this.installModernThemeFilter();
-            installNestedFontPickerFilter(this.options.visibleFontNames, this.options.fallbackFontNames);
+            this.scheduleNestedFontPickerFilter();
             this.installSpreadsheetPdfPrintPanelBridge();
             this.installNativeEditModeBridge();
             this.scheduleNativeDownloadAsInterceptor();
@@ -2300,7 +2318,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             if (this.destroyed) return;
             this.applyNestedEditorFrameDefaults();
             this.installModernThemeFilter();
-            installNestedFontPickerFilter(this.options.visibleFontNames, this.options.fallbackFontNames);
+            this.scheduleNestedFontPickerFilter();
             if (this.sourceKind === 'new-document' && getDocumentType(this.fileType) === 'word') {
               const frameWindow = this.getNestedEditorWindow() || this.getFrameEditorWindow();
               if (frameWindow) applyDefaultWordFont(frameWindow);
@@ -2423,6 +2441,14 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     if (this.nativeEditModeBridgeRetryId === null) return;
     window.clearTimeout(this.nativeEditModeBridgeRetryId);
     this.nativeEditModeBridgeRetryId = null;
+  }
+
+  private scheduleNestedFontPickerFilter(): void {
+    this.nestedFontPickerFilterCleanup?.();
+    this.nestedFontPickerFilterCleanup = installNestedFontPickerFilter(
+      this.options.visibleFontNames,
+      this.options.fallbackFontNames,
+    );
   }
 
   private scheduleNativeEditModeBridgeRetry(): void {
@@ -3179,6 +3205,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.cleanupSaveRequest(new Error('Editor was reopened before save completed'));
     this.clearNativeDownloadAsInterceptorRetry();
     this.clearNativeEditModeBridgeRetry();
+    this.nestedFontPickerFilterCleanup?.();
+    this.nestedFontPickerFilterCleanup = null;
     this.nativeEditModeBridgeCleanup?.();
     this.nativeEditModeBridgeCleanup = null;
     try {
@@ -3779,6 +3807,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.status = 'destroyed';
     this.clearNativeDownloadAsInterceptorRetry();
     this.clearNativeEditModeBridgeRetry();
+    this.nestedFontPickerFilterCleanup?.();
+    this.nestedFontPickerFilterCleanup = null;
     this.nativeEditModeBridgeCleanup?.();
     this.nativeEditModeBridgeCleanup = null;
     this.cleanupSaveRequest(new Error('Editor was destroyed before save completed'));

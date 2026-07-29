@@ -30,9 +30,22 @@ import {
   createOfficeEditor,
   filterEditorFontsByVisibleNames,
   installFontPickerFilter,
+  installNestedFontPickerFilter,
 } from '../../src/lib/office-editor-runtime';
 
 describe('runtime font picker filtering', () => {
+  it('cancels the nested-frame retry when its editor lifecycle ends', () => {
+    vi.useFakeTimers();
+    try {
+      const cleanup = installNestedFontPickerFilter(['Arial']);
+      expect(vi.getTimerCount()).toBe(1);
+      cleanup();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses the runtime-visible family set as the picker authority', () => {
     const fonts = [{ name: 'Microsoft YaHei' }, { Name: 'Arial' }, { asc_getFontName: () => 'Calibri' }];
 
