@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canonicalReleasePathname,
   isIsolatedEditorHost,
   isAssetRevision,
   isOnlyOfficeHost,
+  resolveEditorAssetRoute,
   resolveObjectKey,
   resolveReleaseRequest,
   releaseIdFromReferrer,
@@ -57,6 +59,31 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
       'v0.4.0-abcd',
     );
     expect(releaseIdFromReferrer('not a url')).toBeNull();
+  });
+
+  it('classifies explicit release assets by their inner path without nesting the release route', () => {
+    const explicitHost = resolveEditorAssetRoute('/r/v0.4.0-abcd/office-host.html');
+    expect(explicitHost).toEqual({
+      releaseId: 'v0.4.0-abcd',
+      pathname: '/office-host.html',
+    });
+    expect(shouldShareAsset(explicitHost.pathname, 'document')).toBe(false);
+    const explicitSdk = resolveEditorAssetRoute('/r/v0.4.0-abcd/sdkjs/word/word.js');
+    expect(explicitSdk).toEqual({
+      releaseId: 'v0.4.0-abcd',
+      pathname: '/sdkjs/word/word.js',
+    });
+    expect(shouldShareAsset(explicitSdk.pathname, 'script')).toBe(true);
+    expect(resolveEditorAssetRoute('/office-host.html')).toEqual({
+      releaseId: null,
+      pathname: '/office-host.html',
+    });
+    expect(canonicalReleasePathname('/r/v0.4.0-abcd/sdkjs/word/word.js', 'v0.4.0-next')).toBe(
+      '/r/v0.4.0-abcd/sdkjs/word/word.js',
+    );
+    expect(canonicalReleasePathname('/sdkjs/word/word.js', 'v0.4.0-next')).toBe(
+      '/r/v0.4.0-next/sdkjs/word/word.js',
+    );
   });
 
   it('prevents automatic analytics injection only in isolated Office HTML', () => {
