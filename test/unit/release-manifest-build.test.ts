@@ -53,7 +53,9 @@ describe('immutable release builder', () => {
       'sdkjs/word/word.js': 'word',
       'fonts/basic.ttf': 'basic font',
       'fonts/compat.ttf': 'compatibility font',
+      'fonts/legacy-unlisted.ttf': 'legacy compatibility font',
       'server/FileConverter/bin/AllFonts.js': 'server font index',
+      'wasm/x2t/x2t.wasm.br': 'precompressed duplicate',
     };
     for (const [relative, contents] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
@@ -67,6 +69,8 @@ describe('immutable release builder', () => {
           { path: 'sdkjs/word/word.js', pack: 'word', bytes: 4, revision: 'legacy' },
           { path: 'fonts/basic.ttf', pack: 'core', bytes: 10, revision: 'legacy' },
           { path: 'fonts/compat.ttf', pack: 'core', bytes: 18, revision: 'legacy' },
+          { path: 'fonts/legacy-unlisted.ttf', pack: 'core', bytes: 25, revision: 'legacy' },
+          { path: 'wasm/x2t/x2t.wasm.br', pack: 'core', bytes: 23, revision: 'legacy' },
         ],
       }),
     );
@@ -99,12 +103,13 @@ describe('immutable release builder', () => {
     expect(first.profiles['fonts-basic']).toEqual(
       expect.arrayContaining(['fonts/basic.ttf', 'server/FileConverter/bin/AllFonts.js']),
     );
-    expect(first.profiles['fonts-office-compat']).toEqual(['fonts/compat.ttf']);
+    expect(first.profiles['fonts-office-compat']).toEqual(['fonts/compat.ttf', 'fonts/legacy-unlisted.ttf']);
     expect(first.profiles.base).not.toEqual(
       expect.arrayContaining(['fonts/basic.ttf', 'fonts/compat.ttf', 'server/FileConverter/bin/AllFonts.js']),
     );
     expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('npm/public-api.js');
     expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('.vite/manifest.json');
+    expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('wasm/x2t/x2t.wasm.br');
     expect(fs.existsSync(path.join(output, 'releases', first.releaseId, 'manifest.json'))).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(output, 'channels/stable.json'), 'utf8'))).toEqual({
       version: 1,

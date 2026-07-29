@@ -14,6 +14,6 @@ describe('Office Host build identity', () => {
     expect(viteConfig).toContain('entryFileNames: `assets/[name]-v${packageJson.version}-[hash].js`');
     expect(viteConfig).toContain('chunkFileNames: `assets/[name]-v${packageJson.version}-[hash].js`');
     expect(viteConfig).toContain('assetFileNames: `assets/[name]-v${packageJson.version}-[hash][extname]`');
-    expect(packageJson.version).toBe('0.4.2');
+    expect(packageJson.version).toBe('0.4.3');
   });
 });
