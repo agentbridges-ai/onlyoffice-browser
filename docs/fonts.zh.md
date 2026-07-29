@@ -47,7 +47,7 @@ npx onlyoffice-browser-generate-font-assets \
 
 如果上层产品希望字体下拉只展示更窄的主字体集合，可以在 host 侧基于生成出的 `__fonts_visible_names` 再过滤；不要删除隐藏符号字体的注册项。
 
-这些隐藏字体必须保留注册，但不应出现在字体下拉中：
+这些隐藏字体会保留注册，但不出现在字体下拉中。注册不等于首屏下载：普通文本兼容字体可以按需下载，文档结构符号和文字系统兜底字体则直接内置。
 
 - `Symbol`
 - `Wingdings`
@@ -65,7 +65,7 @@ npx onlyoffice-browser-generate-font-assets \
 - `DejaVu Sans`（`AllFonts.js` 用于 Unicode 箭头、几何符号和装饰符号的回退字体）
 - `Cambria Math`
 
-精简配置仍必须保留完整的分层兜底链：DejaVu Sans 负责常用 Unicode，Symbola/OpenSymbol 负责广泛符号，选定的 CJK 字体负责中文。单个字体无法覆盖全部 Unicode，因此精简时不得再把这些回退源重映射到拉丁默认字体。
+默认启动集合包含完整的微软雅黑 family，以及日文、韩文、阿拉伯文、Emoji、数学和 Office 符号兜底字体。SimSun、FangSong、Consolas、DejaVu Sans 等普通字体保持按需下载。单个字体无法覆盖全部 Unicode，因此精简时不得把内置的结构符号和文字系统兜底字体重映射到拉丁默认字体。
 
 已踩过的坑：
 

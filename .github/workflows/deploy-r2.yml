@@ -1,0 +1,160 @@
+name: Deploy runtime to R2
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+    paths:
+      - "bin/**"
+      - "public/**"
+      - "scripts/**"
+      - "src/**"
+      - "test/**"
+      - "cloudflare/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "wrangler.jsonc"
+      - ".github/workflows/deploy-r2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onlyoffice-r2-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: https://40a503f1c86c028edfcd6f113c562b5b.r2.cloudflarestorage.com
+      RCLONE_CONFIG_R2_ACL: private
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify runtime
+        run: |
+          pnpm test
+          pnpm tsc --noEmit
+          pnpm build
+          node -e "const manifest = require('./dist/onlyoffice-runtime-assets.json'); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected || manifest.totalBytes <= 0) process.exit(1)"
+      - run: rclone version
+      - name: Hydrate the retained font release
+        env:
+          ONLYOFFICE_X2T_VERSION: 9.3.0+1
+          ONLYOFFICE_X2T_COMMIT: 019cae68d7657aeda26231a044add0264ad63794
+        run: |
+          rclone copy r2:onlyoffice-getpi-work dist \
+            --fast-list \
+            --checkers 32 \
+            --transfers 16 \
+            --include "/fonts/**" \
+            --include "/onlyoffice-browser-font-assets.json" \
+            --include "/onlyoffice-browser-font-source-map.json" \
+            --include "/sdkjs/common/AllFonts.js" \
+            --include "/sdkjs/common/Images/fonts_thumbnail*.png" \
+            --include "/server/FileConverter/bin/AllFonts.js" \
+            --include "/server/FileConverter/bin/font_selection.bin" \
+            --exclude "*" \
+            --stats-one-line
+          pnpm release:build
+          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); if(manifest.x2t.version !== process.env.ONLYOFFICE_X2T_VERSION || manifest.x2t.commit !== process.env.ONLYOFFICE_X2T_COMMIT) throw new Error('x2t release identity mismatch')"
+      - name: Upload additive immutable release
+        run: |
+          rclone copy .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs \
+            --fast-list \
+            --checkers 32 \
+            --transfers 16 \
+            --immutable \
+            --stats-one-line
+          rclone copy .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases \
+            --fast-list \
+            --checkers 16 \
+            --transfers 8 \
+            --immutable \
+            --stats-one-line
+          rclone check .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs --one-way --checksum
+          rclone check .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases --one-way --checksum
+      - name: Update v2 compatibility files without deleting retained releases
+        run: |
+          rclone copy dist r2:onlyoffice-getpi-work \
+            --fast-list \
+            --checkers 32 \
+            --transfers 16 \
+            --exclude "/fonts/**" \
+            --exclude "/onlyoffice-browser-font-assets.json" \
+            --exclude "/onlyoffice-browser-font-source-map.json" \
+            --exclude "/sdkjs/common/AllFonts.js" \
+            --exclude "/sdkjs/common/Images/fonts_thumbnail*.png" \
+            --exclude "/server/FileConverter/bin/AllFonts.js" \
+            --exclude "/server/FileConverter/bin/font_selection.bin" \
+            --exclude "/onlyoffice-plugin/**" \
+            --stats-one-line
+      - name: Deploy wildcard runtime Worker
+        run: |
+          curl --fail --silent --show-error \
+            "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}" \
+            --output "${RUNNER_TEMP}/onlyoffice-browser-font-assets.json"
+          node scripts/verify-deployed-font-assets.mjs \
+            --manifest-url "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}"
+          ASSET_VERSION="$(
+            node scripts/runtime-asset-version.mjs \
+              --root dist \
+              --font-manifest "${RUNNER_TEMP}/onlyoffice-browser-font-assets.json"
+          )"
+          npx --yes wrangler@4.114.0 deploy --var "ASSET_VERSION:${ASSET_VERSION}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Switch stable release pointer
+        run: |
+          rclone copyto \
+            .onlyoffice-release/channels/stable.json \
+            r2:onlyoffice-getpi-work/channels/stable.json
+      - name: Verify production deployment
+        run: |
+          EXPECTED_VERSION="$(
+            node scripts/runtime-asset-version.mjs \
+              --root dist \
+              --font-manifest "${RUNNER_TEMP}/onlyoffice-browser-font-assets.json"
+          )"
+          for attempt in $(seq 1 12); do
+            ACTUAL_VERSION="$(
+              curl --fail --silent --show-error --head https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json |
+                tr -d '\r' |
+                awk -F ': ' 'tolower($1) == "x-onlyoffice-asset-version" { print $2 }'
+            )"
+            if [ "${ACTUAL_VERSION}" = "${EXPECTED_VERSION}" ]; then
+              break
+            fi
+            if [ "${attempt}" = "12" ]; then
+              echo "Expected asset version ${EXPECTED_VERSION}, received ${ACTUAL_VERSION:-missing}" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          curl --fail --silent --show-error https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json |
+            node -e "let body=''; process.stdin.on('data', chunk => body += chunk).on('end', () => { const manifest = JSON.parse(body); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected) process.exit(1) })"
+          node scripts/verify-deployed-font-assets.mjs \
+            --manifest-url "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}"
+          export RELEASE_ID="$(node -p "require('./.onlyoffice-release/channels/stable.json').releaseId")"
+          curl --fail --silent --show-error \
+            https://onlyoffice.getpi.work/channels/stable.json |
+            node -e "let body=''; process.stdin.on('data', chunk => body += chunk).on('end', () => { const pointer = JSON.parse(body); if (pointer.releaseId !== process.env.RELEASE_ID) process.exit(1) })"
+          curl --fail --silent --show-error --head \
+            "https://office-editor-github-actions-smoke.getpi.work/r/${RELEASE_ID}/office-host.html" >/dev/null

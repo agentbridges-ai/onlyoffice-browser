@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -151,7 +152,6 @@ function isRuntimeAsset(relativePath) {
       'document_editor_service_worker.js',
       'plugins.json',
       'reset.html',
-      'sw.js',
       'themes.json',
       'onlyoffice-browser-font-assets.json',
       'onlyoffice-browser-font-source-map.json',
@@ -195,7 +195,6 @@ export function getRuntimeAssetPack(relativePath, options = {}) {
       'document_editor_service_worker.js',
       'plugins.json',
       'reset.html',
-      'sw.js',
       'themes.json',
       'onlyoffice-browser-font-assets.json',
       'onlyoffice-browser-font-source-map.json',
@@ -261,27 +260,38 @@ export function collectRuntimeAssets(input, options) {
   const selected = [];
   const excluded = [];
   for (const relativePath of walkFiles(input)) {
+    const absolutePath = path.join(input, relativePath);
+    const bytes = fs.statSync(absolutePath).size;
     const pack = getRuntimeAssetPack(relativePath, options);
-    if (pack) {
-      selected.push({ path: relativePath, pack });
+    if (pack && bytes > 0) {
+      selected.push({
+        path: relativePath,
+        pack,
+        bytes,
+        revision: crypto.createHash('sha256').update(fs.readFileSync(absolutePath)).digest('hex').slice(0, 16),
+      });
     } else if (isRuntimeAsset(relativePath)) {
       excluded.push(relativePath);
     }
   }
+  selected.sort((left, right) => left.path.localeCompare(right.path));
+  excluded.sort();
   return { selected, excluded };
 }
 
 export function buildRuntimeAssets(options) {
   const { selected, excluded } = collectRuntimeAssets(options.input, options);
   const manifest = {
-    version: 1,
+    version: 2,
     generatedAt: new Date().toISOString(),
     types: options.types,
     dictionaries: options.dictionaries,
     keepHelp: options.keepHelp,
     packs: Object.fromEntries(PACKS.map((pack) => [pack, selected.filter((asset) => asset.pack === pack).length])),
+    totalBytes: selected.reduce((total, asset) => total + asset.bytes, 0),
     selected: selected.length,
     excluded: excluded.length,
+    assets: selected,
   };
 
   if (options.dryRun) {

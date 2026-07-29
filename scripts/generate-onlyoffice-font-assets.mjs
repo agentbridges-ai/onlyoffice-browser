@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,30 +22,59 @@ const ZH_CORE_FONT_FAMILIES = [
   'Aptos',
   'Calibri',
   'Cambria',
-  'Cambria Math',
-  'Consolas',
   'DengXian',
-  'FangSong',
   'KaiTi',
   'Microsoft YaHei',
-  'Microsoft YaHei UI',
-  'NSimSun',
   'SimHei',
   'SimSun',
-  'SimSun-ExtB',
   'Times New Roman',
 ];
 const ZH_CORE_HIDDEN_FONT_FAMILIES = [
   'ASCW3',
   'Bookshelf Symbol 7',
+  'Cambria Math',
+  'Consolas',
   'DejaVu Sans',
+  'FangSong',
   'Marlett',
+  'Microsoft YaHei UI',
   'Monotype Sorts',
   'MS Reference Specialty',
   'MT Extra',
   'MS Gothic',
   'MS PGothic',
   'MS UI Gothic',
+  'Noto Emoji',
+  'Noto Naskh Arabic',
+  'Noto Sans KR',
+  'NSimSun',
+  'OpenSymbol',
+  'Segoe UI Symbol',
+  'SimSun-ExtB',
+  'Symbol',
+  'Symbola',
+  'Webdings',
+  'Wingdings',
+  'Wingdings 2',
+  'Wingdings 3',
+];
+// These families are required for document structure, script coverage, or
+// symbol fidelity and must be available before a user downloads an optional
+// font family. Keep this narrower than ZH_CORE_HIDDEN_FONT_FAMILIES: the latter
+// also contains compatibility aliases used for fallback mapping and must not
+// silently turn ordinary fonts such as SimSun or FangSong into default assets.
+const BUILT_IN_FONT_FAMILIES = [
+  'ASCW3',
+  'Bookshelf Symbol 7',
+  'Cambria Math',
+  'Marlett',
+  'Monotype Sorts',
+  'MS Reference Specialty',
+  'MT Extra',
+  'MS Gothic',
+  'Noto Emoji',
+  'Noto Naskh Arabic',
+  'Noto Sans KR',
   'OpenSymbol',
   'Segoe UI Symbol',
   'Symbol',
@@ -85,6 +115,11 @@ const ZH_CORE_SOURCE_FILE_NAMES = [
   'ms reference specialty.ttf',
   'mtextra.ttf',
   'msgothic.ttc',
+  'NotoEmoji-Regular.ttf',
+  'NotoNaskhArabic-Bold.ttf',
+  'NotoNaskhArabic-Regular.ttf',
+  'NotoSansKR-Bold.otf',
+  'NotoSansKR-Regular.otf',
   'seguisym.ttf',
   'simsunb.ttf',
   'symbol.ttf',
@@ -107,6 +142,9 @@ const ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY = {
   'MS Gothic': ['msgothic.ttc'],
   'MS PGothic': ['msgothic.ttc'],
   'MS UI Gothic': ['msgothic.ttc'],
+  'Noto Emoji': ['NotoEmoji-Regular.ttf'],
+  'Noto Naskh Arabic': ['NotoNaskhArabic-Regular.ttf', 'NotoNaskhArabic-Bold.ttf'],
+  'Noto Sans KR': ['NotoSansKR-Regular.otf', 'NotoSansKR-Bold.otf'],
   'Segoe UI Symbol': ['seguisym.ttf'],
   Symbol: ['symbol.ttf'],
   Webdings: ['webdings.ttf'],
@@ -116,6 +154,7 @@ const ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY = {
 };
 const LATIN_FALLBACK_FONT_FAMILIES = ['Calibri', 'Arial', 'Carlito', 'Liberation Sans', 'DejaVu Sans', 'Open Sans'];
 const CJK_FALLBACK_FONT_FAMILIES = [
+  'DengXian',
   'Microsoft YaHei',
   'SimSun',
   'Noto Sans SC',
@@ -127,6 +166,20 @@ const CJK_FALLBACK_FONT_FAMILIES = [
   'Droid Sans Fallback',
   'AR PL UKai CN',
 ];
+const JAPANESE_FALLBACK_FONT_FAMILIES = ['MS Gothic', 'MS PGothic', 'MS UI Gothic', 'Noto Sans JP'];
+const KOREAN_FALLBACK_FONT_FAMILIES = ['Noto Sans KR', 'NanumGothic', 'NanumBarunGothic'];
+const ARABIC_FALLBACK_FONT_FAMILIES = ['Noto Naskh Arabic', 'Noto Naskh Arabic UI', 'KacstOne'];
+const EMOJI_FALLBACK_FONT_FAMILIES = ['Noto Emoji'];
+const MATH_FALLBACK_FONT_FAMILIES = ['Cambria Math', 'Asana Math'];
+const FALLBACK_FONT_FAMILY_BY_ROLE = {
+  default: 'DengXian',
+  japanese: 'MS Gothic',
+  korean: 'Noto Sans KR',
+  arabic: 'Noto Naskh Arabic',
+  emoji: 'Noto Emoji',
+  math: 'Cambria Math',
+  symbol: 'Segoe UI Symbol',
+};
 const GENERATED_OUTPUT_PATHS = [
   'fonts',
   'server',
@@ -343,6 +396,11 @@ export function dockerGenerationScript(options) {
   ).sort();
   const latinFallbackFontFamilies = Array.from(new Set(LATIN_FALLBACK_FONT_FAMILIES));
   const cjkFallbackFontFamilies = Array.from(new Set(CJK_FALLBACK_FONT_FAMILIES));
+  const japaneseFallbackFontFamilies = Array.from(new Set(JAPANESE_FALLBACK_FONT_FAMILIES));
+  const koreanFallbackFontFamilies = Array.from(new Set(KOREAN_FALLBACK_FONT_FAMILIES));
+  const arabicFallbackFontFamilies = Array.from(new Set(ARABIC_FALLBACK_FONT_FAMILIES));
+  const emojiFallbackFontFamilies = Array.from(new Set(EMOJI_FALLBACK_FONT_FAMILIES));
+  const mathFallbackFontFamilies = Array.from(new Set(MATH_FALLBACK_FONT_FAMILIES));
   const keepFontFamilies = Array.from(new Set(options.keepFonts)).sort();
   return `
 set -euo pipefail
@@ -371,7 +429,7 @@ if [ -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" ]; then
   cp -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" "$OUT/server/FileConverter/bin/AllFonts.js"
 fi
 
-  OUT_DIR="$OUT" EXTRA_DIR="$EXTRA" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_HIDDEN_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreHiddenFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY=${JSON.stringify(JSON.stringify(ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
+  OUT_DIR="$OUT" EXTRA_DIR="$EXTRA" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_HIDDEN_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreHiddenFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY=${JSON.stringify(JSON.stringify(ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} JAPANESE_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(japaneseFallbackFontFamilies))} KOREAN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(koreanFallbackFontFamilies))} ARABIC_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(arabicFallbackFontFamilies))} EMOJI_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(emojiFallbackFontFamilies))} MATH_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(mathFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
 import json
 import os
 import re
@@ -386,6 +444,11 @@ zh_core_source_file_names = set(json.loads(os.environ["ZH_CORE_SOURCE_FILE_NAMES
 zh_core_exact_source_file_names_by_family = json.loads(os.environ["ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY"])
 latin_fallback_font_families = json.loads(os.environ["LATIN_FALLBACK_FONT_FAMILIES"])
 cjk_fallback_font_families = json.loads(os.environ["CJK_FALLBACK_FONT_FAMILIES"])
+japanese_fallback_font_families = json.loads(os.environ["JAPANESE_FALLBACK_FONT_FAMILIES"])
+korean_fallback_font_families = json.loads(os.environ["KOREAN_FALLBACK_FONT_FAMILIES"])
+arabic_fallback_font_families = json.loads(os.environ["ARABIC_FALLBACK_FONT_FAMILIES"])
+emoji_fallback_font_families = json.loads(os.environ["EMOJI_FALLBACK_FONT_FAMILIES"])
+math_fallback_font_families = json.loads(os.environ["MATH_FALLBACK_FONT_FAMILIES"])
 keep_font_families = set(json.loads(os.environ["KEEP_FONT_FAMILIES"]))
 server_allfonts = os.path.join(out, "server/FileConverter/bin/AllFonts.js")
 web_allfonts = os.path.join(out, "sdkjs/common/AllFonts.js")
@@ -423,6 +486,31 @@ def is_cjk_family_name(name):
         "deng", "gothic", "mincho", "dotum", "gulim", "batang", "gungsuh",
     ]
     return any(marker in lowered for marker in cjk_markers)
+
+def is_japanese_family_name(name):
+    lowered = name.lower()
+    return any(marker in lowered for marker in [
+        "meiryo", "ms gothic", "ms pgothic", "ms mincho", "ms pmincho",
+        "noto sans jp", "takao", "yu gothic", "yu mincho",
+    ])
+
+def is_korean_family_name(name):
+    lowered = name.lower()
+    return any(marker in lowered for marker in [
+        "batang", "dotum", "gulim", "gungsuh", "malgun", "nanum", "noto sans kr",
+    ])
+
+def is_arabic_family_name(name):
+    lowered = name.lower()
+    return any(marker in lowered for marker in [
+        "arabic", "amiri", "kacst", "kufi", "naskh", "scheherazade",
+    ])
+
+def is_emoji_family_name(name):
+    return "emoji" in name.lower()
+
+def is_math_family_name(name):
+    return "math" in name.lower() or "stix" in name.lower()
 
 def find_font_info(name):
     for info in web_infos:
@@ -469,8 +557,14 @@ def extra_source_path(file_name):
                 return candidate
     return ""
 
-def exact_source_index_for_family(family_name):
-    for file_name in zh_core_exact_source_file_names_by_family.get(family_name, []):
+def exact_source_index_for_family(family_name, slot_index):
+    file_names = zh_core_exact_source_file_names_by_family.get(family_name, [])
+    wants_bold = slot_index in [5, 7]
+    ordered_file_names = sorted(
+        file_names,
+        key=lambda file_name: ("bold" in file_name.lower()) != wants_bold,
+    )
+    for file_name in ordered_file_names:
         source_index = source_file_name_to_index.get(file_name.lower())
         if source_index is not None:
             return source_index
@@ -503,6 +597,30 @@ def allowed_same_family_source_index(info, slot_index):
         if candidate_index >= 0:
             return candidate_index
     return -1
+
+def fallback_source_index_for_family(family_name, slot_index):
+    candidates = cjk_fallback_font_families if is_cjk_family_name(family_name) else latin_fallback_font_families
+    if is_emoji_family_name(family_name):
+        candidates = emoji_fallback_font_families
+    elif is_math_family_name(family_name):
+        candidates = math_fallback_font_families
+    elif is_arabic_family_name(family_name):
+        candidates = arabic_fallback_font_families
+    elif is_korean_family_name(family_name):
+        candidates = korean_fallback_font_families
+    elif is_japanese_family_name(family_name):
+        candidates = japanese_fallback_font_families
+
+    fallback_slot_index = slot_index
+    if re.search(r"\\b(?:black|bold|heavy|semibold)\\b", family_name, re.IGNORECASE):
+        fallback_slot_index = 7 if slot_index in [3, 7] else 5
+
+    for candidate_name in candidates:
+        candidate_info = find_font_info(candidate_name)
+        candidate_index = allowed_same_family_source_index(candidate_info, fallback_slot_index) if candidate_info else -1
+        if candidate_index >= 0:
+            return candidate_index
+    return cjk_fallback_source_index if is_cjk_family_name(family_name) else latin_fallback_source_index
 
 server_source = read_source(server_allfonts)
 web_source = read_source(web_allfonts)
@@ -539,12 +657,12 @@ new_infos = []
 for original_info in web_infos:
     info = list(original_info)
     keep_actual_font = font_set == "full" or info[0] in kept_family_names
-    exact_source_index = exact_source_index_for_family(info[0]) if font_set == "zh-core" and keep_actual_font else -1
-    exact_source_face_index = face_index_for_source(info, exact_source_index) if exact_source_index >= 0 else 0
     for slot_index in range(1, len(info), 2):
         source_index = info[slot_index]
         if source_index < 0:
             continue
+        exact_source_index = exact_source_index_for_family(info[0], slot_index) if font_set == "zh-core" and keep_actual_font else -1
+        exact_source_face_index = face_index_for_source(info, exact_source_index) if exact_source_index >= 0 else 0
         if exact_source_index >= 0 and info[0] in zh_core_hidden_font_families:
             source_index = exact_source_index
             info[slot_index] = source_index
@@ -553,11 +671,11 @@ for original_info in web_infos:
             if source_file_name(source_index) not in zh_core_source_file_names:
                 same_family_source_index = allowed_same_family_source_index(info, slot_index)
                 source_index = same_family_source_index if same_family_source_index >= 0 else (
-                    cjk_fallback_source_index if is_cjk_family_name(info[0]) else latin_fallback_source_index
+                    fallback_source_index_for_family(info[0], slot_index)
                 )
                 info[slot_index] = source_index
         elif not keep_actual_font:
-            source_index = cjk_fallback_source_index if is_cjk_family_name(info[0]) else latin_fallback_source_index
+            source_index = fallback_source_index_for_family(info[0], slot_index)
             info[slot_index] = source_index
         if source_index not in used_source_index_set:
             used_source_index_set.add(source_index)
@@ -567,6 +685,23 @@ for original_info in web_infos:
 source_index_map = {old_index: new_index for new_index, old_index in enumerate(used_source_indexes)}
 web_files = []
 source_map = []
+families_by_source_index = {}
+styles_by_source_index = {}
+style_by_slot_index = {1: "regular", 3: "italic", 5: "bold", 7: "boldItalic"}
+for info in new_infos:
+    if not info:
+        continue
+    for slot_index in range(1, len(info), 2):
+        source_index = info[slot_index]
+        if source_index >= 0:
+            families_by_source_index.setdefault(source_index, set()).add(info[0])
+for info in web_infos:
+    if not info:
+        continue
+    for slot_index in range(1, len(info), 2):
+        source_index = info[slot_index]
+        if source_index >= 0:
+            styles_by_source_index.setdefault(source_index, set()).add(style_by_slot_index.get(slot_index, "regular"))
 for new_index, old_index in enumerate(used_source_indexes):
     source_path = source_files[old_index]
     if not os.path.isfile(source_path):
@@ -576,7 +711,14 @@ for new_index, old_index in enumerate(used_source_indexes):
     target_path = os.path.join(fonts_out, file_name)
     shutil.copyfile(source_path, target_path)
     web_files.append(file_name)
-    source_map.append({"originalIndex": old_index, "index": new_index, "source": source_path, "file": f"fonts/{file_name}"})
+    source_map.append({
+        "originalIndex": old_index,
+        "index": new_index,
+        "source": source_path,
+        "file": f"fonts/{file_name}",
+        "families": sorted(families_by_source_index.get(old_index, set())),
+        "styles": sorted(styles_by_source_index.get(old_index, set())),
+    })
 
 for info in new_infos:
     for slot_index in range(1, len(info), 2):
@@ -706,18 +848,123 @@ function assertGeneratedAssets(output) {
   }
 }
 
-function writeGeneratedManifest(output, options) {
+function parseGeneratedFontArray(source, name) {
+  const marker = `window["${name}"] = `;
+  const markerIndex = source.indexOf(marker);
+  if (markerIndex < 0) throw new Error(`Generated AllFonts.js is missing ${name}`);
+  const start = source.indexOf('[', markerIndex + marker.length);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === '[') depth += 1;
+    else if (character === ']' && --depth === 0) return JSON.parse(source.slice(start, index + 1));
+  }
+  throw new Error(`Generated AllFonts.js has an unterminated ${name}`);
+}
+
+function readGeneratedFontFamiliesByName(allFontsSource, names) {
+  const files = parseGeneratedFontArray(allFontsSource, '__fonts_files');
+  const infos = parseGeneratedFontArray(allFontsSource, '__fonts_infos');
+  return names.map((name) => {
+    const info = infos.find((candidate) => candidate?.[0] === name);
+    const paths = [];
+    for (let slot = 1; info && slot < info.length; slot += 2) {
+      const file = files[info[slot]];
+      if (typeof file === 'string') paths.push(`fonts/${file}`);
+    }
+    return { name, paths: [...new Set(paths)] };
+  });
+}
+
+export function readGeneratedFontFamilies(allFontsSource) {
+  return readGeneratedFontFamiliesByName(
+    allFontsSource,
+    parseGeneratedFontArray(allFontsSource, '__fonts_visible_names'),
+  );
+}
+
+export function readGeneratedBuiltInFonts(allFontsSource, builtInFamilyNames) {
+  const visibleFamilyNames = new Set(readGeneratedFontFamilies(allFontsSource).map((family) => family.name));
+  return [
+    ...new Set(
+      readGeneratedFontFamiliesByName(
+        allFontsSource,
+        builtInFamilyNames.filter((name) => !visibleFamilyNames.has(name)),
+      ).flatMap((family) => family.paths),
+    ),
+  ];
+}
+
+export function readGeneratedFallbackFonts(allFontsSource) {
+  return Object.fromEntries(
+    Object.entries(FALLBACK_FONT_FAMILY_BY_ROLE).map(([role, familyName]) => {
+      const [family] = readGeneratedFontFamiliesByName(allFontsSource, [familyName]);
+      return [role, family?.paths || []];
+    }),
+  );
+}
+
+export function writeGeneratedManifest(output, options) {
+  const allFonts = 'sdkjs/common/AllFonts.js';
+  const fontSelection = 'server/FileConverter/bin/font_selection.bin';
+  const fontSourceMap = GENERATED_FONT_SOURCE_MAP;
+  const fontThumbnails = listGeneratedFontThumbnailPaths(output);
+  const fonts = listGeneratedFontAssetPaths(output);
+  const fontSourceMapValue = JSON.parse(fs.readFileSync(path.join(output, fontSourceMap), 'utf8'));
+  const allFontsSource = fs.readFileSync(path.join(output, allFonts), 'utf8');
+  const fontFamilies = readGeneratedFontFamilies(allFontsSource);
+  const metadataByPath = new Map(
+    (fontSourceMapValue.fonts || []).map((font) => [
+      font.file,
+      {
+        families: Array.isArray(font.families) ? font.families : [],
+        styles: Array.isArray(font.styles) ? font.styles : [],
+      },
+    ]),
+  );
+  const defaultFonts = (fontSourceMapValue.fonts || [])
+    .filter((font) => ['deng.ttf', 'dengb.ttf'].includes(path.basename(font.source || '').toLowerCase()))
+    .map((font) => font.file);
+  if (defaultFonts.length === 0 && fonts[0]) defaultFonts.push(fonts[0]);
+  const builtInFonts = readGeneratedBuiltInFonts(allFontsSource, BUILT_IN_FONT_FAMILIES);
+  const fallbackFonts = readGeneratedFallbackFonts(allFontsSource);
+  const assetPaths = [allFonts, fontSelection, fontSourceMap, ...fontThumbnails, ...fonts];
   const manifest = {
     version: 1,
     generator: 'documentserver-generate-allfonts.sh',
     image: options.image,
     fontSet: options.fontSet,
     generatedAt: new Date().toISOString(),
-    allFonts: 'sdkjs/common/AllFonts.js',
-    fontSelection: 'server/FileConverter/bin/font_selection.bin',
-    fontSourceMap: GENERATED_FONT_SOURCE_MAP,
-    fontThumbnails: listGeneratedFontThumbnailPaths(output),
-    fonts: listGeneratedFontAssetPaths(output),
+    allFonts,
+    fontSelection,
+    fontSourceMap,
+    fontThumbnails,
+    fonts,
+    defaultFonts,
+    builtInFonts,
+    fallbackFonts,
+    fontFamilies,
+    totalBytes: assetPaths.reduce((total, assetPath) => total + fs.statSync(path.join(output, assetPath)).size, 0),
+    assets: assetPaths.map((assetPath) => ({
+      path: assetPath,
+      bytes: fs.statSync(path.join(output, assetPath)).size,
+      families: metadataByPath.get(assetPath)?.families,
+      styles: metadataByPath.get(assetPath)?.styles,
+      revision: crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(path.join(output, assetPath)))
+        .digest('hex')
+        .slice(0, 16),
+    })),
   };
 
   fs.writeFileSync(path.join(output, GENERATED_FONT_ASSETS_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);

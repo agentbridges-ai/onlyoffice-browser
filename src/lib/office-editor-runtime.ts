@@ -17,10 +17,11 @@ import {
   LOCAL_ONLYOFFICE_USER_NAME,
 } from './onlyoffice-mock-server';
 import type { BinConversionResult, DocumentMediaMap, SaveEvent } from './document-types';
-import { assertGeneratedFontAssetsAvailable } from './font-assets';
+import { assertGeneratedFontAssetsAvailable, resolveAvailableFontFamilyNames } from './font-assets';
 
 const ONLYOFFICE_BROWSER_BUILD_VERSION = '9.3.0';
 const ONLYOFFICE_BROWSER_BUILD_NUMBER = 140;
+const ONLYOFFICE_DEFAULT_FONT_FAMILY = 'DengXian';
 const ONLYOFFICE_ZOOM_FIT_TO_WIDTH = -2;
 const SAVE_TIMEOUT_MS = 60_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
@@ -112,13 +113,23 @@ export interface CreateOfficeEditorOptions {
   interfaceTheme?: OfficeInterfaceTheme;
   lang?: string;
   plugins?: OfficePluginOptions;
+  /** Picker-visible families derived from font files verified by the host. */
+  visibleFontNames?: string[];
+  /** Catalog families whose requested files are unavailable and render through the default fallback. */
+  fallbackFontNames?: string[];
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
   onReady?: (instance: OfficeEditorInstance) => void;
   saveBehavior?: OfficeSaveBehavior;
   onSave?: (file: File, instance: OfficeEditorInstance) => OfficeSaveCallbackResult | Promise<OfficeSaveCallbackResult>;
-  onSaveAs?: (file: File, instance: OfficeEditorInstance) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
-  onDownload?: (file: File, instance: OfficeEditorInstance) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
+  onSaveAs?: (
+    file: File,
+    instance: OfficeEditorInstance,
+  ) => OfficeSaveAsCallbackResult | Promise<OfficeSaveAsCallbackResult>;
+  onDownload?: (
+    file: File,
+    instance: OfficeEditorInstance,
+  ) => OfficeDownloadCallbackResult | Promise<OfficeDownloadCallbackResult>;
   onDirtyChange?: (dirty: boolean, instance: OfficeEditorInstance) => void | Promise<void>;
   onStateChange?: (state: OfficeEditorState, instance: OfficeEditorInstance) => void | Promise<void>;
   onError?: (error: Error, instance?: OfficeEditorInstance) => void;
@@ -367,15 +378,59 @@ type RuntimeWindow = typeof window & {
 };
 
 type OnlyOfficeFrameWindow = Window & {
-	  AscCommon?: {
-	    CKeyboardEvent?: new () => {
-	      CtrlKey?: boolean;
-	      KeyCode?: number;
-	    };
-	    baseEditorsApi?: {
+  __onlyOfficeBrowserFontInputFallbackUntil?: number;
+  __onlyOfficeBrowserFontInputFallbackTimer?: number;
+  AscBuilder?: {
+    Word?: {
+      Api?: {
+        GetDocument?: () => {
+          GetDefaultTextPr?: () => {
+            SetFontFamily?: (fontFamily: string) => unknown;
+          } | null;
+        } | null;
+      };
+    };
+  };
+  AscFonts?: {
+    g_fontApplication?: {
+      FontPickerMap?: Record<string, unknown>;
+      GetFontFileWeb?: (name: string, style?: number) => unknown;
+      __onlyOfficeBrowserFontFileFallback?: boolean;
+      __onlyOfficeBrowserOriginalGetFontFileWeb?: (name: string, style?: number) => unknown;
+      __onlyOfficeBrowserFallbackFontNames?: ReadonlySet<string>;
+      __onlyOfficeBrowserFallbackFontFamilyName?: string;
+    };
+    CFont?: {
+      prototype?: {
+        name?: string;
+        asc_getFontName?: () => string;
+        __onlyOfficeBrowserFontNameFallback?: boolean;
+        __onlyOfficeBrowserFallbackFontNames?: ReadonlySet<string>;
+        __onlyOfficeBrowserFallbackFontFamilyName?: string;
+      };
+    };
+  };
+  AscCommon?: {
+    asc_CTextFontFamily?: {
+      prototype?: {
+        Name?: string;
+        get_Name?: () => string;
+        asc_getName?: () => string;
+        __onlyOfficeBrowserFontNameFallback?: boolean;
+        __onlyOfficeBrowserOriginalTextFontName?: () => string;
+        __onlyOfficeBrowserFallbackFontNames?: ReadonlySet<string>;
+        __onlyOfficeBrowserFallbackFontFamilyName?: string;
+      };
+    };
+    CKeyboardEvent?: new () => {
+      CtrlKey?: boolean;
+      KeyCode?: number;
+    };
+    baseEditorsApi?: {
       prototype?: {
         sync_InitEditorFonts?: (guiFonts: unknown[]) => unknown;
         __onlyOfficeBrowserFontPickerFilter?: boolean;
+        __onlyOfficeBrowserVisibleFontNames?: ReadonlySet<string>;
       };
     };
   };
@@ -403,6 +458,23 @@ type OnlyOfficeFrameWindow = Window & {
     getController?: (name: string) => unknown;
   };
   Asc?: {
+    editor?: {
+      sync_TextPrFontFamilyCallBack?: (fontFamily?: {
+        Name?: string;
+        get_Name?: () => string;
+        put_Name?: (name: string) => unknown;
+      }) => unknown;
+      put_TextPrFontName?: (fontFamily: string) => unknown;
+      UpdateInterfaceState?: () => unknown;
+      __onlyOfficeBrowserFontFamilyCallbackPatched?: boolean;
+      __onlyOfficeBrowserOriginalFontFamilyCallback?: (fontFamily?: {
+        Name?: string;
+        get_Name?: () => string;
+        put_Name?: (name: string) => unknown;
+      }) => unknown;
+      __onlyOfficeBrowserFallbackFontNames?: ReadonlySet<string>;
+      __onlyOfficeBrowserFallbackFontFamilyName?: string;
+    };
     c_oAscPrintType?: {
       Selection?: unknown;
       ActiveSheets?: unknown;
@@ -512,7 +584,10 @@ function resolveInitialMode(options: CreateOfficeEditorOptions): OfficeEditorMod
   return options.mode || (options.readonly ? 'readonly' : 'edit');
 }
 
-function normalizeOfficeInterfaceTheme(value: unknown, fallback: OnlyOfficeUiTheme = 'theme-system'): OnlyOfficeUiTheme {
+function normalizeOfficeInterfaceTheme(
+  value: unknown,
+  fallback: OnlyOfficeUiTheme = 'theme-system',
+): OnlyOfficeUiTheme {
   if (typeof value !== 'string') return fallback;
   const normalized = value.trim().toLowerCase();
   if (normalized === 'system' || normalized === 'theme-system') return 'theme-system';
@@ -542,9 +617,9 @@ function persistOnlyOfficeInterfaceTheme(theme: OnlyOfficeUiTheme): void {
 function filterModernOnlyOfficeThemeMap(themeMap: Record<string, unknown> | undefined): Record<string, unknown> {
   const source = themeMap || {};
   return Object.fromEntries(
-    MODERN_ONLYOFFICE_UI_THEME_IDS
-      .filter((themeId) => Object.prototype.hasOwnProperty.call(source, themeId))
-      .map((themeId) => [themeId, source[themeId]]),
+    MODERN_ONLYOFFICE_UI_THEME_IDS.filter((themeId) => Object.prototype.hasOwnProperty.call(source, themeId)).map(
+      (themeId) => [themeId, source[themeId]],
+    ),
   );
 }
 
@@ -573,7 +648,8 @@ function installModernOnlyOfficeThemeFilter(frameWindow: OnlyOfficeFrameWindow |
     themes.get = (theme: string) => originalGet(normalizeOfficeInterfaceTheme(theme));
   }
   if (originalSetTheme) {
-    themes.setTheme = (theme: OnlyOfficeUiTheme, source?: string) => originalSetTheme(normalizeOfficeInterfaceTheme(theme), source);
+    themes.setTheme = (theme: OnlyOfficeUiTheme, source?: string) =>
+      originalSetTheme(normalizeOfficeInterfaceTheme(theme), source);
   }
   themes.defaultThemeId = () => 'theme-white';
   if (originalGet) {
@@ -697,7 +773,9 @@ function normalizeDownloadFileType(value: unknown): string | number | undefined 
   return undefined;
 }
 
-function getNativeDownloadAsFileType(options: NativeDownloadAsOptions | string | number | undefined): string | number | undefined {
+function getNativeDownloadAsFileType(
+  options: NativeDownloadAsOptions | string | number | undefined,
+): string | number | undefined {
   const direct = normalizeDownloadFileType(options);
   if (direct !== undefined) return direct;
   if (!options || typeof options !== 'object') return undefined;
@@ -1107,7 +1185,10 @@ function getPrintResourceUrl(fileName: string): string {
   const pdfFileName = safeFileName.toLowerCase().endsWith('.pdf')
     ? safeFileName
     : replaceFileExtension(safeFileName, 'pdf');
-  const url = new URL(`${PRINT_PDF_ROUTE_PREFIX}${randomId}/${encodeURIComponent(pdfFileName)}`, window.location.origin);
+  const url = new URL(
+    `${PRINT_PDF_ROUTE_PREFIX}${randomId}/${encodeURIComponent(pdfFileName)}`,
+    window.location.origin,
+  );
   url.searchParams.set('filename', pdfFileName);
   return url.href;
 }
@@ -1215,7 +1296,10 @@ function looksLikeJpegDocument(bytes: Uint8Array): boolean {
 }
 
 function decodeUtf8Loose(bytes: Uint8Array): string {
-  return new TextDecoder('utf-8', { fatal: false }).decode(bytes).replace(/^\ufeff/, '').trimStart();
+  return new TextDecoder('utf-8', { fatal: false })
+    .decode(bytes)
+    .replace(/^\ufeff/, '')
+    .trimStart();
 }
 
 function looksLikePngDocument(bytes: Uint8Array): boolean {
@@ -1446,7 +1530,9 @@ function decodeDataUriBase64(value: string): Uint8Array | null {
 }
 
 function getExtensionFileNameSuffix(fileName: string): string {
-  const extension = getFileExtension(fileName).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const extension = getFileExtension(fileName)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
   return extension ? `_${extension}` : '';
 }
 
@@ -1727,25 +1813,180 @@ function getFontNameForFilter(font: unknown): string {
   return '';
 }
 
-function installFontPickerFilter(frameWindow: OnlyOfficeFrameWindow): boolean {
-  const visibleNames =
-    Array.isArray(frameWindow.__fonts_visible_names) &&
-    frameWindow.__fonts_visible_names.every((name) => typeof name === 'string')
-      ? new Set(frameWindow.__fonts_visible_names)
-      : null;
-  if (!visibleNames || visibleNames.size === 0) return true;
+export function filterEditorFontsByVisibleNames(guiFonts: unknown[], visibleNames: ReadonlySet<string>): unknown[] {
+  return guiFonts.filter((font) => {
+    const name = getFontNameForFilter(font);
+    return name ? visibleNames.has(name) : false;
+  });
+}
+
+export function applyDefaultWordFont(
+  frameWindow: OnlyOfficeFrameWindow,
+  fontFamilyName = ONLYOFFICE_DEFAULT_FONT_FAMILY,
+): boolean {
+  const defaultTextPr = frameWindow.AscBuilder?.Word?.Api?.GetDocument?.()?.GetDefaultTextPr?.();
+  if (!defaultTextPr || typeof defaultTextPr.SetFontFamily !== 'function') return false;
+
+  defaultTextPr.SetFontFamily(fontFamilyName);
+  frameWindow.Asc?.editor?.put_TextPrFontName?.(fontFamilyName);
+  frameWindow.Asc?.editor?.UpdateInterfaceState?.();
+  return true;
+}
+
+export function installFontPickerFilter(
+  frameWindow: OnlyOfficeFrameWindow,
+  configuredNames?: string[],
+  fallbackNames?: string[],
+  fallbackFamilyName = ONLYOFFICE_DEFAULT_FONT_FAMILY,
+): boolean {
+  const visibleNames = new Set(configuredNames || []);
+  const unavailableNames = new Set(fallbackNames || []);
+
+  const editor = frameWindow.Asc?.editor;
+  const originalFontFamilyCallback =
+    editor?.__onlyOfficeBrowserOriginalFontFamilyCallback || editor?.sync_TextPrFontFamilyCallBack;
+  if (editor && typeof originalFontFamilyCallback === 'function') {
+    editor.__onlyOfficeBrowserOriginalFontFamilyCallback = originalFontFamilyCallback;
+    editor.__onlyOfficeBrowserFallbackFontNames = unavailableNames;
+    editor.__onlyOfficeBrowserFallbackFontFamilyName = fallbackFamilyName;
+    if (!editor.__onlyOfficeBrowserFontFamilyCallbackPatched) {
+      editor.sync_TextPrFontFamilyCallBack = function syncTextPrFontFamilyWithFallback(fontFamily) {
+        const currentFallbackNames = editor.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
+        const currentFallbackFamilyName =
+          editor.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName;
+        const currentName =
+          typeof fontFamily?.Name === 'string'
+            ? fontFamily.Name
+            : typeof fontFamily?.get_Name === 'function'
+              ? fontFamily.get_Name()
+              : '';
+        if (fontFamily && currentFallbackNames.has(currentName)) {
+          if (typeof fontFamily.put_Name === 'function') fontFamily.put_Name(currentFallbackFamilyName);
+          else fontFamily.Name = currentFallbackFamilyName;
+        }
+        return originalFontFamilyCallback.call(this, fontFamily);
+      };
+      editor.__onlyOfficeBrowserFontFamilyCallbackPatched = true;
+    }
+  }
+
+  const fontApplication = frameWindow.AscFonts?.g_fontApplication;
+  const originalGetFontFileWeb =
+    fontApplication?.__onlyOfficeBrowserOriginalGetFontFileWeb || fontApplication?.GetFontFileWeb;
+  if (fontApplication && typeof originalGetFontFileWeb === 'function') {
+    const previouslyUnavailableNames = fontApplication.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
+    fontApplication.__onlyOfficeBrowserOriginalGetFontFileWeb = originalGetFontFileWeb;
+    fontApplication.__onlyOfficeBrowserFallbackFontNames = unavailableNames;
+    fontApplication.__onlyOfficeBrowserFallbackFontFamilyName = fallbackFamilyName;
+
+    // GetFontFileWeb caches the result under the requested family name. Drop
+    // entries whose availability changed so installing or removing a font in a
+    // reused host cannot retain a stale substitution.
+    for (const name of new Set([...previouslyUnavailableNames, ...unavailableNames])) {
+      if (fontApplication.FontPickerMap) delete fontApplication.FontPickerMap[name];
+    }
+
+    if (!fontApplication.__onlyOfficeBrowserFontFileFallback) {
+      fontApplication.GetFontFileWeb = function getFontFileWebWithFallback(name: string, style?: number) {
+        const currentFallbackNames = fontApplication.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
+        const resolvedName = currentFallbackNames.has(name)
+          ? fontApplication.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName
+          : name;
+        return originalGetFontFileWeb.call(this, resolvedName, style);
+      };
+      fontApplication.__onlyOfficeBrowserFontFileFallback = true;
+    }
+  }
+
+  const textFontPrototype = frameWindow.AscCommon?.asc_CTextFontFamily?.prototype;
+  const originalTextFontName =
+    textFontPrototype?.__onlyOfficeBrowserOriginalTextFontName ||
+    textFontPrototype?.get_Name ||
+    textFontPrototype?.asc_getName;
+  if (textFontPrototype && typeof originalTextFontName === 'function') {
+    textFontPrototype.__onlyOfficeBrowserOriginalTextFontName = originalTextFontName;
+    textFontPrototype.__onlyOfficeBrowserFallbackFontNames = unavailableNames;
+    textFontPrototype.__onlyOfficeBrowserFallbackFontFamilyName = fallbackFamilyName;
+    if (!textFontPrototype.__onlyOfficeBrowserFontNameFallback) {
+      const getTextFontNameWithFallback = function (this: { Name?: string }) {
+        const currentFallbackNames = textFontPrototype.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
+        if (typeof this.Name === 'string' && currentFallbackNames.has(this.Name)) {
+          return originalTextFontName.call({
+            Name: textFontPrototype.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName,
+          });
+        }
+        return originalTextFontName.call(this);
+      };
+      textFontPrototype.get_Name = getTextFontNameWithFallback;
+      textFontPrototype.asc_getName = getTextFontNameWithFallback;
+      textFontPrototype.__onlyOfficeBrowserFontNameFallback = true;
+    }
+
+    const synchronizeFallbackFontInputs = () => {
+      const currentFallbackNames = textFontPrototype.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
+      const currentFallbackFamilyName =
+        textFontPrototype.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName;
+      const fallbackDisplayName = originalTextFontName.call({ Name: currentFallbackFamilyName });
+      const unavailableDisplayNames = new Set(
+        [...currentFallbackNames].map((name) => originalTextFontName.call({ Name: name })),
+      );
+      for (const input of frameWindow.document?.querySelectorAll<HTMLInputElement>('input[role="combobox"]') || []) {
+        if (unavailableDisplayNames.has(input.value)) input.value = fallbackDisplayName;
+      }
+    };
+    synchronizeFallbackFontInputs();
+
+    if (typeof frameWindow.setTimeout === 'function') {
+      frameWindow.__onlyOfficeBrowserFontInputFallbackUntil = Date.now() + 10_000;
+      if (frameWindow.__onlyOfficeBrowserFontInputFallbackTimer === undefined) {
+        const synchronizeWhileEditorStarts = () => {
+          synchronizeFallbackFontInputs();
+          if (Date.now() < (frameWindow.__onlyOfficeBrowserFontInputFallbackUntil || 0)) {
+            frameWindow.__onlyOfficeBrowserFontInputFallbackTimer = frameWindow.setTimeout(
+              synchronizeWhileEditorStarts,
+              100,
+            );
+          } else {
+            frameWindow.__onlyOfficeBrowserFontInputFallbackTimer = undefined;
+          }
+        };
+        frameWindow.__onlyOfficeBrowserFontInputFallbackTimer = frameWindow.setTimeout(
+          synchronizeWhileEditorStarts,
+          100,
+        );
+      }
+    }
+  }
+
+  const fontPrototype = frameWindow.AscFonts?.CFont?.prototype;
+  const originalFontName = fontPrototype?.asc_getFontName;
+  if (fontPrototype && typeof originalFontName === 'function') {
+    fontPrototype.__onlyOfficeBrowserFallbackFontNames = unavailableNames;
+    fontPrototype.__onlyOfficeBrowserFallbackFontFamilyName = fallbackFamilyName;
+    if (!fontPrototype.__onlyOfficeBrowserFontNameFallback) {
+      fontPrototype.asc_getFontName = function getFontNameWithFallback(this: { name?: string }) {
+        const currentFallbackNames = fontPrototype.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
+        if (typeof this.name === 'string' && currentFallbackNames.has(this.name)) {
+          return originalFontName.call({
+            name: fontPrototype.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName,
+          });
+        }
+        return originalFontName.call(this);
+      };
+      fontPrototype.__onlyOfficeBrowserFontNameFallback = true;
+    }
+  }
 
   const prototype = frameWindow.AscCommon?.baseEditorsApi?.prototype;
   const original = prototype?.sync_InitEditorFonts;
   if (!prototype || typeof original !== 'function') return false;
+  prototype.__onlyOfficeBrowserVisibleFontNames = visibleNames;
   if (prototype.__onlyOfficeBrowserFontPickerFilter) return true;
 
   prototype.sync_InitEditorFonts = function syncInitEditorFontsWithFilter(this: unknown, guiFonts: unknown[]) {
+    const currentVisibleNames = prototype.__onlyOfficeBrowserVisibleFontNames || new Set<string>();
     const filteredFonts = Array.isArray(guiFonts)
-      ? guiFonts.filter((font) => {
-          const name = getFontNameForFilter(font);
-          return name ? visibleNames.has(name) : false;
-        })
+      ? filterEditorFontsByVisibleNames(guiFonts, currentVisibleNames)
       : guiFonts;
     return original.call(this, filteredFonts);
   };
@@ -1753,7 +1994,7 @@ function installFontPickerFilter(frameWindow: OnlyOfficeFrameWindow): boolean {
   return true;
 }
 
-function installNestedFontPickerFilter(): void {
+function installNestedFontPickerFilter(visibleFontNames?: string[], fallbackFontNames?: string[]): void {
   const startedAt = Date.now();
   const timeoutMs = 10_000;
   const intervalMs = 50;
@@ -1763,7 +2004,7 @@ function installNestedFontPickerFilter(): void {
     const frameWindow = frame?.contentWindow as OnlyOfficeFrameWindow | null | undefined;
     if (frameWindow) {
       try {
-        if (installFontPickerFilter(frameWindow)) return;
+        if (installFontPickerFilter(frameWindow, visibleFontNames, fallbackFontNames)) return;
       } catch {
         return;
       }
@@ -1933,8 +2174,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.editorLang = options.lang || getOnlyOfficeLang();
     const initialMode = resolveInitialMode(options);
     this.editorMode = initialMode;
-    this.previewEditAllowed = options.readonly !== true
-      && (initialMode === 'preview' || options.canReturnToPreview === true);
+    this.previewEditAllowed =
+      options.readonly !== true && (initialMode === 'preview' || options.canReturnToPreview === true);
     this.readonlyMode = { value: initialMode !== 'edit' };
   }
 
@@ -1943,12 +2184,21 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   static async create(container: HTMLElement, options: CreateOfficeEditorOptions): Promise<BrowserOfficeEditor> {
-    await assertGeneratedFontAssetsAvailable();
+    const fontManifest = await assertGeneratedFontAssetsAvailable();
     await loadOfficeEditorApi();
     await initX2T();
-    const prepared = await prepareDocument(options);
+    const resolvedOptions: CreateOfficeEditorOptions = {
+      ...options,
+      visibleFontNames: options.visibleFontNames || resolveAvailableFontFamilyNames(fontManifest, []),
+      fallbackFontNames:
+        options.fallbackFontNames ||
+        (fontManifest.fontFamilies || [])
+          .map((family) => family.name)
+          .filter((name) => !resolveAvailableFontFamilyNames(fontManifest, []).includes(name)),
+    };
+    const prepared = await prepareDocument(resolvedOptions);
     const placeholder = document.createElement('div');
-    const instance = new BrowserOfficeEditor(container, options, prepared, placeholder);
+    const instance = new BrowserOfficeEditor(container, resolvedOptions, prepared, placeholder);
     await instance.mount();
     return instance;
   }
@@ -1972,7 +2222,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     activeInstances.set(this.id, this);
 
     try {
-      installNestedFontPickerFilter();
+      installNestedFontPickerFilter(this.options.visibleFontNames, this.options.fallbackFontNames);
       const defaultZoom = getDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       persistDefaultEditorModePreviewZoom(this.fileType, this.previewMode);
       const uiTheme = normalizeOfficeInterfaceTheme(this.options.interfaceTheme);
@@ -2032,9 +2282,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           },
           plugins: this.options.plugins?.configUrls.length
             ? {
-                pluginsData: this.options.plugins.configUrls.map(
-                  (url) => new URL(url, window.location.origin).href,
-                ),
+                pluginsData: this.options.plugins.configUrls.map((url) => new URL(url, window.location.origin).href),
                 autostart: this.options.plugins.autostart,
               }
             : undefined,
@@ -2043,7 +2291,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
           onAppReady: () => {
             this.applyNestedEditorFrameDefaults();
             this.installModernThemeFilter();
-            installNestedFontPickerFilter();
+            installNestedFontPickerFilter(this.options.visibleFontNames, this.options.fallbackFontNames);
             this.installSpreadsheetPdfPrintPanelBridge();
             this.installNativeEditModeBridge();
             this.scheduleNativeDownloadAsInterceptor();
@@ -2052,7 +2300,11 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
             if (this.destroyed) return;
             this.applyNestedEditorFrameDefaults();
             this.installModernThemeFilter();
-            installNestedFontPickerFilter();
+            installNestedFontPickerFilter(this.options.visibleFontNames, this.options.fallbackFontNames);
+            if (this.sourceKind === 'new-document' && getDocumentType(this.fileType) === 'word') {
+              const frameWindow = this.getNestedEditorWindow() || this.getFrameEditorWindow();
+              if (frameWindow) applyDefaultWordFont(frameWindow);
+            }
             this.installSpreadsheetPdfPrintPanelBridge();
             this.installNativeEditModeBridge();
             this.scheduleNativeDownloadAsInterceptor();
@@ -2202,12 +2454,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     const getNativeModeCaption = () =>
       frameDocument
         .querySelector('#slot-btn-edit-mode .btn.dropdown-toggle .caption')
-        ?.textContent
-        ?.replace(/\s+/g, ' ')
+        ?.textContent?.replace(/\s+/g, ' ')
         .trim()
         .toLowerCase() || '';
     const isVisibleElement = (element: Element | null) => {
-      const FrameHTMLElement = (frameWindow as Window & { HTMLElement?: typeof HTMLElement }).HTMLElement || HTMLElement;
+      const FrameHTMLElement =
+        (frameWindow as Window & { HTMLElement?: typeof HTMLElement }).HTMLElement || HTMLElement;
       if (!element || !(element instanceof FrameHTMLElement)) return false;
       const style = frameWindow.getComputedStyle(element);
       if (style.display === 'none' || style.visibility === 'hidden') return false;
@@ -2339,7 +2591,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     };
     const isNativePreviewMode = () => {
       const caption = getNativeModeCaption();
-      return caption.startsWith('view') || caption.startsWith('查看') || caption.startsWith('preview') || caption.startsWith('预览');
+      return (
+        caption.startsWith('view') ||
+        caption.startsWith('查看') ||
+        caption.startsWith('preview') ||
+        caption.startsWith('预览')
+      );
     };
     const syncNativeEditMode = () => {
       checkTimeoutId = null;
@@ -2366,9 +2623,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     };
 
     const editModeSlot = frameDocument.getElementById('slot-btn-edit-mode');
-    const observer = typeof MutationObserver === 'function'
-      ? new MutationObserver(scheduleSync)
-      : null;
+    const observer = typeof MutationObserver === 'function' ? new MutationObserver(scheduleSync) : null;
     observer?.observe(editModeSlot || frameDocument.body, {
       childList: true,
       subtree: true,
@@ -2506,10 +2761,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       const originalTrigger = notificationCenter.trigger.bind(notificationCenter);
       notificationCenter.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal = originalTrigger;
       notificationCenter.trigger = (eventName?: unknown, ...args: unknown[]) => {
-        if (
-          eventName === 'file:print' &&
-          !frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel
-        ) {
+        if (eventName === 'file:print' && !frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel) {
           this.closeSpreadsheetPdfPrintPanel(frameWindow, { restoreSourcePanel: false });
           frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = null;
         }
@@ -2591,10 +2843,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     printSettings.__onlyOfficeBrowserSpreadsheetPdfPrintShowPatched = true;
   }
 
-  private openSpreadsheetPdfPrintPanel(
-    frameWindow: OnlyOfficeFrameWindow,
-    mode: SpreadsheetPdfPrintExportMode,
-  ): void {
+  private openSpreadsheetPdfPrintPanel(frameWindow: OnlyOfficeFrameWindow, mode: SpreadsheetPdfPrintExportMode): void {
     this.installSpreadsheetPdfPrintControllerPatch(frameWindow);
     this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true, restoreSourcePanel: false });
     frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = mode;
@@ -2641,7 +2890,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
       } else if (typeof leftMenuController?.clickToolbarPrint === 'function') {
         leftMenuController.clickToolbarPrint();
       } else {
-        frameWindow.Common?.NotificationCenter?.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal?.('file:print', this);
+        frameWindow.Common?.NotificationCenter?.__onlyOfficeBrowserSpreadsheetPdfPrintTriggerOriginal?.(
+          'file:print',
+          this,
+        );
       }
     } finally {
       frameWindow.__onlyOfficeBrowserOpeningSpreadsheetPdfPrintPanel = false;
@@ -2779,7 +3031,7 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     const statusbarController = getOnlyOfficeController<{ getSelectTabs?: () => unknown }>(frameWindow, 'Statusbar');
     const activeSheets =
       range === printTypes?.Selection || range === printTypes?.ActiveSheets
-        ? statusbarController?.getSelectTabs?.() ?? null
+        ? (statusbarController?.getSelectTabs?.() ?? null)
         : null;
     adjustPrintParams.asc_setActiveSheetsArray?.(activeSheets);
 
@@ -2804,11 +3056,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     const pageWidth = getOnlyOfficeNumber(pageSetup?.asc_getWidth?.(), 0);
     const pageHeight = getOnlyOfficeNumber(pageSetup?.asc_getHeight?.(), 0);
     const orientationRecord = printSettings.cmbPaperOrientation?.getSelectedRecord?.();
-    const paperOrientation = orientationRecord?.value === 'auto'
-      ? 'auto'
-      : pageSetup?.asc_getOrientation?.()
-        ? 'landscape'
-        : 'portrait';
+    const paperOrientation =
+      orientationRecord?.value === 'auto' ? 'auto' : pageSetup?.asc_getOrientation?.() ? 'landscape' : 'portrait';
     const printer = printSettings.cmbPrinter?.getSelectedRecord?.();
     const colorMode = printSettings.cmbColorPrinting?.getValue?.();
     adjustPrintParams.asc_setNativeOptions?.({
@@ -2835,8 +3084,10 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     this.closeSpreadsheetPdfPrintPanel(frameWindow, { closePreview: true });
     frameWindow.__onlyOfficeBrowserSpreadsheetPdfPrintExportMode = null;
     api.asc_DownloadAs(options);
-    const toolbarView = getOnlyOfficeController<{ getView?: (name: string) => unknown }>(frameWindow, 'Toolbar')
-      ?.getView?.('Toolbar');
+    const toolbarView = getOnlyOfficeController<{ getView?: (name: string) => unknown }>(
+      frameWindow,
+      'Toolbar',
+    )?.getView?.('Toolbar');
     frameWindow.Common?.NotificationCenter?.trigger?.('edit:complete', toolbarView);
   }
 
@@ -3045,7 +3296,12 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
     }
 
     try {
-      const result: BinConversionResult = await convertBinToDocument(sourceBytes, this.fileName, targetFormat, this.media);
+      const result: BinConversionResult = await convertBinToDocument(
+        sourceBytes,
+        this.fileName,
+        targetFormat,
+        this.media,
+      );
       let fileName = result.fileName;
       let bytes = toUint8Array(result.data);
       let validationTargetExt = normalizedTargetFormat;
@@ -3250,7 +3506,11 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   private async createDownloadAsFileFromEvent(event: DownloadAsEvent): Promise<File> {
-    const targetExt = getDownloadTargetExtension(event.data?.fileType, event.data?.url, getFileExtension(this.fileName));
+    const targetExt = getDownloadTargetExtension(
+      event.data?.fileType,
+      event.data?.url,
+      getFileExtension(this.fileName),
+    );
     const url = event.data?.url;
     if (!url) {
       const file = await this.convertDownloadAsFile(targetExt, event.nativeOptions);
@@ -3498,7 +3758,8 @@ class BrowserOfficeEditor implements OfficeEditorInstance {
   }
 
   getState(): OfficeEditorState {
-    const mode: OfficeEditorMode = this.editorMode === 'preview' ? 'preview' : this.readonlyMode.value ? 'readonly' : 'edit';
+    const mode: OfficeEditorMode =
+      this.editorMode === 'preview' ? 'preview' : this.readonlyMode.value ? 'readonly' : 'edit';
     return {
       id: this.id,
       fileName: this.fileName,

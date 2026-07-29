@@ -16,6 +16,12 @@ import {
   resolveOfficePluginReady,
   type OfficePluginRuntime,
 } from './lib/office-plugin-runtime';
+import {
+  fetchGeneratedFontAssetsManifest,
+  resolveAvailableFontFamilyNames,
+  resolveRuntimeAssetCacheMode,
+} from './lib/font-assets';
+import { ONLYOFFICE_BROWSER_VERSION } from './version';
 import './styles/base.css';
 
 type RuntimeOptions = Parameters<typeof createRuntimeOfficeEditor>[1];
@@ -27,9 +33,11 @@ const root = document.querySelector<HTMLElement>('#office-host') ?? document.bod
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
 /** Bump whenever already-open host frames must be recreated. */
-const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.34';
-const OFFICE_HOST_BUILD_ID = 'office-host-0.3.34-r1';
+const OFFICE_BROWSER_PACKAGE_VERSION = ONLYOFFICE_BROWSER_VERSION;
+const OFFICE_HOST_BUILD_ID = `office-host-${ONLYOFFICE_BROWSER_VERSION}-r1`;
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
+const OFFICE_SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
+const OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS = 30_000;
 const STARTUP_HEARTBEAT_INTERVAL_MS = 5_000;
 const PLUGIN_REQUEST_TIMEOUT_MS = 30_000;
 const OFFICE_PLUGIN_PROTOCOL = 'onlyoffice-browser-plugin/v1';
@@ -86,7 +94,7 @@ function bytesToHex(bytes: ArrayBuffer): string {
 
 async function loadOfficeHostIdentity() {
   const response = await fetch(OFFICE_RUNTIME_ASSET_MANIFEST_PATH, {
-    cache: 'no-store',
+    cache: resolveRuntimeAssetCacheMode(location.hostname),
     credentials: 'omit',
   });
   if (!response.ok) {
@@ -100,8 +108,28 @@ async function loadOfficeHostIdentity() {
   };
 }
 
+async function ensureOfficeServiceWorkerControl(): Promise<void> {
+  if (!('serviceWorker' in navigator)) return;
+  await navigator.serviceWorker.register(OFFICE_SERVICE_WORKER_PATH, { scope: '/' });
+  await navigator.serviceWorker.ready;
+  if (navigator.serviceWorker.controller) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+      reject(new Error('Office service worker did not take control of the isolated host'));
+    }, OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS);
+    const onControllerChange = () => {
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange, { once: true });
+  });
+}
+
 async function announceHostReady(): Promise<void> {
   try {
+    await ensureOfficeServiceWorkerControl();
     const identity = await loadOfficeHostIdentity();
     postWindowMessage({
       protocol: OFFICE_HOST_PROTOCOL,
@@ -586,6 +614,9 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
   startStartupHeartbeat();
 
   try {
+    const { visibleFontNames, fallbackFontNames } = await resolveInitialFontState(
+      message.options.downloadedFonts || [],
+    );
     (window as PrintTitleHostWindow).__onlyOfficeBrowserSetPrintTitle = (title, durationMs = 45_000) => {
       postPortMessage({
         protocol: OFFICE_HOST_PROTOCOL,
@@ -606,6 +637,8 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
       interfaceTheme: message.options.interfaceTheme,
       lang: message.options.lang,
       plugins: message.options.plugins,
+      visibleFontNames,
+      fallbackFontNames,
       saveBehavior: message.options.saveBehavior,
       onReady: (instance) => {
         postState('STATE', instance.getState());
@@ -642,6 +675,44 @@ async function handleInit(message: Extract<OfficeHostParentMessage, { type: 'INI
     stopStartupHeartbeat();
     postError('init', error, message.requestId);
   }
+}
+
+async function resolveInitialFontState(
+  paths: string[],
+): Promise<{ visibleFontNames: string[]; fallbackFontNames: string[] }> {
+  const downloadedFontPaths = [...new Set(paths.filter((path) => /^fonts\/[^/]+$/.test(path)))];
+  const [manifest] = await Promise.all([
+    fetchGeneratedFontAssetsManifest(),
+    configureDownloadedFonts(downloadedFontPaths),
+  ]);
+  const visibleFontNames = resolveAvailableFontFamilyNames(manifest, downloadedFontPaths);
+  const visibleFontNameSet = new Set(visibleFontNames);
+  return {
+    visibleFontNames,
+    fallbackFontNames: (manifest.fontFamilies || [])
+      .map((family) => family.name)
+      .filter((name) => !visibleFontNameSet.has(name)),
+  };
+}
+
+async function configureDownloadedFonts(paths: string[]): Promise<void> {
+  const controller = navigator.serviceWorker?.controller;
+  if (!controller) return;
+  await new Promise<void>((resolve) => {
+    const channel = new MessageChannel();
+    const timeout = window.setTimeout(resolve, 2_000);
+    channel.port1.onmessage = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    controller.postMessage(
+      {
+        type: 'SET_FONT_ALLOWLIST',
+        paths: paths.filter((path) => /^fonts\/[^/]+$/.test(path)),
+      },
+      [channel.port2],
+    );
+  });
 }
 
 function handlePluginWindowMessage(event: MessageEvent<OfficePluginWindowMessage>): void {

@@ -4,6 +4,8 @@ import {
   assertGeneratedFontAssetsAvailable,
   fetchGeneratedFontAssetsManifest,
   fetchRuntimeBinaryAsset,
+  resolveAvailableFontFamilyNames,
+  resolveRuntimeAssetCacheMode,
 } from '../../src/lib/font-assets';
 
 const MANIFEST = {
@@ -19,6 +21,13 @@ afterEach(() => {
 });
 
 describe('generated font assets runtime checks', () => {
+  it('reuses versioned wildcard-localhost runtime assets without revalidation', () => {
+    expect(resolveRuntimeAssetCacheMode('host-office-editor-1.office.localhost')).toBe('force-cache');
+    expect(resolveRuntimeAssetCacheMode('assets.office.localhost')).toBe('force-cache');
+    expect(resolveRuntimeAssetCacheMode('office-editor-1.getpi.work')).toBe('force-cache');
+    expect(resolveRuntimeAssetCacheMode('office.example.com')).toBe('no-cache');
+  });
+
   it('requires the generated font asset manifest', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 404 })));
 
@@ -35,10 +44,14 @@ describe('generated font assets runtime checks', () => {
   });
 
   it('probes the canonical generated font asset paths before editor startup', async () => {
+    const manifest = {
+      ...MANIFEST,
+      defaultFonts: ['fonts/default.ttf'],
+    };
     const fetchMock = vi.fn((url: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(url), window.location.href).pathname;
       if (path === '/onlyoffice-browser-font-assets.json') {
-        return Promise.resolve(new Response(JSON.stringify(MANIFEST), { status: 200 }));
+        return Promise.resolve(new Response(JSON.stringify(manifest), { status: 200 }));
       }
       if (init?.headers && (init.headers as Record<string, string>).Range === 'bytes=0-0') {
         return Promise.resolve(new Response(null, { status: 200 }));
@@ -47,24 +60,45 @@ describe('generated font assets runtime checks', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(assertGeneratedFontAssetsAvailable()).resolves.toMatchObject(MANIFEST);
+    await expect(assertGeneratedFontAssetsAvailable()).resolves.toMatchObject(manifest);
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/sdkjs/common/AllFonts.js'), {
       cache: 'no-cache',
       headers: {
         Range: 'bytes=0-0',
       },
     });
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/fonts/000.ttf'), {
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/fonts/default.ttf'), {
       cache: 'no-cache',
       headers: {
         Range: 'bytes=0-0',
       },
     });
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/fonts/000.ttf'), expect.anything());
   });
 
   it('loads generated binary assets through the canonical runtime path', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { status: 200 })));
 
     await expect(fetchRuntimeBinaryAsset('fonts/000.ttf')).resolves.toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('derives picker families from verified font paths instead of the static catalog', () => {
+    const manifest = {
+      ...MANIFEST,
+      defaultFonts: ['fonts/000.ttf', 'fonts/001.ttf'],
+      builtInFonts: ['fonts/symbol.ttf'],
+      fontFamilies: [
+        { name: 'Microsoft YaHei', paths: ['fonts/000.ttf', 'fonts/001.ttf'] },
+        { name: 'Arial', paths: ['fonts/002.ttf', 'fonts/003.ttf'] },
+        { name: 'Calibri', paths: ['fonts/004.ttf'] },
+      ],
+    };
+
+    expect(resolveAvailableFontFamilyNames(manifest, [])).toEqual(['Microsoft YaHei']);
+    expect(resolveAvailableFontFamilyNames(manifest, ['fonts/002.ttf'])).toEqual(['Microsoft YaHei']);
+    expect(resolveAvailableFontFamilyNames(manifest, ['fonts/002.ttf', 'fonts/003.ttf'])).toEqual([
+      'Microsoft YaHei',
+      'Arial',
+    ]);
   });
 });

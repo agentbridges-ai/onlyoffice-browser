@@ -1,7 +1,7 @@
 /**
- * Tests for the fetch routing rules in public/sw.js.
+ * Tests for the fetch routing rules in src/service-worker.js.
  *
- * sw.js is a non-module service worker file that can't be imported directly,
+ * The service worker is bundled with Workbox and can't be imported directly,
  * so we replicate the routing conditions here as a living specification.
  * If sw.js changes, update both files together.
  *
@@ -87,6 +87,60 @@ describe('SW fetch routing', () => {
     expect(bridge).toContain("importScripts('/sw.js')");
   });
 
+  it('precaches the canonical PWA shell without fixed offline editor slots', () => {
+    const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
+
+    expect(sw).toContain("const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html'])");
+    expect(sw).toContain('precacheAndRoute(self.__WB_MANIFEST || [])');
+    expect(sw).toContain("matchPrecache('/index.html')");
+    expect(sw).toContain('isCanonicalPwaHost');
+    expect(sw).not.toContain('FIXED_OFFLINE_SLOT');
+    expect(sw).not.toContain('onlyoffice-slot-prewarm-v1');
+    expect(sw).toContain('if (isIsolatedEditorHost)');
+    expect(sw).toContain('clientsClaim()');
+    expect(sw).not.toContain("self.addEventListener('install'");
+  });
+
+  it('activates a waiting shell update only after every tab is safe to restore', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'src/index.ts'), 'utf8');
+
+    expect(source).toContain("workbox.addEventListener('waiting'");
+    expect(source).toContain('PREPARE_UPDATE');
+    expect(source).toContain('allTabsSafeForUpdate()');
+    expect(source).toContain('await waitingWorkbox.messageSkipWaiting()');
+    expect(source).toContain("workbox.addEventListener('controlling'");
+    expect(source).toContain('if (reloading || hasUnsafeWork()) return');
+    expect(source).toContain('onlyoffice-browser:pwa-reload:');
+    expect(source).toContain('location.reload()');
+    expect(source).toContain('tabs.some((tab) => tab.dirty || !tab.handle)');
+    expect(source).toContain('10 * 60 * 1000');
+  });
+
+  it('proxies isolated-host shared assets directly to the immutable canonical URL', () => {
+    const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
+
+    expect(sw).toContain("const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work'");
+    expect(sw).toContain("const LOCAL_CANONICAL_OFFICE_HOST = 'assets.office.localhost'");
+    expect(sw).toContain('EDITOR_HOST_PATTERN.test(self.location.hostname) || isLocalEditorHost');
+    expect(sw).toContain('const shouldProxySharedAsset = (request, url)');
+    expect(sw).toContain('revisions.get(path) || version');
+    expect(sw).toContain("response.headers.get('last-modified')");
+    expect(sw).toContain('({ request, url }) => fetchSharedAsset(request, url)');
+    expect(sw).toContain('if (isCanonicalPwaHost)');
+    expect(sw).toContain('new NetworkFirst');
+    expect(sw).toContain('new StaleWhileRevalidate');
+    expect(sw).toContain('url.searchParams.has(SHARED_ASSET_VERSION_QUERY)');
+    expect(sw).toContain("event.data?.type === 'SET_FONT_ALLOWLIST'");
+    expect(sw).toContain('downloadedFontPaths = new Set(');
+    expect(sw).toContain('path !== fonts.allFonts');
+    expect(sw).toContain('buildAllFontsMetadataFallbackBootstrap(config)');
+    expect(sw).toContain("responseHeaders.set('cache-control', 'no-store')");
+    expect(sw).not.toContain("return new Response('Font is not installed'");
+    expect(sw).not.toContain('selectFallbackFont');
+    expect(sw).toContain("if (url.pathname.startsWith('/fonts/'))");
+    expect(sw).toContain("'Font Metadata Unavailable'");
+  });
+
   it('provides root OnlyOffice desktop-mode discovery manifests', () => {
     const plugins = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'public/plugins.json'), 'utf8'));
     const themes = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'public/themes.json'), 'utf8'));
@@ -144,9 +198,12 @@ describe('SW fetch routing', () => {
       expect(parseRangeHeader(range, byteLength)).toEqual(expected);
     });
 
-    it.each(['bytes=100-99', 'bytes=1000-', 'items=0-10', 'bytes=-0', 'bytes=-'])('rejects invalid range %s', (range) => {
-      expect(parseRangeHeader(range, 1000)).toBeNull();
-    });
+    it.each(['bytes=100-99', 'bytes=1000-', 'items=0-10', 'bytes=-0', 'bytes=-'])(
+      'rejects invalid range %s',
+      (range) => {
+        expect(parseRangeHeader(range, 1000)).toBeNull();
+      },
+    );
   });
 
   describe('host navigation and app routes are not intercepted', () => {

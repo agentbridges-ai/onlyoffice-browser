@@ -49,6 +49,7 @@ export interface OfficeHostInitOptions {
   lang?: string;
   saveBehavior?: OfficeHostSaveBehavior;
   plugins?: OfficeHostPluginOptions;
+  downloadedFonts?: string[];
   source: OfficeHostSource;
 }
 
@@ -183,7 +184,16 @@ export type OfficeHostChildMessage =
     })
   | (OfficeHostBaseMessage & {
       type: 'ERROR';
-      phase: 'handshake' | 'init' | 'save' | 'confirm' | 'plugin' | 'setReadonly' | 'setInterfaceTheme' | 'destroy' | 'runtime';
+      phase:
+        | 'handshake'
+        | 'init'
+        | 'save'
+        | 'confirm'
+        | 'plugin'
+        | 'setReadonly'
+        | 'setInterfaceTheme'
+        | 'destroy'
+        | 'runtime';
       message: string;
     })
   | (OfficeHostBaseMessage & {

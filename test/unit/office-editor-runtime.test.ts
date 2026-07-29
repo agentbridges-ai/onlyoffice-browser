@@ -1,29 +1,205 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-	  assertGeneratedFontAssetsAvailable: vi.fn(),
-	  convertBinToDocument: vi.fn(),
-	  convertDocument: vi.fn(),
-	  convertHtmlToDocument: vi.fn(),
-	  convertPdfToImage: vi.fn(),
-	  convertPrintDataToPdf: vi.fn(),
-	  initX2T: vi.fn(),
+  assertGeneratedFontAssetsAvailable: vi.fn(),
+  resolveAvailableFontFamilyNames: vi.fn(),
+  convertBinToDocument: vi.fn(),
+  convertDocument: vi.fn(),
+  convertHtmlToDocument: vi.fn(),
+  convertPdfToImage: vi.fn(),
+  convertPrintDataToPdf: vi.fn(),
+  initX2T: vi.fn(),
 }));
 
 vi.mock('../../src/lib/font-assets', () => ({
   assertGeneratedFontAssetsAvailable: mocks.assertGeneratedFontAssetsAvailable,
+  resolveAvailableFontFamilyNames: mocks.resolveAvailableFontFamilyNames,
 }));
 
 vi.mock('../../src/lib/converter', () => ({
-	  convertBinToDocument: mocks.convertBinToDocument,
-	  convertDocument: mocks.convertDocument,
-	  convertHtmlToDocument: mocks.convertHtmlToDocument,
-	  convertPdfToImage: mocks.convertPdfToImage,
-	  convertPrintDataToPdf: mocks.convertPrintDataToPdf,
-	  initX2T: mocks.initX2T,
+  convertBinToDocument: mocks.convertBinToDocument,
+  convertDocument: mocks.convertDocument,
+  convertHtmlToDocument: mocks.convertHtmlToDocument,
+  convertPdfToImage: mocks.convertPdfToImage,
+  convertPrintDataToPdf: mocks.convertPrintDataToPdf,
+  initX2T: mocks.initX2T,
 }));
 
-import { createOfficeEditor } from '../../src/lib/office-editor-runtime';
+import {
+  applyDefaultWordFont,
+  createOfficeEditor,
+  filterEditorFontsByVisibleNames,
+  installFontPickerFilter,
+} from '../../src/lib/office-editor-runtime';
+
+describe('runtime font picker filtering', () => {
+  it('uses the runtime-visible family set as the picker authority', () => {
+    const fonts = [{ name: 'Microsoft YaHei' }, { Name: 'Arial' }, { asc_getFontName: () => 'Calibri' }];
+
+    expect(filterEditorFontsByVisibleNames(fonts, new Set(['Microsoft YaHei', 'Calibri']))).toEqual([
+      fonts[0],
+      fonts[2],
+    ]);
+  });
+
+  it('refreshes the visible family set when the reused host opens another editor', () => {
+    const syncInitEditorFonts = vi.fn();
+    const prototype = { sync_InitEditorFonts: syncInitEditorFonts };
+    const frameWindow = {
+      AscCommon: {
+        baseEditorsApi: { prototype },
+      },
+    } as unknown as Parameters<typeof installFontPickerFilter>[0];
+    const fonts = [{ name: 'DengXian' }, { name: 'Microsoft YaHei' }];
+
+    expect(installFontPickerFilter(frameWindow, ['DengXian', 'Microsoft YaHei'])).toBe(true);
+    prototype.sync_InitEditorFonts(fonts);
+    expect(syncInitEditorFonts).toHaveBeenLastCalledWith(fonts);
+
+    expect(installFontPickerFilter(frameWindow, ['Microsoft YaHei'])).toBe(true);
+    prototype.sync_InitEditorFonts(fonts);
+    expect(syncInitEditorFonts).toHaveBeenLastCalledWith([fonts[1]]);
+  });
+
+  it('shows the actual default fallback family for unavailable catalog fonts', () => {
+    const syncInitEditorFonts = vi.fn();
+    const getFontFileWeb = vi.fn((name: string) => ({ m_wsFontName: name }));
+    const fontPickerMap = {
+      'Microsoft YaHei': { m_wsFontName: 'Microsoft YaHei' },
+    };
+    const fontPrototype = {
+      asc_getFontName(this: { name?: string }) {
+        return (
+          {
+            DengXian: '等线',
+            'Microsoft YaHei': '微软雅黑',
+          }[this.name || ''] || this.name
+        );
+      },
+    };
+    const textFontPrototype = {
+      get_Name(this: { Name?: string }) {
+        return (
+          {
+            DengXian: '等线',
+            'Microsoft YaHei': '微软雅黑',
+          }[this.Name || ''] || this.Name
+        );
+      },
+    };
+    const fontInput = document.createElement('input');
+    fontInput.setAttribute('role', 'combobox');
+    fontInput.value = '微软雅黑';
+    document.body.appendChild(fontInput);
+    const frameWindow = {
+      document,
+      AscFonts: {
+        g_fontApplication: {
+          FontPickerMap: fontPickerMap,
+          GetFontFileWeb: getFontFileWeb,
+        },
+        CFont: { prototype: fontPrototype },
+      },
+      AscCommon: {
+        asc_CTextFontFamily: { prototype: textFontPrototype },
+        baseEditorsApi: { prototype: { sync_InitEditorFonts: syncInitEditorFonts } },
+      },
+    } as unknown as Parameters<typeof installFontPickerFilter>[0];
+
+    expect(installFontPickerFilter(frameWindow, ['DengXian'], ['Microsoft YaHei'])).toBe(true);
+
+    expect(frameWindow.AscFonts?.g_fontApplication?.GetFontFileWeb?.('Microsoft YaHei', 0)).toEqual({
+      m_wsFontName: 'DengXian',
+    });
+    expect(getFontFileWeb).toHaveBeenLastCalledWith('DengXian', 0);
+    expect(fontPickerMap).not.toHaveProperty('Microsoft YaHei');
+    expect(fontPrototype.asc_getFontName.call({ name: 'Microsoft YaHei' })).toBe('等线');
+    expect(fontPrototype.asc_getFontName.call({ name: 'DengXian' })).toBe('等线');
+    expect(textFontPrototype.get_Name.call({ Name: 'Microsoft YaHei' })).toBe('等线');
+    expect(textFontPrototype.get_Name.call({ Name: 'DengXian' })).toBe('等线');
+    expect(fontInput.value).toBe('等线');
+    fontInput.remove();
+  });
+
+  it('maps later font-family callbacks to the fallback instead of restoring an unavailable name', () => {
+    const syncTextPrFontFamily = vi.fn();
+    const editor = {
+      sync_TextPrFontFamilyCallBack: syncTextPrFontFamily,
+    };
+    const frameWindow = {
+      Asc: { editor },
+      AscCommon: {
+        baseEditorsApi: { prototype: { sync_InitEditorFonts: vi.fn() } },
+      },
+    } as unknown as Parameters<typeof installFontPickerFilter>[0];
+
+    expect(installFontPickerFilter(frameWindow, ['DengXian'], ['Microsoft YaHei'])).toBe(true);
+
+    const fontFamily = { Name: 'Microsoft YaHei' };
+    editor.sync_TextPrFontFamilyCallBack(fontFamily);
+    expect(fontFamily.Name).toBe('DengXian');
+    expect(syncTextPrFontFamily).toHaveBeenCalledWith(fontFamily);
+
+    const availableFontFamily = { Name: 'DengXian' };
+    editor.sync_TextPrFontFamilyCallBack(availableFontFamily);
+    expect(availableFontFamily.Name).toBe('DengXian');
+  });
+
+  it('sets both the document default and current insertion font for a new Word document', () => {
+    const setFontFamily = vi.fn();
+    const putTextPrFontName = vi.fn();
+    const updateInterfaceState = vi.fn();
+    const frameWindow = {
+      AscBuilder: {
+        Word: {
+          Api: {
+            GetDocument: () => ({
+              GetDefaultTextPr: () => ({
+                SetFontFamily: setFontFamily,
+              }),
+            }),
+          },
+        },
+      },
+      Asc: {
+        editor: {
+          put_TextPrFontName: putTextPrFontName,
+          UpdateInterfaceState: updateInterfaceState,
+        },
+      },
+    } as unknown as Parameters<typeof applyDefaultWordFont>[0];
+
+    expect(applyDefaultWordFont(frameWindow)).toBe(true);
+    expect(setFontFamily).toHaveBeenCalledWith('DengXian');
+    expect(putTextPrFontName).toHaveBeenCalledWith('DengXian');
+    expect(updateInterfaceState).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes cached font substitution when a font is installed in a reused host', () => {
+    const getFontFileWeb = vi.fn((name: string) => ({ m_wsFontName: name }));
+    const frameWindow = {
+      AscFonts: {
+        g_fontApplication: {
+          FontPickerMap: {},
+          GetFontFileWeb: getFontFileWeb,
+        },
+      },
+      AscCommon: {
+        baseEditorsApi: { prototype: { sync_InitEditorFonts: vi.fn() } },
+      },
+    } as unknown as Parameters<typeof installFontPickerFilter>[0];
+
+    expect(installFontPickerFilter(frameWindow, ['DengXian'], ['Microsoft YaHei'])).toBe(true);
+    expect(frameWindow.AscFonts?.g_fontApplication?.GetFontFileWeb?.('Microsoft YaHei', 0)).toEqual({
+      m_wsFontName: 'DengXian',
+    });
+
+    expect(installFontPickerFilter(frameWindow, ['DengXian', 'Microsoft YaHei'], [])).toBe(true);
+    expect(frameWindow.AscFonts?.g_fontApplication?.GetFontFileWeb?.('Microsoft YaHei', 0)).toEqual({
+      m_wsFontName: 'Microsoft YaHei',
+    });
+  });
+});
 
 function flush(): Promise<void> {
   return Promise.resolve().then(() => undefined);
@@ -89,9 +265,7 @@ function zipFixture(): Uint8Array {
 }
 
 function pngFixture(): Uint8Array {
-  return new Uint8Array([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00,
-  ]);
+  return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00]);
 }
 
 function jpegFixture(): Uint8Array {
@@ -164,28 +338,28 @@ type CapturedDocEditorInstance = {
   nativeDownloadAs: ReturnType<typeof vi.fn>;
   nativeDownloadAsHandler: ReturnType<typeof vi.fn>;
   getEditorApi: ReturnType<typeof vi.fn>;
-	    nativeApi: {
-	      asc_DownloadAs: (options?: unknown) => unknown;
-	      asc_nativeCalculateFile: ReturnType<typeof vi.fn>;
-	      asc_nativeGetHtml: ReturnType<typeof vi.fn>;
-	      _downloadAs: (
+  nativeApi: {
+    asc_DownloadAs: (options?: unknown) => unknown;
+    asc_nativeCalculateFile: ReturnType<typeof vi.fn>;
+    asc_nativeGetHtml: ReturnType<typeof vi.fn>;
+    _downloadAs: (
       actionType?: unknown,
       options?: unknown,
       additionalData?: { outputformat?: unknown; title?: unknown; inline?: unknown; isSaveAs?: unknown },
       dataContainer?: unknown,
       downloadType?: unknown,
-	    ) => boolean | undefined;
-	    __onlyOfficeBrowserDownloadAsPatched?: boolean;
-	    __onlyOfficeBrowserAscDownloadAsOriginal?: unknown;
-	    __onlyOfficeBrowserDownloadAsOriginal?: unknown;
-	  };
+    ) => boolean | undefined;
+    __onlyOfficeBrowserDownloadAsPatched?: boolean;
+    __onlyOfficeBrowserAscDownloadAsOriginal?: unknown;
+    __onlyOfficeBrowserDownloadAsOriginal?: unknown;
+  };
   processRightsChange: ReturnType<typeof vi.fn>;
-	  asc_nativeGetFile3: ReturnType<typeof vi.fn>;
-	  asc_nativeGetPDF: ReturnType<typeof vi.fn>;
-	  asc_nativeCalculateFile: ReturnType<typeof vi.fn>;
-	  asc_nativeGetHtml: ReturnType<typeof vi.fn>;
-	  zoomFitToWidth: ReturnType<typeof vi.fn>;
-	};
+  asc_nativeGetFile3: ReturnType<typeof vi.fn>;
+  asc_nativeGetPDF: ReturnType<typeof vi.fn>;
+  asc_nativeCalculateFile: ReturnType<typeof vi.fn>;
+  asc_nativeGetHtml: ReturnType<typeof vi.fn>;
+  zoomFitToWidth: ReturnType<typeof vi.fn>;
+};
 
 describe('office editor runtime', () => {
   const docEditorConfigs: CapturedDocEditorConfig[] = [];
@@ -211,14 +385,15 @@ describe('office editor runtime', () => {
       value: vi.fn(),
     });
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-    mocks.assertGeneratedFontAssetsAvailable.mockResolvedValue(undefined);
+    mocks.assertGeneratedFontAssetsAvailable.mockResolvedValue({});
+    mocks.resolveAvailableFontFamilyNames.mockReturnValue(['Microsoft YaHei']);
     mocks.initX2T.mockResolvedValue(undefined);
     mocks.convertDocument.mockImplementation(async (file: File) => ({
       fileName: file.name,
       bin: new Uint8Array([1, 2, 3]),
       media: {},
     }));
-	    mocks.convertBinToDocument.mockImplementation(async (_bin: Uint8Array, fileName: string, targetExt = 'DOCX') => {
+    mocks.convertBinToDocument.mockImplementation(async (_bin: Uint8Array, fileName: string, targetExt = 'DOCX') => {
       const normalizedTargetExt = targetExt.toLowerCase() === 'pdfa' ? 'pdf' : targetExt.toLowerCase();
       const outputExt = normalizedTargetExt === 'jpeg' ? 'jpg' : normalizedTargetExt;
       const dataByExtension: Record<string, Uint8Array> = {
@@ -259,21 +434,21 @@ describe('office editor runtime', () => {
       return {
         fileName: fileName.replace(/\.[^/.]+$/, `.${outputExt}`),
         data: dataByExtension[normalizedTargetExt] || asciiBytes('alpha\n'),
-	      };
-	    });
-	    mocks.convertHtmlToDocument.mockImplementation(async (_html: Uint8Array, fileName: string, targetExt: string) => {
-	      const normalizedTargetExt = targetExt.toLowerCase();
-	      const dataByExtension: Record<string, Uint8Array> = {
-	        epub: zipFixture(),
-	        fb2: asciiBytes('<?xml version="1.0"?><FictionBook></FictionBook>'),
-	        html: asciiBytes('<!doctype html><html><body>alpha</body></html>'),
-	        md: asciiBytes('# alpha\n'),
-	      };
-	      return {
-	        fileName: fileName.replace(/\.[^/.]+$/, `.${normalizedTargetExt}`),
-	        data: dataByExtension[normalizedTargetExt] || asciiBytes('alpha\n'),
-	      };
-	    });
+      };
+    });
+    mocks.convertHtmlToDocument.mockImplementation(async (_html: Uint8Array, fileName: string, targetExt: string) => {
+      const normalizedTargetExt = targetExt.toLowerCase();
+      const dataByExtension: Record<string, Uint8Array> = {
+        epub: zipFixture(),
+        fb2: asciiBytes('<?xml version="1.0"?><FictionBook></FictionBook>'),
+        html: asciiBytes('<!doctype html><html><body>alpha</body></html>'),
+        md: asciiBytes('# alpha\n'),
+      };
+      return {
+        fileName: fileName.replace(/\.[^/.]+$/, `.${normalizedTargetExt}`),
+        data: dataByExtension[normalizedTargetExt] || asciiBytes('alpha\n'),
+      };
+    });
     mocks.convertPrintDataToPdf.mockImplementation(async (_printData: Uint8Array, fileName: string) => ({
       fileName: fileName.replace(/\.[^/.]+$/, '.pdf'),
       data: asciiBytes('%PDF-1.7\n%%EOF\n'),
@@ -318,31 +493,31 @@ describe('office editor runtime', () => {
       },
     });
 
-	    class MockDocEditor {
-	      connectMockServer = vi.fn();
-	      destroyEditor = vi.fn();
-	      downloadAs = vi.fn();
-	      nativeDownloadAs = vi.fn();
-	      nativeDownloadAsHandler = vi.fn();
-	      asc_nativeCalculateFile = vi.fn();
-	      asc_nativeGetHtml = vi.fn(() => '<!doctype html><html><body>alpha</body></html>');
-	      nativeApi = {
-	        asc_DownloadAs: (options?: unknown) =>
-	          this.nativeApi._downloadAs(1, options, {
-	            outputformat:
+    class MockDocEditor {
+      connectMockServer = vi.fn();
+      destroyEditor = vi.fn();
+      downloadAs = vi.fn();
+      nativeDownloadAs = vi.fn();
+      nativeDownloadAsHandler = vi.fn();
+      asc_nativeCalculateFile = vi.fn();
+      asc_nativeGetHtml = vi.fn(() => '<!doctype html><html><body>alpha</body></html>');
+      nativeApi = {
+        asc_DownloadAs: (options?: unknown) =>
+          this.nativeApi._downloadAs(1, options, {
+            outputformat:
               options && typeof options === 'object' && 'fileType' in options
                 ? (options as { fileType?: unknown }).fileType
                 : undefined,
-	            title: 'alpha.out',
-	            isSaveAs:
+            title: 'alpha.out',
+            isSaveAs:
               options && typeof options === 'object' && 'isSaveAs' in options
                 ? (options as { isSaveAs?: unknown }).isSaveAs
                 : undefined,
-	          }),
-	        asc_nativeCalculateFile: this.asc_nativeCalculateFile,
-	        asc_nativeGetHtml: this.asc_nativeGetHtml,
-	        _downloadAs: this.nativeDownloadAsHandler,
-	      };
+          }),
+        asc_nativeCalculateFile: this.asc_nativeCalculateFile,
+        asc_nativeGetHtml: this.asc_nativeGetHtml,
+        _downloadAs: this.nativeDownloadAsHandler,
+      };
       getEditorApi = vi.fn(() => this.nativeApi);
       processRightsChange = vi.fn();
       asc_nativeGetFile3 = vi.fn(() => ({ data: new Uint8Array([9, 8, 7]) }));
@@ -952,9 +1127,7 @@ describe('office editor runtime', () => {
       '#onlyoffice-browser-return-preview-mode button',
     );
     expect(returnPreviewButton?.textContent?.trim()).toBe('');
-    expect(
-      returnPreviewButton?.querySelector('svg[data-iconify-icon="qlementine-icons:preview-16"]'),
-    ).toBeTruthy();
+    expect(returnPreviewButton?.querySelector('svg[data-iconify-icon="qlementine-icons:preview-16"]')).toBeTruthy();
     expect(caption.textContent).toBe('编辑');
     expect(slot.dataset.officeBrowserModeAction).toBeUndefined();
     expect(frameDocument!.getElementById('onlyoffice-browser-return-preview-mode')?.nextSibling).toBe(avatarSlot);
@@ -1108,15 +1281,17 @@ describe('office editor runtime', () => {
     });
 
     await expect(instance.confirmSaveToNewFormat()).resolves.toBe(true);
-    expect(warning).toHaveBeenCalledWith(expect.objectContaining({
-      closable: false,
-      width: 600,
-      title: 'Warning',
-      msg: 'The document will be saved to the new format.',
-      buttons: ['ok', 'cancel'],
-      dontshow: true,
-      callback: expect.any(Function),
-    }));
+    expect(warning).toHaveBeenCalledWith(
+      expect.objectContaining({
+        closable: false,
+        width: 600,
+        title: 'Warning',
+        msg: 'The document will be saved to the new format.',
+        buttons: ['ok', 'cancel'],
+        dontshow: true,
+        callback: expect.any(Function),
+      }),
+    );
 
     await instance.destroy();
   });
@@ -1384,10 +1559,9 @@ describe('office editor runtime', () => {
     await flush();
 
     docEditorInstances[0].asc_nativeGetPDF.mockImplementationOnce(() => {
-      (window as typeof window & { native?: { Save_End?: (header: string, length: number) => void } }).native?.Save_End?.(
-        '',
-        printStream.byteLength,
-      );
+      (
+        window as typeof window & { native?: { Save_End?: (header: string, length: number) => void } }
+      ).native?.Save_End?.('', printStream.byteLength);
       return printStream;
     });
     mocks.convertPrintDataToPdf.mockResolvedValueOnce({
@@ -1422,10 +1596,9 @@ describe('office editor runtime', () => {
     await flush();
 
     docEditorInstances[0].asc_nativeGetPDF.mockImplementationOnce(() => {
-      (window as typeof window & { native?: { Save_End?: (header: string, length: number) => void } }).native?.Save_End?.(
-        '',
-        printStream.byteLength,
-      );
+      (
+        window as typeof window & { native?: { Save_End?: (header: string, length: number) => void } }
+      ).native?.Save_End?.('', printStream.byteLength);
       return printStream;
     });
     mocks.convertPrintDataToPdf.mockResolvedValueOnce({
@@ -1532,10 +1705,9 @@ describe('office editor runtime', () => {
       capturedPrintOptions = options;
       capturedDesktopPrintOptions = (window as typeof window & { AscDesktopEditor_PrintOptions?: unknown })
         .AscDesktopEditor_PrintOptions;
-      (window as typeof window & { native?: { Save_End?: (header: string, length: number) => void } }).native?.Save_End?.(
-        '',
-        pdfBytes.byteLength,
-      );
+      (
+        window as typeof window & { native?: { Save_End?: (header: string, length: number) => void } }
+      ).native?.Save_End?.('', pdfBytes.byteLength);
       return pdfBytes;
     });
 
@@ -1544,7 +1716,9 @@ describe('office editor runtime', () => {
 
     expect(capturedPrintOptions).toBeUndefined();
     expect(capturedDesktopPrintOptions).toEqual({ advancedOptions: adjustPrint });
-    expect((window as typeof window & { AscDesktopEditor_PrintOptions?: unknown }).AscDesktopEditor_PrintOptions).toBeUndefined();
+    expect(
+      (window as typeof window & { AscDesktopEditor_PrintOptions?: unknown }).AscDesktopEditor_PrintOptions,
+    ).toBeUndefined();
     expect(docEditorInstances[0].asc_nativeGetPDF).toHaveBeenCalledTimes(1);
     expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
@@ -1552,7 +1726,7 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
-	  it('intercepts final native asc_DownloadAs calls after upstream Download As dialogs are confirmed', async () => {
+  it('intercepts final native asc_DownloadAs calls after upstream Download As dialogs are confirmed', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
 
@@ -1572,83 +1746,83 @@ describe('office editor runtime', () => {
     docEditorInstances[0].nativeApi.asc_DownloadAs({ fileType: 67 });
     await waitForMessage();
 
-	    expect(docEditorInstances[0].nativeApi.__onlyOfficeBrowserDownloadAsPatched).toBe(true);
-	    expect(docEditorInstances[0].nativeApi.__onlyOfficeBrowserAscDownloadAsOriginal).toBeTruthy();
-	    expect(docEditorInstances[0].nativeDownloadAs).not.toHaveBeenCalled();
-	    expect(docEditorInstances[0].nativeDownloadAsHandler).not.toHaveBeenCalled();
+    expect(docEditorInstances[0].nativeApi.__onlyOfficeBrowserDownloadAsPatched).toBe(true);
+    expect(docEditorInstances[0].nativeApi.__onlyOfficeBrowserAscDownloadAsOriginal).toBeTruthy();
+    expect(docEditorInstances[0].nativeDownloadAs).not.toHaveBeenCalled();
+    expect(docEditorInstances[0].nativeDownloadAsHandler).not.toHaveBeenCalled();
     expect(docEditorInstances[0].asc_nativeGetFile3).toHaveBeenCalledTimes(1);
     expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.docx', 'ODT', {});
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
 
-	    await instance.destroy();
-	  });
+    await instance.destroy();
+  });
 
-	  it('still intercepts prepared native _downloadAs calls that bypass asc_DownloadAs', async () => {
-	    const container = document.createElement('div');
-	    document.body.appendChild(container);
+  it('still intercepts prepared native _downloadAs calls that bypass asc_DownloadAs', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
 
-	    const instance = await createOfficeEditor(container, {
-	      file: new File(['hello'], 'alpha.docx'),
-	      fileName: 'alpha.docx',
-	      mode: 'edit',
-	      saveBehavior: 'download',
-	    });
-	    await flush();
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+      saveBehavior: 'download',
+    });
+    await flush();
 
-	    mocks.convertBinToDocument.mockResolvedValueOnce({
-	      fileName: 'alpha.ott',
-	      data: zipFixture(),
-	    });
+    mocks.convertBinToDocument.mockResolvedValueOnce({
+      fileName: 'alpha.ott',
+      data: zipFixture(),
+    });
 
-	    docEditorInstances[0].nativeApi._downloadAs(1, { fileType: 79 }, { outputformat: 79, title: 'alpha.ott' });
-	    await waitForMessage();
+    docEditorInstances[0].nativeApi._downloadAs(1, { fileType: 79 }, { outputformat: 79, title: 'alpha.ott' });
+    await waitForMessage();
 
-	    expect(docEditorInstances[0].nativeDownloadAsHandler).not.toHaveBeenCalled();
-	    expect(docEditorInstances[0].asc_nativeGetFile3).toHaveBeenCalledTimes(1);
-	    expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.docx', 'OTT', {});
-	    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+    expect(docEditorInstances[0].nativeDownloadAsHandler).not.toHaveBeenCalled();
+    expect(docEditorInstances[0].asc_nativeGetFile3).toHaveBeenCalledTimes(1);
+    expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.docx', 'OTT', {});
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
 
-	    await instance.destroy();
-	  });
+    await instance.destroy();
+  });
 
-	  it('routes native Save Copy As _downloadAs calls to onSaveAs instead of browser download', async () => {
-	    const container = document.createElement('div');
-	    document.body.appendChild(container);
-	    const onSaveAs = vi.fn();
-	    const onDownload = vi.fn();
+  it('routes native Save Copy As _downloadAs calls to onSaveAs instead of browser download', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const onSaveAs = vi.fn();
+    const onDownload = vi.fn();
 
-	    const instance = await createOfficeEditor(container, {
-	      file: new File(['hello'], 'alpha.docx'),
-	      fileName: 'alpha.docx',
-	      mode: 'edit',
-	      saveBehavior: 'callback',
-	      onSaveAs,
-	      onDownload,
-	    });
-	    await flush();
+    const instance = await createOfficeEditor(container, {
+      file: new File(['hello'], 'alpha.docx'),
+      fileName: 'alpha.docx',
+      mode: 'edit',
+      saveBehavior: 'callback',
+      onSaveAs,
+      onDownload,
+    });
+    await flush();
 
-	    mocks.convertBinToDocument.mockResolvedValueOnce({
-	      fileName: 'alpha.odt',
-	      data: zipFixture(),
-	    });
+    mocks.convertBinToDocument.mockResolvedValueOnce({
+      fileName: 'alpha.odt',
+      data: zipFixture(),
+    });
 
-	    docEditorInstances[0].nativeApi._downloadAs(
-	      1,
-	      { fileType: 67, isSaveAs: true },
-	      { outputformat: 67, title: 'alpha.odt', isSaveAs: true },
-	    );
-	    await waitForMessage();
+    docEditorInstances[0].nativeApi._downloadAs(
+      1,
+      { fileType: 67, isSaveAs: true },
+      { outputformat: 67, title: 'alpha.odt', isSaveAs: true },
+    );
+    await waitForMessage();
 
-	    expect(docEditorInstances[0].nativeDownloadAsHandler).not.toHaveBeenCalled();
-	    expect(docEditorInstances[0].asc_nativeGetFile3).toHaveBeenCalledTimes(1);
-	    expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.docx', 'ODT', {});
-	    expect(onSaveAs).toHaveBeenCalledTimes(1);
-	    expect(onSaveAs.mock.calls[0][0]).toMatchObject({ name: 'alpha.odt' });
-	    expect(onDownload).not.toHaveBeenCalled();
-	    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+    expect(docEditorInstances[0].nativeDownloadAsHandler).not.toHaveBeenCalled();
+    expect(docEditorInstances[0].asc_nativeGetFile3).toHaveBeenCalledTimes(1);
+    expect(mocks.convertBinToDocument).toHaveBeenCalledWith(expect.any(Uint8Array), 'alpha.docx', 'ODT', {});
+    expect(onSaveAs).toHaveBeenCalledTimes(1);
+    expect(onSaveAs.mock.calls[0][0]).toMatchObject({ name: 'alpha.odt' });
+    expect(onDownload).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
 
-	    await instance.destroy();
-	  });
+    await instance.destroy();
+  });
 
   it('lets native print _downloadAs requests continue into OnlyOffice APP.printPdf flow', async () => {
     const container = document.createElement('div');
@@ -1773,16 +1947,14 @@ describe('office editor runtime', () => {
     docEditorConfigs[0].events.onAppReady();
     await flush();
 
-    const trigger = (frameWindow as typeof frameWindow & {
-      Common: { NotificationCenter: { trigger: (...args: unknown[]) => unknown } };
-    }).Common.NotificationCenter.trigger;
+    const trigger = (
+      frameWindow as typeof frameWindow & {
+        Common: { NotificationCenter: { trigger: (...args: unknown[]) => unknown } };
+      }
+    ).Common.NotificationCenter.trigger;
 
     trigger('download:settings', {}, 513, false);
-    expect(harness.originalTrigger).not.toHaveBeenCalledWith(
-      'download:settings',
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(harness.originalTrigger).not.toHaveBeenCalledWith('download:settings', expect.anything(), expect.anything());
     expect(harness.showMenu).not.toHaveBeenCalledWith('file:printpreview');
     const downloadPanel = frameWindow.document.querySelector(
       '[data-onlyoffice-browser-spreadsheet-pdf-print-panel="true"]',
@@ -1939,10 +2111,7 @@ describe('office editor runtime', () => {
     expect(harness.printPanel.style.position).toBe('');
     expect(harness.printController.onHidePrintMenu).toHaveBeenCalledTimes(1);
     expect(harness.showFilePanel).toHaveBeenLastCalledWith('save-copy');
-    expect(harness.originalTrigger).toHaveBeenCalledWith(
-      'edit:complete',
-      expect.objectContaining({ id: 'toolbar' }),
-    );
+    expect(harness.originalTrigger).toHaveBeenCalledWith('edit:complete', expect.objectContaining({ id: 'toolbar' }));
     expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
 
     harness.originalTrigger.mockClear();
@@ -1967,26 +2136,30 @@ describe('office editor runtime', () => {
     });
     await flush();
 
-	    mocks.convertHtmlToDocument.mockResolvedValueOnce({
-	      fileName: 'alpha.html',
-	      data: asciiBytes('<!doctype html><html><body>alpha</body></html>'),
-	    });
+    mocks.convertHtmlToDocument.mockResolvedValueOnce({
+      fileName: 'alpha.html',
+      data: asciiBytes('<!doctype html><html><body>alpha</body></html>'),
+    });
 
-	    docEditorInstances[0].nativeApi.asc_DownloadAs({ asc_getFileType: () => 70 });
-	    await waitForMessage();
+    docEditorInstances[0].nativeApi.asc_DownloadAs({ asc_getFileType: () => 70 });
+    await waitForMessage();
 
-	    expect(docEditorInstances[0].asc_nativeCalculateFile).toHaveBeenCalledWith(expect.objectContaining({
-	      asc_getFileType: expect.any(Function),
-	    }));
-	    expect(docEditorInstances[0].asc_nativeGetHtml).toHaveBeenCalledWith(expect.objectContaining({
-	      asc_getFileType: expect.any(Function),
-	    }));
-	    const htmlCall = mocks.convertHtmlToDocument.mock.calls.at(-1);
-	    expect(ArrayBuffer.isView(htmlCall?.[0])).toBe(true);
-	    expect(htmlCall?.[1]).toBe('alpha.docx');
-	    expect(htmlCall?.[2]).toBe('html');
-	    expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
-	    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+    expect(docEditorInstances[0].asc_nativeCalculateFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        asc_getFileType: expect.any(Function),
+      }),
+    );
+    expect(docEditorInstances[0].asc_nativeGetHtml).toHaveBeenCalledWith(
+      expect.objectContaining({
+        asc_getFileType: expect.any(Function),
+      }),
+    );
+    const htmlCall = mocks.convertHtmlToDocument.mock.calls.at(-1);
+    expect(ArrayBuffer.isView(htmlCall?.[0])).toBe(true);
+    expect(htmlCall?.[1]).toBe('alpha.docx');
+    expect(htmlCall?.[2]).toBe('html');
+    expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
 
     await instance.destroy();
   });
@@ -2003,26 +2176,30 @@ describe('office editor runtime', () => {
     });
     await flush();
 
-	    mocks.convertHtmlToDocument.mockResolvedValueOnce({
-	      fileName: 'alpha.md',
-	      data: asciiBytes('# alpha\n'),
-	    });
+    mocks.convertHtmlToDocument.mockResolvedValueOnce({
+      fileName: 'alpha.md',
+      data: asciiBytes('# alpha\n'),
+    });
 
-	    docEditorInstances[0].nativeApi.asc_DownloadAs({ asc_getFileType: () => 92 });
-	    await waitForMessage();
+    docEditorInstances[0].nativeApi.asc_DownloadAs({ asc_getFileType: () => 92 });
+    await waitForMessage();
 
-	    expect(docEditorInstances[0].asc_nativeCalculateFile).toHaveBeenCalledWith(expect.objectContaining({
-	      asc_getFileType: expect.any(Function),
-	    }));
-	    expect(docEditorInstances[0].asc_nativeGetHtml).toHaveBeenCalledWith(expect.objectContaining({
-	      asc_getFileType: expect.any(Function),
-	    }));
-	    const markdownCall = mocks.convertHtmlToDocument.mock.calls.at(-1);
-	    expect(ArrayBuffer.isView(markdownCall?.[0])).toBe(true);
-	    expect(markdownCall?.[1]).toBe('alpha.docx');
-	    expect(markdownCall?.[2]).toBe('md');
-	    expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
-	    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+    expect(docEditorInstances[0].asc_nativeCalculateFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        asc_getFileType: expect.any(Function),
+      }),
+    );
+    expect(docEditorInstances[0].asc_nativeGetHtml).toHaveBeenCalledWith(
+      expect.objectContaining({
+        asc_getFileType: expect.any(Function),
+      }),
+    );
+    const markdownCall = mocks.convertHtmlToDocument.mock.calls.at(-1);
+    expect(ArrayBuffer.isView(markdownCall?.[0])).toBe(true);
+    expect(markdownCall?.[1]).toBe('alpha.docx');
+    expect(markdownCall?.[2]).toBe('md');
+    expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
 
     await instance.destroy();
   });
@@ -2040,10 +2217,10 @@ describe('office editor runtime', () => {
     });
     await flush();
 
-	    mocks.convertHtmlToDocument.mockResolvedValueOnce({
-	      fileName: 'alpha.md',
-	      data: asciiBytes(`# alpha\n\n![diagram](data:image/png;base64,${pngBase64})\n`),
-	    });
+    mocks.convertHtmlToDocument.mockResolvedValueOnce({
+      fileName: 'alpha.md',
+      data: asciiBytes(`# alpha\n\n![diagram](data:image/png;base64,${pngBase64})\n`),
+    });
 
     docEditorConfigs[0].events.onDownloadAs?.({ data: { fileType: 92 } });
     await waitForMessage();
