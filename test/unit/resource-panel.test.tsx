@@ -8,8 +8,8 @@ import { OfficeResourcePanel } from '../../src/pwa/resource-panel';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const snapshot: OfficeRuntimeResourceSnapshot = {
-  packageVersion: '0.4.4',
-  assetVersion: 'v0.4.4-test',
+  packageVersion: '0.4.5',
+  assetVersion: 'v0.4.5-test',
   readiness: 'ready',
   packs: [
     { id: 'core', ready: true, completedBytes: 4, totalBytes: 4 },
@@ -31,9 +31,9 @@ const snapshot: OfficeRuntimeResourceSnapshot = {
   verifiedFontPaths: [],
   operation: null,
   error: null,
-  installedRelease: 'v0.4.4-test',
-  targetRelease: 'v0.4.4-test',
-  availableRelease: 'v0.4.4-test',
+  installedRelease: 'v0.4.5-test',
+  targetRelease: 'v0.4.5-test',
+  availableRelease: 'v0.4.5-test',
   storageMode: 'http-cache',
   phase: 'idle',
   currentChunk: null,
@@ -80,7 +80,7 @@ describe('OfficeResourcePanel', () => {
         root.render(<OfficeResourcePanel manager={manager} copy={officeCopy[locale]} />);
       });
 
-      expect(host.textContent).toContain('OnlyOffice 0.4.4');
+      expect(host.textContent).toContain('OnlyOffice 0.4.5');
       expect(host.textContent).toContain(officeCopy[locale].advancedFonts);
       expect(host.querySelectorAll('button').length).toBeGreaterThan(0);
       expect(error).not.toHaveBeenCalled();
