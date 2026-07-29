@@ -47,6 +47,15 @@ function mimeFor(file) {
   );
 }
 
+function excludeFromRelease(assetPath) {
+  return (
+    assetPath.endsWith('.br') ||
+    assetPath.endsWith('.map') ||
+    assetPath.startsWith('npm/') ||
+    assetPath.startsWith('.vite/')
+  );
+}
+
 function profileFor(asset, fontManifest) {
   if (asset.pack === 'word') return 'word';
   if (asset.pack === 'cell') return 'cell';
@@ -55,7 +64,7 @@ function profileFor(asset, fontManifest) {
     ...(fontManifest.assets || []).map((item) => item?.path).filter(Boolean),
     'server/FileConverter/bin/AllFonts.js',
   ]);
-  if (asset.pack === 'fonts' || fontAssets.has(asset.path)) {
+  if (asset.pack === 'fonts' || asset.path.startsWith('fonts/') || fontAssets.has(asset.path)) {
     const basic = new Set([
       ...(fontManifest.defaultFonts || []),
       ...(fontManifest.builtInFonts || []),
@@ -122,7 +131,9 @@ export function buildRelease({ root, output, packageVersion, x2tVersion, x2tComm
   const fonts = JSON.parse(fontBytes);
   const inventory = new Map();
   for (const asset of [...(runtime.assets || []), ...(fonts.assets || [])]) {
-    if (asset?.path && !inventory.has(asset.path)) inventory.set(asset.path, asset);
+    if (asset?.path && !excludeFromRelease(asset.path) && !inventory.has(asset.path)) {
+      inventory.set(asset.path, asset);
+    }
   }
   for (const manifestPath of [
     'onlyoffice-runtime-assets.json',
@@ -132,12 +143,7 @@ export function buildRelease({ root, output, packageVersion, x2tVersion, x2tComm
     inventory.set(manifestPath, { path: manifestPath, bytes: fs.statSync(absolute).size, pack: 'core' });
   }
   for (const deployPath of walkFiles(root)) {
-    if (
-      deployPath.endsWith('.br') ||
-      deployPath.endsWith('.map') ||
-      deployPath.startsWith('npm/') ||
-      deployPath.startsWith('.vite/')
-    ) {
+    if (excludeFromRelease(deployPath)) {
       continue;
     }
     if (!inventory.has(deployPath)) {
