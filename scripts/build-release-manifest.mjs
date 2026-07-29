@@ -234,8 +234,11 @@ if (isMain) {
     root: path.resolve(option('--root', 'dist')),
     output: path.resolve(option('--output', '.onlyoffice-release')),
     packageVersion: option('--package-version', process.env.npm_package_version || '0.0.0'),
-    x2tVersion: option('--x2t-version', process.env.ONLYOFFICE_X2T_VERSION || '9.3.0+1'),
-    x2tCommit: option('--x2t-commit', process.env.ONLYOFFICE_X2T_COMMIT || 'unknown'),
+    x2tVersion: option('--x2t-version', process.env.ONLYOFFICE_X2T_VERSION || '9.3.0+2'),
+    x2tCommit: option(
+      '--x2t-commit',
+      process.env.ONLYOFFICE_X2T_COMMIT || '1bb9b45a399f87ca162eea0c86abd4660f295469',
+    ),
   });
   console.log(`Built immutable OnlyOffice release ${manifest.releaseId} with ${manifest.assets.length} assets`);
 }

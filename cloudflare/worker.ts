@@ -1,5 +1,9 @@
 const CANONICAL_HOST = 'onlyoffice.getpi.work';
 const EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
+const LOCAL_PWA_HOST = 'onlyoffice.localhost';
+const LOCAL_CANONICAL_HOST = 'assets.office.localhost';
+const LOCAL_EDITOR_HOST_PATTERN = /^office-editor-([a-z0-9-]+)\.localhost$/;
+const LOCAL_ISOLATED_EDITOR_HOST_PATTERN = /^host-office-editor-([a-z0-9-]+)\.office\.localhost$/;
 const VERSION_QUERY = '__oobv';
 const ASSET_REVISION_PATTERN = /^[a-f0-9]{16,64}$/;
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
@@ -27,6 +31,7 @@ type RuntimeBucket = {
 export type WorkerEnv = {
   ASSETS: RuntimeBucket;
   ASSET_VERSION: string;
+  LOCAL_MATRIX_MODE?: string;
 };
 
 type WorkerExecutionContext = {
@@ -39,6 +44,26 @@ export function isOnlyOfficeHost(hostname: string): boolean {
 
 export function isIsolatedEditorHost(hostname: string): boolean {
   return EDITOR_HOST_PATTERN.test(hostname);
+}
+
+export function resolveRuntimeHost(
+  hostname: string,
+  localMatrixMode = false,
+): { logicalHostname: string; canonicalHostname: string } {
+  if (!localMatrixMode) {
+    return { logicalHostname: hostname, canonicalHostname: CANONICAL_HOST };
+  }
+  if (hostname === LOCAL_PWA_HOST || hostname === LOCAL_CANONICAL_HOST) {
+    return { logicalHostname: CANONICAL_HOST, canonicalHostname: LOCAL_CANONICAL_HOST };
+  }
+  const editor = LOCAL_EDITOR_HOST_PATTERN.exec(hostname) || LOCAL_ISOLATED_EDITOR_HOST_PATTERN.exec(hostname);
+  if (editor) {
+    return {
+      logicalHostname: `office-editor-${editor[1]}.getpi.work`,
+      canonicalHostname: LOCAL_CANONICAL_HOST,
+    };
+  }
+  return { logicalHostname: hostname, canonicalHostname: LOCAL_CANONICAL_HOST };
 }
 
 export function shouldDisableResponseTransform(key: string, isolated: boolean): boolean {
@@ -85,14 +110,14 @@ export function resolveObjectKey(pathname: string): string | null {
   } catch {
     return null;
   }
-  const key = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
+  const key = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '').replace(/\/{2,}/g, '/');
   if (!key || key.includes('\0') || key.split('/').some((part) => part === '..')) return null;
   return key;
 }
 
-function canonicalAssetUrl(url: URL, version: string): string {
+function canonicalAssetUrl(url: URL, version: string, canonicalHostname = CANONICAL_HOST): string {
   const canonical = new URL(url);
-  canonical.hostname = CANONICAL_HOST;
+  canonical.hostname = canonicalHostname;
   canonical.searchParams.set(VERSION_QUERY, version);
   return canonical.href;
 }
@@ -119,7 +144,9 @@ export function resolveEditorAssetRoute(pathname: string): { releaseId: string |
 }
 
 export function canonicalReleasePathname(pathname: string, releaseId: string): string {
-  return resolveReleaseRequest(pathname) ? pathname : `/r/${releaseId}/${pathname.replace(/^\/+/, '')}`;
+  if (resolveReleaseRequest(pathname)) return pathname;
+  const key = resolveObjectKey(pathname);
+  return `/r/${releaseId}/${key || pathname.replace(/^\/+/, '')}`;
 }
 
 async function readJsonObject<T>(env: WorkerEnv, key: string): Promise<T | null> {
@@ -198,6 +225,12 @@ function applySharedHeaders(headers: Headers): void {
   headers.set('Timing-Allow-Origin', '*');
 }
 
+function assetError(body: BodyInit | null, status: number, initialHeaders?: HeadersInit): Response {
+  const headers = new Headers(initialHeaders);
+  applySharedHeaders(headers);
+  return new Response(body, { status, headers });
+}
+
 function matchesEtag(request: Request, etag: string): boolean {
   return (request.headers.get('if-none-match') || '')
     .split(',')
@@ -231,10 +264,10 @@ async function serveAsset(
 ): Promise<Response> {
   const releaseRequest = resolveReleaseRequest(url.pathname);
   const immutableAsset = releaseRequest ? await resolveImmutableAsset(env, ctx, releaseRequest) : null;
-  if (releaseRequest && !immutableAsset) return new Response('Release asset not found', { status: 404 });
+  if (releaseRequest && !immutableAsset) return assetError('Release asset not found', 404);
   const key = immutableAsset?.key || resolveObjectKey(url.pathname);
   const publicPath = immutableAsset?.publicPath || key;
-  if (!key || !publicPath) return new Response('Invalid asset path', { status: 400 });
+  if (!key || !publicPath) return assetError('Invalid asset path', 400);
 
   const versioned = isAssetRevision(url.searchParams.get(VERSION_QUERY));
   const immutable = Boolean(immutableAsset) || (!isolated && (versioned || key.startsWith('releases/')));
@@ -250,7 +283,7 @@ async function serveAsset(
 
   if (request.method === 'HEAD') {
     const metadata = await env.ASSETS.head(key);
-    if (!metadata) return new Response('Not found', { status: 404 });
+    if (!metadata) return assetError('Not found', 404);
     const headers = responseHeaders(metadata, immutable, isolated, publicPath, assetVersion, immutableAsset?.mime);
     if (matchesEtag(request, metadata.httpEtag)) return new Response(null, { status: 304, headers });
     headers.set('Content-Length', String(metadata.size));
@@ -260,17 +293,14 @@ async function serveAsset(
   const range = rangeHeader ? parseSingleRange(rangeHeader, (await env.ASSETS.head(key))?.size ?? 0) : null;
   if (rangeHeader && !range) {
     const metadata = await env.ASSETS.head(key);
-    return new Response(null, {
-      status: 416,
-      headers: metadata ? { 'Content-Range': `bytes */${metadata.size}` } : undefined,
-    });
+    return assetError(null, 416, metadata ? { 'Content-Range': `bytes */${metadata.size}` } : undefined);
   }
 
   const object = await env.ASSETS.get(
     key,
     range ? { range: new Headers({ Range: `bytes=${range.start}-${range.end}` }) } : undefined,
   );
-  if (!object?.body) return new Response('Not found', { status: 404 });
+  if (!object?.body) return assetError('Not found', 404);
   const headers = responseHeaders(object, immutable, isolated, publicPath, assetVersion, immutableAsset?.mime);
   if (matchesEtag(request, object.httpEtag)) return new Response(null, { status: 304, headers });
 
@@ -324,7 +354,11 @@ export function applyReleaseMime(headers: Headers, releaseMime?: string): void {
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: WorkerExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const hostname = url.hostname.toLowerCase();
+    const requestHostname = url.hostname.toLowerCase();
+    const { logicalHostname: hostname, canonicalHostname } = resolveRuntimeHost(
+      requestHostname,
+      env.LOCAL_MATRIX_MODE === '1',
+    );
     if (!isOnlyOfficeHost(hostname)) return new Response('Unknown host', { status: 404 });
 
     if (request.method === 'OPTIONS') {
@@ -347,12 +381,12 @@ export default {
       const releaseId = editorAssetRoute.releaseId || pinnedReleaseId || (await stableReleaseId(env));
       if (releaseId) {
         const canonical = new URL(url);
-        canonical.hostname = CANONICAL_HOST;
+        canonical.hostname = canonicalHostname;
         canonical.pathname = canonicalReleasePathname(url.pathname, releaseId);
         canonical.searchParams.delete(VERSION_QUERY);
         return Response.redirect(canonical.href, 307);
       }
-      return Response.redirect(canonicalAssetUrl(url, env.ASSET_VERSION), 307);
+      return Response.redirect(canonicalAssetUrl(url, env.ASSET_VERSION, canonicalHostname), 307);
     }
     if (isolated && pinnedReleaseId && !resolveReleaseRequest(url.pathname)) {
       url.pathname = `/r/${pinnedReleaseId}/${url.pathname.replace(/^\/+/, '')}`;

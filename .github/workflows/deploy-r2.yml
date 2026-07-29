@@ -60,8 +60,8 @@ jobs:
       - run: rclone version
       - name: Hydrate the retained font release
         env:
-          ONLYOFFICE_X2T_VERSION: 9.3.0+1
-          ONLYOFFICE_X2T_COMMIT: 019cae68d7657aeda26231a044add0264ad63794
+          ONLYOFFICE_X2T_VERSION: 9.3.0+2
+          ONLYOFFICE_X2T_COMMIT: 1bb9b45a399f87ca162eea0c86abd4660f295469
         run: |
           rclone copy r2:onlyoffice-getpi-work dist \
             --fast-list \

@@ -239,17 +239,35 @@ function getZipEntryNames(content: Buffer): string[] {
   return names;
 }
 
-async function expectImageZipDownload(
+async function expectImageDownload(
   download: import('@playwright/test').Download,
   target: DownloadTarget,
-  expectedName: string,
+  fixture: OfficeFixtureCase,
 ): Promise<void> {
-  const content = await readDownload(download, expectedName);
+  const outputExt = target.ext === 'jpeg' ? 'jpg' : target.ext;
+  const directName = `${fixture.baseName}.${outputExt}`;
+  const archiveName = `${fixture.baseName}_${fixture.sourceType}_${outputExt}.zip`;
+  const { content, fileName } = await readDownloadWithExpectedNames(download, [directName, archiveName]);
   expectNonEmpty(content);
-  expect(Array.from(content.subarray(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
-  const names = getZipEntryNames(content);
-  const imagePattern = target.ext === 'png' ? /\.png$/i : /\.(jpe?g)$/i;
-  expect(names.some((name) => imagePattern.test(name)), `image entries in ${expectedName}: ${names.join(', ')}`).toBe(true);
+
+  if (fileName === archiveName) {
+    expect(Array.from(content.subarray(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    const names = getZipEntryNames(content);
+    const imagePattern = target.ext === 'png' ? /\.png$/i : /\.(jpe?g)$/i;
+    expect(
+      names.some((name) => imagePattern.test(name)),
+      `image entries in ${archiveName}: ${names.join(', ')}`,
+    ).toBe(true);
+    return;
+  }
+
+  if (target.ext === 'png') {
+    expect(Array.from(content.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    return;
+  }
+
+  expect(Array.from(content.subarray(0, 2))).toEqual([0xff, 0xd8]);
+  expect(Array.from(content.subarray(-2))).toEqual([0xff, 0xd9]);
 }
 
 async function expectMarkdownDownload(
@@ -304,19 +322,6 @@ async function expectRtfDownload(download: import('@playwright/test').Download, 
   expect(latin1.startsWith('{\\rtf') || utf16le.startsWith('{\\rtf')).toBe(true);
 }
 
-async function expectJpegDownload(download: import('@playwright/test').Download, expectedName: string): Promise<void> {
-  const content = await readDownload(download, expectedName);
-  expectNonEmpty(content);
-  expect(Array.from(content.subarray(0, 2))).toEqual([0xff, 0xd8]);
-  expect(Array.from(content.subarray(-2))).toEqual([0xff, 0xd9]);
-}
-
-async function expectPngDownload(download: import('@playwright/test').Download, expectedName: string): Promise<void> {
-  const content = await readDownload(download, expectedName);
-  expectNonEmpty(content);
-  expect(Array.from(content.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-}
-
 async function expectDownloadByKind(
   download: import('@playwright/test').Download,
   target: DownloadTarget,
@@ -343,20 +348,12 @@ async function expectDownloadByKind(
     await expectTextDownload(download, expectedName, /fictionbook/i);
     return;
   }
-  if (target.kind === 'image-zip') {
-    await expectImageZipDownload(download, target, expectedName);
+  if (target.kind === 'image-zip' || target.kind === 'image-jpeg' || target.kind === 'image-png') {
+    await expectImageDownload(download, target, fixture);
     return;
   }
   if (target.kind === 'markdown') {
     await expectMarkdownDownload(download, expectedName, fixture);
-    return;
-  }
-  if (target.kind === 'image-jpeg') {
-    await expectJpegDownload(download, expectedName);
-    return;
-  }
-  if (target.kind === 'image-png') {
-    await expectPngDownload(download, expectedName);
     return;
   }
   await expectTextDownload(download, expectedName);

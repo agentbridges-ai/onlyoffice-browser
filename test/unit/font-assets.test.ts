@@ -53,7 +53,7 @@ describe('generated font assets runtime checks', () => {
       if (path === '/onlyoffice-browser-font-assets.json') {
         return Promise.resolve(new Response(JSON.stringify(manifest), { status: 200 }));
       }
-      if (init?.headers && (init.headers as Record<string, string>).Range === 'bytes=0-0') {
+      if (init?.method === 'HEAD' && init.cache === 'no-store') {
         return Promise.resolve(new Response(null, { status: 200 }));
       }
       return Promise.resolve(new Response('', { status: 404 }));
@@ -62,16 +62,12 @@ describe('generated font assets runtime checks', () => {
 
     await expect(assertGeneratedFontAssetsAvailable()).resolves.toMatchObject(manifest);
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/sdkjs/common/AllFonts.js'), {
-      cache: 'no-cache',
-      headers: {
-        Range: 'bytes=0-0',
-      },
+      method: 'HEAD',
+      cache: 'no-store',
     });
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/fonts/default.ttf'), {
-      cache: 'no-cache',
-      headers: {
-        Range: 'bytes=0-0',
-      },
+      method: 'HEAD',
+      cache: 'no-store',
     });
     expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/fonts/000.ttf'), expect.anything());
   });

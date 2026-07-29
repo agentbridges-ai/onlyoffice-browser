@@ -2137,7 +2137,7 @@ describe('office editor runtime', () => {
     await instance.destroy();
   });
 
-  it('extracts native asc_CDownloadOptions file types through accessors', async () => {
+  it('downloads the editor native HTML without running an HTML-to-HTML x2t conversion', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
 
@@ -2148,11 +2148,6 @@ describe('office editor runtime', () => {
       saveBehavior: 'download',
     });
     await flush();
-
-    mocks.convertHtmlToDocument.mockResolvedValueOnce({
-      fileName: 'alpha.html',
-      data: asciiBytes('<!doctype html><html><body>alpha</body></html>'),
-    });
 
     docEditorInstances[0].nativeApi.asc_DownloadAs({ asc_getFileType: () => 70 });
     await waitForMessage();
@@ -2167,10 +2162,7 @@ describe('office editor runtime', () => {
         asc_getFileType: expect.any(Function),
       }),
     );
-    const htmlCall = mocks.convertHtmlToDocument.mock.calls.at(-1);
-    expect(ArrayBuffer.isView(htmlCall?.[0])).toBe(true);
-    expect(htmlCall?.[1]).toBe('alpha.docx');
-    expect(htmlCall?.[2]).toBe('html');
+    expect(mocks.convertHtmlToDocument).not.toHaveBeenCalled();
     expect(mocks.convertBinToDocument).not.toHaveBeenCalled();
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
 
