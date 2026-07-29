@@ -12,6 +12,8 @@ ONLYOFFICE_SW_OUT_DIR=.onlyoffice-sw ./node_modules/.bin/vite build -c vite.sw.c
 # Run Vite build through the project-local binary.
 ./node_modules/.bin/vite build
 
+node scripts/verify-office-host-identity.mjs
+
 node scripts/inject-service-worker.mjs
 
 # Finish every content mutation before hashing the deployable runtime.

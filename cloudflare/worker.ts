@@ -3,7 +3,8 @@ const EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
 const VERSION_QUERY = '__oobv';
 const ASSET_REVISION_PATTERN = /^[a-f0-9]{16,64}$/;
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
-const RELEASE_PATH_PATTERN = /^\/r\/([a-zA-Z0-9._+-]{1,128})\/(.+)$/;
+const RELEASE_PATH_PATTERN = /^\/r\/([^/]{1,384})\/(.+)$/;
+const RELEASE_ID_PATTERN = /^[a-zA-Z0-9._+-]{1,128}$/;
 
 type R2ObjectLike = {
   body?: ReadableStream;
@@ -99,8 +100,15 @@ function canonicalAssetUrl(url: URL, version: string): string {
 export function resolveReleaseRequest(pathname: string): { releaseId: string; path: string } | null {
   const match = RELEASE_PATH_PATTERN.exec(pathname);
   if (!match) return null;
+  let releaseId: string;
+  try {
+    releaseId = decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+  if (!RELEASE_ID_PATTERN.test(releaseId)) return null;
   const assetPath = resolveObjectKey(`/${match[2]}`);
-  return assetPath ? { releaseId: match[1], path: assetPath } : null;
+  return assetPath ? { releaseId, path: assetPath } : null;
 }
 
 async function readJsonObject<T>(env: WorkerEnv, key: string): Promise<T | null> {
@@ -119,9 +127,7 @@ async function readReleaseManifest(
   releaseId: string,
 ): Promise<ReleaseManifest | null> {
   const cache = (caches as CacheStorage & { default: Cache }).default;
-  const cacheKey = new Request(
-    `https://${CANONICAL_HOST}/releases/${encodeURIComponent(releaseId)}/manifest.json`,
-  );
+  const cacheKey = new Request(`https://${CANONICAL_HOST}/releases/${encodeURIComponent(releaseId)}/manifest.json`);
   const cached = await cache.match(cacheKey);
   if (cached) return (await cached.json()) as ReleaseManifest;
   const object = await env.ASSETS.get(`releases/${releaseId}/manifest.json`);
@@ -159,9 +165,7 @@ async function resolveImmutableAsset(
 
 async function stableReleaseId(env: WorkerEnv): Promise<string | null> {
   const channel = await readJsonObject<{ version?: number; releaseId?: string }>(env, 'channels/stable.json');
-  return channel?.version === 1 &&
-    typeof channel.releaseId === 'string' &&
-    /^[a-zA-Z0-9._+-]{1,128}$/.test(channel.releaseId)
+  return channel?.version === 1 && typeof channel.releaseId === 'string' && RELEASE_ID_PATTERN.test(channel.releaseId)
     ? channel.releaseId
     : null;
 }

@@ -21,6 +21,7 @@ import {
   resolveAvailableFontFamilyNames,
   resolveRuntimeAssetCacheMode,
 } from './lib/font-assets';
+import { ONLYOFFICE_BROWSER_VERSION } from './version';
 import './styles/base.css';
 
 type RuntimeOptions = Parameters<typeof createRuntimeOfficeEditor>[1];
@@ -32,8 +33,8 @@ const root = document.querySelector<HTMLElement>('#office-host') ?? document.bod
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
 /** Bump whenever already-open host frames must be recreated. */
-const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.35';
-const OFFICE_HOST_BUILD_ID = 'office-host-0.4.0-r1';
+const OFFICE_BROWSER_PACKAGE_VERSION = ONLYOFFICE_BROWSER_VERSION;
+const OFFICE_HOST_BUILD_ID = `office-host-${ONLYOFFICE_BROWSER_VERSION}-r1`;
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const OFFICE_SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
 const OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS = 30_000;

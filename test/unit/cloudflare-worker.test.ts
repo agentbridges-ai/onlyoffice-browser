@@ -48,6 +48,10 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
       releaseId: 'v0.4.0-abcd',
       path: 'sdkjs/word/word.js',
     });
+    expect(resolveReleaseRequest('/r/v0.4.0%2B1/office-host.html')).toEqual({
+      releaseId: 'v0.4.0+1',
+      path: 'office-host.html',
+    });
     expect(resolveReleaseRequest('/r/v0.4.0-abcd/sdkjs/%2e%2e/secret')).toBeNull();
     expect(releaseIdFromReferrer('https://office-editor-a.getpi.work/r/v0.4.0-abcd/office-host.html')).toBe(
       'v0.4.0-abcd',
