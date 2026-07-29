@@ -74,11 +74,12 @@ describe('OfficeRuntimeResourceManager', () => {
       expect.objectContaining({ name: 'Microsoft YaHei', downloaded: false, removable: true }),
     ]);
     expect(manager.getSnapshot()).toMatchObject({
-      packageVersion: '0.4.0',
+      packageVersion: '0.4.1',
       assetVersion: 'resource-v1',
       readiness: 'needs-download',
       packs: expect.arrayContaining([expect.objectContaining({ id: 'word', ready: false })]),
     });
+    expect(manager.getSnapshot()).toBe(manager.getSnapshot());
 
     await manager.downloadFontFamily('microsoft yahei');
 
@@ -92,6 +93,7 @@ describe('OfficeRuntimeResourceManager', () => {
       ],
     });
     expect(snapshots.some((snapshot) => snapshot.operation === 'download-font')).toBe(true);
+    expect(snapshots.at(-1)).toBe(manager.getSnapshot());
 
     await manager.uninstallFontFamily('microsoft yahei');
     expect(manager.getVerifiedFontPaths()).not.toContain('fonts/yahei.ttf');
