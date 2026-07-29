@@ -51,6 +51,9 @@ describe('immutable release builder', () => {
       '.vite/manifest.json': 'not requested by the runtime',
       'wasm/x2t/x2t.wasm': 'x2t bytes',
       'sdkjs/word/word.js': 'word',
+      'fonts/basic.ttf': 'basic font',
+      'fonts/compat.ttf': 'compatibility font',
+      'server/FileConverter/bin/AllFonts.js': 'server font index',
     };
     for (const [relative, contents] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
@@ -60,7 +63,19 @@ describe('immutable release builder', () => {
       path.join(root, 'onlyoffice-runtime-assets.json'),
       JSON.stringify({
         version: 2,
-        assets: [{ path: 'sdkjs/word/word.js', pack: 'word', bytes: 4, revision: 'legacy' }],
+        assets: [
+          { path: 'sdkjs/word/word.js', pack: 'word', bytes: 4, revision: 'legacy' },
+          { path: 'fonts/basic.ttf', pack: 'core', bytes: 10, revision: 'legacy' },
+          { path: 'fonts/compat.ttf', pack: 'core', bytes: 18, revision: 'legacy' },
+        ],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(root, 'onlyoffice-browser-font-assets.json'),
+      JSON.stringify({
+        version: 1,
+        assets: [{ path: 'fonts/basic.ttf' }, { path: 'fonts/compat.ttf' }],
+        defaultFonts: ['fonts/basic.ttf'],
       }),
     );
     const first = buildRelease({
@@ -81,6 +96,13 @@ describe('immutable release builder', () => {
     expect(second.releaseId).toBe(first.releaseId);
     expect(first.assets.every((item: { sha256: string }) => /^[a-f0-9]{64}$/.test(item.sha256))).toBe(true);
     expect(first.profiles.word).toContain('sdkjs/word/word.js');
+    expect(first.profiles['fonts-basic']).toEqual(
+      expect.arrayContaining(['fonts/basic.ttf', 'server/FileConverter/bin/AllFonts.js']),
+    );
+    expect(first.profiles['fonts-office-compat']).toEqual(['fonts/compat.ttf']);
+    expect(first.profiles.base).not.toEqual(
+      expect.arrayContaining(['fonts/basic.ttf', 'fonts/compat.ttf', 'server/FileConverter/bin/AllFonts.js']),
+    );
     expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('npm/public-api.js');
     expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('.vite/manifest.json');
     expect(fs.existsSync(path.join(output, 'releases', first.releaseId, 'manifest.json'))).toBe(true);
