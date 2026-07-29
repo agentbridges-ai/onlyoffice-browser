@@ -34,3 +34,15 @@ test('OnlyOffice root discovery assets are reachable', async ({ request }) => {
   const host = await request.get('/office-host.html');
   expect(host.ok()).toBe(true);
 });
+
+test('new document menu closes before opening the selected editor', async ({ page }) => {
+  await page.goto('/');
+
+  const menu = page.locator('.new-menu');
+  await menu.locator('summary').click();
+  await expect(menu).toHaveAttribute('open', '');
+
+  await page.getByRole('button', { name: 'Word document' }).click();
+
+  await expect(menu).not.toHaveAttribute('open', '');
+});

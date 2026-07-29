@@ -639,8 +639,12 @@ elements.languageSelect.addEventListener('change', () => {
 document.querySelector('#empty-open-button')?.addEventListener('click', () => void openFiles());
 document.querySelector('#save-button')?.addEventListener('click', () => void editor?.save());
 document.querySelector('#close-button')?.addEventListener('click', () => activeTab && void closeTab(activeTab));
+const newDocumentMenu = document.querySelector<HTMLDetailsElement>('.new-menu');
 document.querySelectorAll<HTMLElement>('[data-new]').forEach((button) => {
-  button.addEventListener('click', () => createEmpty(button.dataset.new as 'docx' | 'xlsx' | 'pptx' | 'csv'));
+  button.addEventListener('click', () => {
+    if (newDocumentMenu) newDocumentMenu.open = false;
+    void createEmpty(button.dataset.new as 'docx' | 'xlsx' | 'pptx' | 'csv');
+  });
 });
 elements.fileInput.addEventListener('change', () => {
   for (const file of Array.from(elements.fileInput.files || [])) void addFile(undefined, file);
