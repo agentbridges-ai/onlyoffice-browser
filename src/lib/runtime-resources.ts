@@ -1,8 +1,36 @@
-import { RuntimeCacheController, type RuntimeCacheProgress, type RuntimeFontFamily } from './runtime-cache';
+import {
+  RuntimeCacheController,
+  type RuntimeCacheCategory,
+  type RuntimeCacheProgress,
+  type RuntimeFontFamily,
+} from './runtime-cache';
+import { ONLYOFFICE_BROWSER_VERSION } from '../version';
 
-export type OfficeRuntimeResourceOperation = 'load-all' | 'check-health' | 'download-font' | 'remove-font';
+export type OfficeRuntimeResourceOperation =
+  | 'prepare-document'
+  | 'prefetch-recommended'
+  | 'load-all'
+  | 'check-health'
+  | 'download-font'
+  | 'install-font-preset'
+  | 'remove-font';
+
+export type OfficeRuntimeReadiness = 'ready' | 'needs-download' | 'updating' | 'error';
+export type OfficeDocumentResourceType = 'word' | 'cell' | 'slide';
+export type OfficeFontPreset = 'basic' | 'office-compatibility';
+
+export type OfficeRuntimePackSnapshot = {
+  id: RuntimeCacheCategory;
+  ready: boolean;
+  completedBytes: number;
+  totalBytes: number;
+};
 
 export type OfficeRuntimeResourceSnapshot = {
+  packageVersion: string;
+  assetVersion: string;
+  readiness: OfficeRuntimeReadiness;
+  packs: OfficeRuntimePackSnapshot[];
   progress: RuntimeCacheProgress;
   fonts: RuntimeFontFamily[];
   verifiedFontPaths: string[];
@@ -86,6 +114,18 @@ export class OfficeRuntimeResourceManager {
     return this.run('load-all', 'load-all', (notify) => this.controller.loadAll(notify));
   }
 
+  prepareForDocumentType(type: OfficeDocumentResourceType): Promise<RuntimeCacheProgress> {
+    return this.run(`prepare-document:${type}`, 'prepare-document', (notify) =>
+      this.controller.loadCategories(['fonts', 'core', type], notify),
+    );
+  }
+
+  prefetchRecommended(): Promise<RuntimeCacheProgress> {
+    return this.run('prefetch-recommended', 'prefetch-recommended', (notify) =>
+      this.controller.loadCategories(['fonts', 'core'], notify),
+    );
+  }
+
   checkHealth(): Promise<RuntimeCacheProgress> {
     return this.run('check-health', 'check-health', (notify) => this.controller.checkHealth(notify));
   }
@@ -98,12 +138,49 @@ export class OfficeRuntimeResourceManager {
     return this.run(`remove-font:${id}`, 'remove-font', async () => this.controller.uninstallFontFamily(id));
   }
 
+  installFontPreset(preset: OfficeFontPreset): Promise<RuntimeCacheProgress> {
+    if (preset === 'basic') return this.prefetchRecommended();
+    return this.run('font-preset:office-compatibility', 'install-font-preset', async (notify) => {
+      const preferredFamilies = ['Arial', 'Calibri', 'Cambria', 'Times New Roman', 'Microsoft YaHei', 'SimSun'];
+      let progress = await this.controller.loadCategories(['fonts', 'core'], notify);
+      const available = this.controller.listFonts();
+      for (const name of preferredFamilies) {
+        const family = available.find((candidate) => candidate.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+        if (family && !family.downloaded) {
+          progress = await this.controller.downloadFontFamily(family.id, notify);
+        }
+      }
+      return progress;
+    });
+  }
+
+  repair(): Promise<RuntimeCacheProgress> {
+    return this.checkHealth();
+  }
+
   private buildSnapshot(
     progress: RuntimeCacheProgress,
     operation: OfficeRuntimeResourceOperation | null,
     error: Error | null,
   ): OfficeRuntimeResourceSnapshot {
+    const packs = progress.categories.map((category) => ({
+      id: category.category,
+      ready: category.totalFiles > 0 && category.completedFiles === category.totalFiles,
+      completedBytes: category.completedBytes,
+      totalBytes: category.totalBytes,
+    }));
     return {
+      packageVersion: ONLYOFFICE_BROWSER_VERSION,
+      assetVersion: this.controller.version,
+      readiness:
+        error || progress.phase === 'error'
+          ? 'error'
+          : operation || progress.phase === 'checking' || progress.phase === 'loading'
+            ? 'updating'
+            : packs.every((pack) => pack.ready)
+              ? 'ready'
+              : 'needs-download',
+      packs,
       progress: cloneProgress(progress),
       fonts: this.controller.listFonts(),
       verifiedFontPaths: this.getVerifiedFontPaths(),

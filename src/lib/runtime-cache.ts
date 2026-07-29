@@ -804,8 +804,16 @@ export class RuntimeCacheController {
   }
 
   async loadAll(onProgress: (progress: RuntimeCacheProgress) => void): Promise<RuntimeCacheProgress> {
+    return this.loadCategories(['fonts', 'core', 'word', 'cell', 'slide'], onProgress);
+  }
+
+  async loadCategories(
+    categories: readonly RuntimeCacheCategory[],
+    onProgress: (progress: RuntimeCacheProgress) => void,
+  ): Promise<RuntimeCacheProgress> {
     await this.resolveUnknownSizes(onProgress);
-    const pending = this.assets.filter((asset) => !this.completed.has(asset.path));
+    const selected = new Set(categories);
+    const pending = this.assets.filter((asset) => selected.has(asset.category) && !this.completed.has(asset.path));
     let cursor = 0;
     let failedFiles = 0;
     const initialProgress = this.getProgress();
@@ -891,7 +899,10 @@ export class RuntimeCacheController {
       this.fontFamilies,
       this.requiredFontPaths,
     );
-    const progress = this.getProgress(failedFiles === 0 && this.isComplete() ? 'complete' : 'error', failedFiles);
+    const progress = this.getProgress(
+      failedFiles === 0 ? (this.isComplete() ? 'complete' : 'ready') : 'error',
+      failedFiles,
+    );
     onProgress(progress);
     return progress;
   }

@@ -1,8 +1,12 @@
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
+import packageJson from './package.json' with { type: 'json' };
 
 export default defineConfig({
   publicDir: false,
+  define: {
+    __ONLYOFFICE_BROWSER_VERSION__: JSON.stringify(packageJson.version),
+  },
   build: {
     emptyOutDir: false,
     lib: {

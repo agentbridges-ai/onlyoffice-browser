@@ -33,7 +33,12 @@ export {
   type OfficeRuntimeResourceManagerOptions,
   type OfficeRuntimeResourceOperation,
   type OfficeRuntimeResourceSnapshot,
+  type OfficeRuntimeReadiness,
+  type OfficeRuntimePackSnapshot,
+  type OfficeDocumentResourceType,
+  type OfficeFontPreset,
 } from './lib/runtime-resources';
+export { ONLYOFFICE_BROWSER_VERSION } from './version';
 export type {
   RuntimeCacheAsset,
   RuntimeCacheCategory,

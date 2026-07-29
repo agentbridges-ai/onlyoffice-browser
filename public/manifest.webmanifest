@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "OnlyOffice Browser",
+  "short_name": "Office",
+  "description": "Private, browser-only Word, spreadsheet, and presentation editing.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6fa",
+  "theme_color": "#315efb",
+  "icons": [
+    {
+      "src": "/onlyoffice-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

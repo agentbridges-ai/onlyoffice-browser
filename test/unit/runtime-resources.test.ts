@@ -73,6 +73,12 @@ describe('OfficeRuntimeResourceManager', () => {
       expect.objectContaining({ name: 'DengXian', removable: false }),
       expect.objectContaining({ name: 'Microsoft YaHei', downloaded: false, removable: true }),
     ]);
+    expect(manager.getSnapshot()).toMatchObject({
+      packageVersion: '0.3.36',
+      assetVersion: 'resource-v1',
+      readiness: 'needs-download',
+      packs: expect.arrayContaining([expect.objectContaining({ id: 'word', ready: false })]),
+    });
 
     await manager.downloadFontFamily('microsoft yahei');
 
@@ -89,6 +95,20 @@ describe('OfficeRuntimeResourceManager', () => {
 
     await manager.uninstallFontFamily('microsoft yahei');
     expect(manager.getVerifiedFontPaths()).not.toContain('fonts/yahei.ttf');
+  });
+
+  it('prepares only the packs needed by the active document', async () => {
+    const fetchMock = resourceFetch();
+    const manager = await createOfficeRuntimeResourceManager({
+      storage: window.localStorage,
+      fetch: fetchMock as unknown as typeof fetch,
+      cacheStorage: undefined,
+    });
+
+    await manager.prepareForDocumentType('word');
+
+    expect(manager.getSnapshot().packs.find((pack) => pack.id === 'word')).toMatchObject({ ready: true });
+    expect(manager.getSnapshot().operation).toBeNull();
   });
 
   it('coalesces identical operations and serializes different mutations', async () => {

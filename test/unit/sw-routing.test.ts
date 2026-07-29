@@ -101,14 +101,16 @@ describe('SW fetch routing', () => {
     expect(sw).not.toContain("self.addEventListener('install'");
   });
 
-  it('activates a waiting shell update only when no editor can lose unsaved work', () => {
+  it('activates a waiting shell update only after every tab is safe to restore', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'src/index.ts'), 'utf8');
 
     expect(source).toContain("workbox.addEventListener('waiting'");
-    expect(source).toContain('if (records.length === 0) void workbox.messageSkipWaiting()');
+    expect(source).toContain('if (!waitingWorkbox || hasUnsafeWork()) return');
+    expect(source).toContain('void waitingWorkbox.messageSkipWaiting()');
     expect(source).toContain("workbox.addEventListener('controlling'");
-    expect(source).toContain('if (records.length > 0 || reloadingForServiceWorkerUpdate) return');
-    expect(source).toContain('window.location.reload()');
+    expect(source).toContain('if (reloading || hasUnsafeWork()) return');
+    expect(source).toContain('location.reload()');
+    expect(source).toContain('return tabs.some((tab) => tab.dirty || !tab.handle)');
   });
 
   it('proxies isolated-host shared assets directly to the immutable canonical URL', () => {

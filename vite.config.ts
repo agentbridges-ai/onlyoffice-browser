@@ -4,6 +4,7 @@ import path, { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
+import packageJson from './package.json' with { type: 'json' };
 
 export const FONT_ASSETS_DIR_ENV = 'ONLYOFFICE_BROWSER_FONT_ASSETS_DIR';
 export const GENERATED_FONT_ASSETS_MANIFEST = 'onlyoffice-browser-font-assets.json';
@@ -171,6 +172,9 @@ export default defineConfig({
   base: './',
   publicDir: resolve(__dirname, 'public'),
   plugins: [serveGeneratedFontAssets(), serveWorkspaceSrc()],
+  define: {
+    __ONLYOFFICE_BROWSER_VERSION__: JSON.stringify(packageJson.version),
+  },
   worker: {
     rollupOptions: {
       output: {
