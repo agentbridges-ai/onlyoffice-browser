@@ -33,7 +33,7 @@ const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
 /** Bump whenever already-open host frames must be recreated. */
 const OFFICE_BROWSER_PACKAGE_VERSION = '0.3.35';
-const OFFICE_HOST_BUILD_ID = 'office-host-0.3.35-r1';
+const OFFICE_HOST_BUILD_ID = 'office-host-0.3.36-r1';
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const OFFICE_SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
 const OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS = 30_000;
