@@ -255,10 +255,10 @@ export class OfficeRuntimeResourceManager {
     });
   }
 
-  repair(): Promise<RuntimeCacheProgress> {
+  repair(options: { scope: 'required' | 'installed' | 'all' } = { scope: 'installed' }): Promise<RuntimeCacheProgress> {
     if (this.installer) {
-      return this.run('check-health', 'check-health', async () => {
-        await this.installer!.repair({ scope: 'installed' });
+      return this.run(`repair:${options.scope}`, 'check-health', async () => {
+        await this.installer!.repair(options);
         return this.controller.getProgress(this.controller.isComplete() ? 'complete' : 'ready');
       });
     }

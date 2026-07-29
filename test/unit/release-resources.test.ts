@@ -170,6 +170,8 @@ describe('TransactionalResourceInstaller', () => {
       readiness: 'error',
       errorCode: 'integrity',
       canRetry: true,
+      downloadedBytes: 0,
+      verifiedBytes: 0,
       failedResources: [{ path: asset.path, code: 'integrity' }],
     });
   });

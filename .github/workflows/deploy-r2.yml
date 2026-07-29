@@ -55,6 +55,9 @@ jobs:
           node -e "const manifest = require('./dist/onlyoffice-runtime-assets.json'); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected || manifest.totalBytes <= 0) process.exit(1)"
       - run: rclone version
       - name: Hydrate the retained font release
+        env:
+          ONLYOFFICE_X2T_VERSION: 9.3.0+1
+          ONLYOFFICE_X2T_COMMIT: 019cae68d7657aeda26231a044add0264ad63794
         run: |
           rclone copy r2:onlyoffice-getpi-work dist \
             --fast-list \
@@ -70,6 +73,7 @@ jobs:
             --exclude "*" \
             --stats-one-line
           pnpm release:build
+          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); if(manifest.x2t.version !== process.env.ONLYOFFICE_X2T_VERSION || manifest.x2t.commit !== process.env.ONLYOFFICE_X2T_COMMIT) throw new Error('x2t release identity mismatch')"
       - name: Upload additive immutable release
         run: |
           rclone copy .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs \

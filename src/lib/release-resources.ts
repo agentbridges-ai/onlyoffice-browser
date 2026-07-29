@@ -774,6 +774,8 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     const delays = [0, ...this.retryDelays()];
     let lastError: unknown;
     for (let attempt = 0; attempt < delays.length; attempt += 1) {
+      let attemptDownloaded = 0;
+      let attemptVerified = 0;
       if (delays[attempt]) await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
       if (this.paused) await this.resumePromise;
       const controller = new AbortController();
@@ -795,13 +797,17 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         const bytes = await readAndVerify(
           response,
           asset.sha256,
-          (count) => this.patch({ downloadedBytes: this.snapshot.downloadedBytes + count }),
+          (count) => {
+            attemptDownloaded += count;
+            this.patch({ downloadedBytes: this.snapshot.downloadedBytes + count });
+          },
           controller.signal,
         );
         if (bytes.byteLength !== asset.bytes) throw new ResourceInstallerError('integrity', asset.path);
+        attemptVerified = bytes.byteLength;
         this.patch({
           phase: 'verifying',
-          verifiedBytes: this.snapshot.verifiedBytes + bytes.byteLength,
+          verifiedBytes: this.snapshot.verifiedBytes + attemptVerified,
         });
         if (this.options.storageMode === 'cache-storage' && this.options.cacheStorage) {
           const cache = await this.options.cacheStorage.open(`onlyoffice-release-staging-${releaseId}`);
@@ -817,6 +823,10 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         this.installedPaths.add(asset.path);
         return;
       } catch (error) {
+        this.patch({
+          downloadedBytes: Math.max(0, this.snapshot.downloadedBytes - attemptDownloaded),
+          verifiedBytes: Math.max(0, this.snapshot.verifiedBytes - attemptVerified),
+        });
         lastError =
           controller.signal.aborted && !parentSignal?.aborted
             ? new ResourceInstallerError('timeout', asset.path)
