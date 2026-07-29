@@ -51,7 +51,11 @@ function profileFor(asset, fontManifest) {
   if (asset.pack === 'word') return 'word';
   if (asset.pack === 'cell') return 'cell';
   if (asset.pack === 'slide') return 'slide';
-  if (asset.pack === 'fonts') {
+  const fontAssets = new Set([
+    ...(fontManifest.assets || []).map((item) => item?.path).filter(Boolean),
+    'server/FileConverter/bin/AllFonts.js',
+  ]);
+  if (asset.pack === 'fonts' || fontAssets.has(asset.path)) {
     const basic = new Set([
       ...(fontManifest.defaultFonts || []),
       ...(fontManifest.builtInFonts || []),
@@ -59,6 +63,7 @@ function profileFor(asset, fontManifest) {
       fontManifest.fontSelection,
       fontManifest.fontSourceMap,
       ...(fontManifest.fontThumbnails || []),
+      'server/FileConverter/bin/AllFonts.js',
     ]);
     return basic.has(asset.path) ? 'fonts-basic' : 'fonts-office-compat';
   }
