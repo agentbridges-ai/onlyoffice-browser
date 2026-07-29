@@ -47,6 +47,8 @@ describe('immutable release builder', () => {
       'sw.js': 'worker',
       'assets/officeHost-abcdefgh.js': 'host bundle',
       'assets/main-abcdefgh.js': 'shell bundle',
+      'npm/public-api.js': 'not a deployed runtime asset',
+      '.vite/manifest.json': 'not requested by the runtime',
       'wasm/x2t/x2t.wasm': 'x2t bytes',
       'sdkjs/word/word.js': 'word',
     };
@@ -79,6 +81,8 @@ describe('immutable release builder', () => {
     expect(second.releaseId).toBe(first.releaseId);
     expect(first.assets.every((item: { sha256: string }) => /^[a-f0-9]{64}$/.test(item.sha256))).toBe(true);
     expect(first.profiles.word).toContain('sdkjs/word/word.js');
+    expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('npm/public-api.js');
+    expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('.vite/manifest.json');
     expect(fs.existsSync(path.join(output, 'releases', first.releaseId, 'manifest.json'))).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(output, 'channels/stable.json'), 'utf8'))).toEqual({
       version: 1,

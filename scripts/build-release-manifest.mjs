@@ -127,7 +127,14 @@ export function buildRelease({ root, output, packageVersion, x2tVersion, x2tComm
     inventory.set(manifestPath, { path: manifestPath, bytes: fs.statSync(absolute).size, pack: 'core' });
   }
   for (const deployPath of walkFiles(root)) {
-    if (deployPath.endsWith('.br') || deployPath.endsWith('.map')) continue;
+    if (
+      deployPath.endsWith('.br') ||
+      deployPath.endsWith('.map') ||
+      deployPath.startsWith('npm/') ||
+      deployPath.startsWith('.vite/')
+    ) {
+      continue;
+    }
     if (!inventory.has(deployPath)) {
       inventory.set(deployPath, {
         path: deployPath,
