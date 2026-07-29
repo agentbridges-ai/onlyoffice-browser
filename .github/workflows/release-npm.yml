@@ -20,9 +20,11 @@ jobs:
           version: 11.4.0
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      - name: Use an npm CLI with trusted publishing support
+        run: npm install --global npm@11.17.0
       - name: Verify signed release identity
         env:
           GH_TOKEN: ${{ github.token }}
@@ -39,9 +41,7 @@ jobs:
           pnpm build:lib
           npm pack --dry-run
       - name: Publish with npm provenance
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
