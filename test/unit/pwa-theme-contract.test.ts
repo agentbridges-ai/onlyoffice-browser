@@ -26,6 +26,9 @@ describe('standalone PWA theme contract', () => {
     expect(css).toContain('background: var(--surface);');
     expect(css).toContain('background: var(--default);');
     expect(css).toContain('background: var(--accent);');
+    expect(css).toContain('height: var(--control-height);');
+    expect(css).not.toContain('min-height: 28px;');
+    expect(css).not.toContain('min-height: 30px;');
   });
 
   it('keeps keyboard focus and disabled states visible', () => {

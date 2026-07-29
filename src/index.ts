@@ -12,6 +12,13 @@ import {
   hasReadPermission,
   requestReadWritePermission,
 } from './pwa/document-tabs';
+import {
+  OFFICE_LOCALE_STORAGE_KEY,
+  officeCopy,
+  resolveOfficeLocale,
+  type OfficeCopy,
+  type OfficeLocale,
+} from './pwa/i18n';
 import { ONLYOFFICE_BROWSER_VERSION } from './version';
 import { Workbox } from 'workbox-window';
 import './styles/base.css';
@@ -42,94 +49,9 @@ type DocumentTab = {
 
 type DirtyDecision = 'save' | 'discard' | 'cancel';
 
-const isChinese = navigator.language.toLocaleLowerCase().startsWith('zh');
-const copy = isChinese
-  ? {
-      product: 'OnlyOffice 浏览器版',
-      private: '文件只在此设备中处理',
-      open: '打开文件',
-      new: '新建',
-      newWord: 'Word 文档',
-      newSheet: '电子表格',
-      newSlides: '演示文稿',
-      noDocument: '打开或新建文档，开始在浏览器中编辑',
-      noDocumentHint: '支持 DOCX、XLSX、PPTX、CSV 及常见旧版 Office 格式',
-      save: '保存',
-      close: '关闭',
-      resources: 'Office 资源',
-      resourcesReady: '资源已就绪',
-      resourcesNeeded: '按需下载',
-      resourcesUpdating: '正在更新资源',
-      resourcesError: '资源需要修复',
-      resourceIntro: '编辑器会按需下载当前文档所需资源，并在空闲时准备基础资源。',
-      basicPreset: '准备基础资源',
-      compatPreset: '安装 Office 兼容字体',
-      repair: '检查并修复',
-      allResources: '下载全部（高级）',
-      advancedFonts: '高级字体管理',
-      installed: '已安装',
-      download: '下载',
-      remove: '移除',
-      required: '基础字体',
-      updateReady: '新版本已准备好。保存或关闭未保存的文档后将自动更新。',
-      updateNow: '立即更新',
-      dirtyTitle: '保存更改？',
-      dirtyBody: '切换或关闭前，是否保存当前文档的更改？',
-      discard: '不保存',
-      cancel: '取消',
-      permission: '需要重新授权此文件后才能恢复标签页。',
-      authorize: '重新打开',
-      error: '文档打开失败',
-      version: '版本',
-      word: '文字',
-      cell: '表格',
-      slide: '演示',
-      core: '基础组件',
-      fonts: '字体',
-    }
-  : {
-      product: 'OnlyOffice Browser',
-      private: 'Files stay on this device',
-      open: 'Open files',
-      new: 'New',
-      newWord: 'Word document',
-      newSheet: 'Spreadsheet',
-      newSlides: 'Presentation',
-      noDocument: 'Open or create a document to start editing in your browser',
-      noDocumentHint: 'Supports DOCX, XLSX, PPTX, CSV, and common legacy Office formats',
-      save: 'Save',
-      close: 'Close',
-      resources: 'Office resources',
-      resourcesReady: 'Resources ready',
-      resourcesNeeded: 'Downloads on demand',
-      resourcesUpdating: 'Updating resources',
-      resourcesError: 'Resources need repair',
-      resourceIntro: 'The editor downloads resources for the current document and prepares essentials when idle.',
-      basicPreset: 'Prepare essentials',
-      compatPreset: 'Install Office-compatible fonts',
-      repair: 'Check and repair',
-      allResources: 'Download everything (advanced)',
-      advancedFonts: 'Advanced font management',
-      installed: 'Installed',
-      download: 'Download',
-      remove: 'Remove',
-      required: 'Essential',
-      updateReady: 'A new version is ready. It will update automatically after unsaved documents are saved or closed.',
-      updateNow: 'Update now',
-      dirtyTitle: 'Save changes?',
-      dirtyBody: 'Would you like to save changes before switching or closing this document?',
-      discard: 'Discard',
-      cancel: 'Cancel',
-      permission: 'Authorize this file again to restore the tab.',
-      authorize: 'Open again',
-      error: 'Unable to open document',
-      version: 'Version',
-      word: 'Word',
-      cell: 'Spreadsheet',
-      slide: 'Presentation',
-      core: 'Essentials',
-      fonts: 'Fonts',
-    };
+let locale: OfficeLocale = resolveOfficeLocale(localStorage.getItem(OFFICE_LOCALE_STORAGE_KEY), navigator.languages);
+let copy: OfficeCopy = officeCopy[locale];
+document.documentElement.lang = locale;
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing #app root');
@@ -138,64 +60,71 @@ app.innerHTML = `
   <header class="app-header">
     <div class="brand">
       <img src="/onlyoffice-icon.svg" alt="" />
-      <div><strong>${copy.product}</strong><span>${copy.private}</span></div>
+      <strong data-i18n="product">${copy.product}</strong>
     </div>
     <div class="header-actions">
+      <label class="language-control">
+        <span class="visually-hidden" data-i18n="language">${copy.language}</span>
+        <select id="language-select" aria-label="${copy.language}">
+          <option value="zh-CN"${locale === 'zh-CN' ? ' selected' : ''}>中文</option>
+          <option value="en-US"${locale === 'en-US' ? ' selected' : ''}>English</option>
+        </select>
+      </label>
       <button id="resource-button" class="status-button" type="button"><span class="status-dot"></span><span>${copy.resourcesNeeded}</span></button>
-      <button id="open-button" class="primary-button" type="button">${copy.open}</button>
+      <button id="open-button" class="primary-button" data-i18n="open" type="button">${copy.open}</button>
       <details class="new-menu">
-        <summary>${copy.new}</summary>
-        <button type="button" data-new="docx">${copy.newWord}</button>
-        <button type="button" data-new="xlsx">${copy.newSheet}</button>
-        <button type="button" data-new="pptx">${copy.newSlides}</button>
+        <summary data-i18n="new">${copy.new}</summary>
+        <button type="button" data-new="docx" data-i18n="newWord">${copy.newWord}</button>
+        <button type="button" data-new="xlsx" data-i18n="newSheet">${copy.newSheet}</button>
+        <button type="button" data-new="pptx" data-i18n="newSlides">${copy.newSlides}</button>
       </details>
     </div>
   </header>
   <aside id="update-banner" class="update-banner" hidden>
-    <span>${copy.updateReady}</span><button id="update-button" type="button">${copy.updateNow}</button>
+    <span data-i18n="updateReady">${copy.updateReady}</span><button id="update-button" data-i18n="updateNow" type="button">${copy.updateNow}</button>
   </aside>
-  <nav id="document-tabs" class="document-tabs" aria-label="Open documents"></nav>
+  <nav id="document-tabs" class="document-tabs" aria-label="${copy.openDocuments}"></nav>
   <main class="editor-workspace">
     <section id="empty-state" class="empty-state">
       <img src="/onlyoffice-icon.svg" alt="" />
-      <h1>${copy.noDocument}</h1>
-      <p>${copy.noDocumentHint}</p>
-      <button id="empty-open-button" class="primary-button" type="button">${copy.open}</button>
+      <h1 data-i18n="noDocument">${copy.noDocument}</h1>
+      <p data-i18n="noDocumentHint">${copy.noDocumentHint}</p>
+      <button id="empty-open-button" class="primary-button" data-i18n="open" type="button">${copy.open}</button>
     </section>
     <section id="permission-state" class="empty-state" hidden>
-      <h1>${copy.permission}</h1>
-      <button id="authorize-button" class="primary-button" type="button">${copy.authorize}</button>
+      <h1 data-i18n="permission">${copy.permission}</h1>
+      <button id="authorize-button" class="primary-button" data-i18n="authorize" type="button">${copy.authorize}</button>
     </section>
     <section id="editor-panel" class="editor-panel" hidden>
       <div class="document-bar">
         <div><strong id="document-title"></strong><span id="document-status"></span></div>
-        <div><button id="save-button" type="button">${copy.save}</button><button id="close-button" type="button">${copy.close}</button></div>
+        <div><button id="save-button" data-i18n="save" type="button">${copy.save}</button><button id="close-button" data-i18n="close" type="button">${copy.close}</button></div>
       </div>
       <div id="editor-slot" class="editor-slot"></div>
     </section>
   </main>
-  <footer class="app-footer"><span>${copy.product}</span><span>${copy.version} ${ONLYOFFICE_BROWSER_VERSION}</span></footer>
+  <footer class="app-footer"><span data-i18n="product">${copy.product}</span><span><span data-i18n="version">${copy.version}</span> ${ONLYOFFICE_BROWSER_VERSION}</span></footer>
   <input id="file-input" type="file" multiple accept=".docx,.xlsx,.pptx,.doc,.xls,.ppt,.csv,.rtf,.odt,.ods,.odp" />
   <dialog id="resource-dialog" class="settings-dialog">
     <form method="dialog">
-      <header><div><h2>${copy.resources}</h2><p>${copy.resourceIntro}</p></div><button value="cancel" aria-label="Close" type="submit">×</button></header>
+      <header><div><h2 data-i18n="resources">${copy.resources}</h2><p data-i18n="resourceIntro">${copy.resourceIntro}</p></div><button value="cancel" aria-label="${copy.closeDialog}" type="submit">×</button></header>
       <div id="resource-summary" class="resource-summary"></div>
       <div class="preset-actions">
-        <button id="basic-preset" type="button">${copy.basicPreset}</button>
-        <button id="compat-preset" class="primary-button" type="button">${copy.compatPreset}</button>
+        <button id="basic-preset" data-i18n="basicPreset" type="button">${copy.basicPreset}</button>
+        <button id="compat-preset" class="primary-button" data-i18n="compatPreset" type="button">${copy.compatPreset}</button>
       </div>
       <details>
-        <summary>${copy.advancedFonts}</summary>
+        <summary data-i18n="advancedFonts">${copy.advancedFonts}</summary>
         <div id="font-list" class="font-list"></div>
-        <button id="load-all-button" type="button">${copy.allResources}</button>
+        <button id="load-all-button" data-i18n="allResources" type="button">${copy.allResources}</button>
       </details>
-      <footer><button id="repair-button" type="button">${copy.repair}</button></footer>
+      <footer><button id="repair-button" data-i18n="repair" type="button">${copy.repair}</button></footer>
     </form>
   </dialog>
   <dialog id="dirty-dialog" class="confirm-dialog">
     <form method="dialog">
-      <h2>${copy.dirtyTitle}</h2><p>${copy.dirtyBody}</p>
-      <div><button value="cancel">${copy.cancel}</button><button value="discard">${copy.discard}</button><button class="primary-button" value="save">${copy.save}</button></div>
+      <h2 data-i18n="dirtyTitle">${copy.dirtyTitle}</h2><p data-i18n="dirtyBody">${copy.dirtyBody}</p>
+      <div><button value="cancel" data-i18n="cancel">${copy.cancel}</button><button value="discard" data-i18n="discard">${copy.discard}</button><button class="primary-button" value="save" data-i18n="save">${copy.save}</button></div>
     </form>
   </dialog>
 `;
@@ -216,6 +145,7 @@ const elements = {
   updateBanner: document.querySelector<HTMLElement>('#update-banner')!,
   updateButton: document.querySelector<HTMLButtonElement>('#update-button')!,
   dirtyDialog: document.querySelector<HTMLDialogElement>('#dirty-dialog')!,
+  languageSelect: document.querySelector<HTMLSelectElement>('#language-select')!,
 };
 
 const tabs: DocumentTab[] = [];
@@ -223,11 +153,40 @@ const tabStore = new DocumentTabStore();
 let activeTab: DocumentTab | null = null;
 let editor: OfficeEditorInstance | null = null;
 let resourceManager: OfficeRuntimeResourceManager | null = null;
+let latestResourceSnapshot: OfficeRuntimeResourceSnapshot | null = null;
 let waitingWorkbox: Workbox | null = null;
 let editorGeneration = 0;
 const hardResetOnLastDestroy = new URLSearchParams(location.search).get('hardResetOnLastDestroy') === 'true';
 clearLegacyDemoHostState(location, localStorage);
 const officeHostUrl = resolveDemoHostUrl(new URL(location.href));
+
+function applyLocale(nextLocale: OfficeLocale): void {
+  locale = nextLocale;
+  copy = officeCopy[locale];
+  document.documentElement.lang = locale;
+  document.title = copy.product;
+  elements.languageSelect.value = locale;
+  elements.languageSelect.setAttribute('aria-label', copy.language);
+  elements.tabs.setAttribute('aria-label', copy.openDocuments);
+  document
+    .querySelector<HTMLButtonElement>('.settings-dialog header > button')
+    ?.setAttribute('aria-label', copy.closeDialog);
+  document.querySelectorAll<HTMLElement>('[data-i18n]').forEach((element) => {
+    const key = element.dataset.i18n as keyof OfficeCopy | undefined;
+    if (key) element.textContent = copy[key];
+  });
+  try {
+    localStorage.setItem(OFFICE_LOCALE_STORAGE_KEY, locale);
+  } catch {
+    // Language switching remains live when storage is unavailable.
+  }
+  renderTabs();
+  if (latestResourceSnapshot) {
+    renderResources(latestResourceSnapshot);
+  } else if (elements.resourceButton.dataset.state === 'error') {
+    elements.resourceButton.lastElementChild!.textContent = copy.resourcesError;
+  }
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
@@ -294,7 +253,7 @@ async function saveFile(tab: DocumentTab, file: File): Promise<boolean> {
       suggestedName: file.name || tab.name,
       types: [
         {
-          description: 'Office document',
+          description: copy.officeDocument,
           accept: { 'application/octet-stream': [`.${file.name.split('.').pop() || 'docx'}`] },
         },
       ],
@@ -306,7 +265,7 @@ async function saveFile(tab: DocumentTab, file: File): Promise<boolean> {
     renderTabs();
     return true;
   }
-  if (!(await requestReadWritePermission(handle))) throw new Error('Write permission was not granted.');
+  if (!(await requestReadWritePermission(handle))) throw new Error(copy.writePermissionError);
   const writable = await handle.createWritable();
   await writable.write(file);
   await writable.close();
@@ -464,7 +423,7 @@ async function openFiles(): Promise<void> {
         multiple: true,
         types: [
           {
-            description: 'Office documents',
+            description: copy.officeDocuments,
             accept: {
               'application/octet-stream': [
                 '.docx',
@@ -496,7 +455,7 @@ async function openFiles(): Promise<void> {
 function createEmpty(emptyType: 'docx' | 'xlsx' | 'pptx' | 'csv'): void {
   const tab: DocumentTab = {
     id: createDocumentTabId(),
-    name: `New_Document.${emptyType}`,
+    name: `${copy.newDocumentName}.${emptyType}`,
     emptyType,
     dirty: false,
   };
@@ -510,6 +469,7 @@ function packLabel(id: string): string {
 }
 
 function renderResources(snapshot: OfficeRuntimeResourceSnapshot): void {
+  latestResourceSnapshot = snapshot;
   const label =
     snapshot.readiness === 'ready'
       ? copy.resourcesReady
@@ -615,6 +575,9 @@ async function restoreTabs(): Promise<void> {
 }
 
 document.querySelector('#open-button')?.addEventListener('click', () => void openFiles());
+elements.languageSelect.addEventListener('change', () => {
+  applyLocale(elements.languageSelect.value as OfficeLocale);
+});
 document.querySelector('#empty-open-button')?.addEventListener('click', () => void openFiles());
 document.querySelector('#save-button')?.addEventListener('click', () => void editor?.save());
 document.querySelector('#close-button')?.addEventListener('click', () => activeTab && void closeTab(activeTab));
@@ -657,6 +620,7 @@ window.__officeDemo = {
   },
 };
 
+applyLocale(locale);
 initializeServiceWorker();
 void initializeResources();
 void restoreTabs();
