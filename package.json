@@ -1,6 +1,6 @@
 {
   "name": "@agentbridges-ai/onlyoffice-browser",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "packageManager": "pnpm@11.4.0",
   "description": "A local web-based document editor based on OnlyOffice, allowing you to edit documents directly in your browser without server-side processing, ensuring your privacy and security.",
   "type": "module",
@@ -62,6 +62,7 @@
     "assets:build": "node scripts/build-onlyoffice-runtime-assets.mjs --input public --output .onlyoffice-runtime-assets --split-output .onlyoffice-runtime-asset-packs",
     "assets:optimize:dist": "node scripts/build-onlyoffice-runtime-assets.mjs --input dist --prune-root --split-output .onlyoffice-runtime-asset-packs",
     "release:build": "node scripts/build-release-manifest.mjs --root dist --output .onlyoffice-release",
+    "benchmark:incremental": "node scripts/benchmark-incremental-releases.mjs",
     "memory:chrome-cdp": "node scripts/chrome-cdp-memory-stress.mjs",
     "test:real-load": "node scripts/chrome-cdp-memory-stress.mjs --host-url=http://host.localhost:5173/office-host.html --require-real-files --modes=edit,readonly,preview --batch-size=3 --iterations=60 --stay-ms=2000 --home-dwell-ms=0 --final-settle-ms=30000 --close-mode=app",
     "format": "prettier --write .",

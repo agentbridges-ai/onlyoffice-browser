@@ -28,3 +28,4 @@ test-results/
 .onlyoffice-runtime-asset-packs/
 .onlyoffice-release/
 .onlyoffice-cloudflare-matrix-cache/
+tools/fastcdc-index/target/
