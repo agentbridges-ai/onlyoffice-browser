@@ -3,6 +3,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const sourceOrigin = (process.env.ONLYOFFICE_MATRIX_FONT_SOURCE || 'https://onlyoffice.getpi.work').replace(/\/+$/, '');
 const pinnedReleaseId = process.env.ONLYOFFICE_MATRIX_FONT_RELEASE_ID || '';
@@ -18,7 +19,7 @@ function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
-async function fetchWithRetry(url) {
+export async function fetchWithRetry(url, consume = (response) => response, retryDelays = [1_000, 3_000]) {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const controller = new AbortController();
@@ -26,10 +27,12 @@ async function fetchWithRetry(url) {
     try {
       const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response;
+      return await consume(response);
     } catch (error) {
       lastError = error;
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, [1_000, 3_000][attempt]));
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt] ?? 0));
+      }
     } finally {
       clearTimeout(timeout);
     }
@@ -40,13 +43,14 @@ async function fetchWithRetry(url) {
 async function readRelease() {
   let releaseId = pinnedReleaseId;
   if (!releaseId) {
-    const channel = await fetchWithRetry(`${sourceOrigin}/channels/stable.json`).then((response) => response.json());
+    const channel = await fetchWithRetry(`${sourceOrigin}/channels/stable.json`, (response) => response.json());
     if (channel.version !== 1 || typeof channel.releaseId !== 'string') {
       throw new Error('Cloudflare matrix font source returned an invalid stable channel');
     }
     releaseId = channel.releaseId;
   }
-  const manifest = await fetchWithRetry(`${sourceOrigin}/releases/${encodeURIComponent(releaseId)}/manifest.json`).then(
+  const manifest = await fetchWithRetry(
+    `${sourceOrigin}/releases/${encodeURIComponent(releaseId)}/manifest.json`,
     (response) => response.json(),
   );
   if (
@@ -86,8 +90,11 @@ function validCachedAsset(asset) {
 
 async function downloadAsset(releaseId, asset) {
   if (validCachedAsset(asset)) return false;
-  const response = await fetchWithRetry(`${sourceOrigin}/r/${encodeURIComponent(releaseId)}/${asset.path}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const bytes = Buffer.from(
+    await fetchWithRetry(`${sourceOrigin}/r/${encodeURIComponent(releaseId)}/${asset.path}`, (response) =>
+      response.arrayBuffer(),
+    ),
+  );
   if (bytes.byteLength !== asset.bytes || sha256(bytes) !== asset.sha256) {
     throw new Error(`Font asset integrity mismatch: ${asset.path}`);
   }
@@ -142,38 +149,53 @@ function copyToDist(assets) {
   }
 }
 
-if (localFontRoot) {
-  const manifestPath = path.join(localFontRoot, 'onlyoffice-browser-font-assets.json');
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  if (manifest.fontSet !== 'full' || !Array.isArray(manifest.fontFamilies) || manifest.fontFamilies.length < 70) {
-    throw new Error('Local Cloudflare matrix requires a verified full font set with at least 70 families');
-  }
-  const paths = ['onlyoffice-browser-font-assets.json', ...(manifest.assets || []).map((asset) => asset.path)];
-  const assets = [...new Set(paths)].map((assetPath) => {
-    const source = path.join(localFontRoot, assetPath);
-    if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
-      throw new Error(`Local Cloudflare matrix font asset is missing: ${assetPath}`);
+export async function main() {
+  if (localFontRoot) {
+    const manifestPath = path.join(localFontRoot, 'onlyoffice-browser-font-assets.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (manifest.fontSet !== 'full' || !Array.isArray(manifest.fontFamilies) || manifest.fontFamilies.length < 70) {
+      throw new Error('Local Cloudflare matrix requires a verified full font set with at least 70 families');
     }
-    return {
-      path: assetPath,
-      bytes: fs.statSync(source).size,
-      sha256: sha256(fs.readFileSync(source)),
-    };
-  });
-  for (const asset of assets) {
-    const destination = path.join(distRoot, asset.path);
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.copyFileSync(path.join(localFontRoot, asset.path), destination);
+    const paths = ['onlyoffice-browser-font-assets.json', ...(manifest.assets || []).map((asset) => asset.path)];
+    const assets = [...new Set(paths)].map((assetPath) => {
+      const source = path.join(localFontRoot, assetPath);
+      if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+        throw new Error(`Local Cloudflare matrix font asset is missing: ${assetPath}`);
+      }
+      return {
+        path: assetPath,
+        bytes: fs.statSync(source).size,
+        sha256: sha256(fs.readFileSync(source)),
+      };
+    });
+    for (const asset of assets) {
+      const destination = path.join(distRoot, asset.path);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(path.join(localFontRoot, asset.path), destination);
+    }
+    process.stdout.write(
+      `Hydrated ${assets.length} verified local full-font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes, ${manifest.fontFamilies.length} families)\n`,
+    );
+  } else {
+    const { releaseId, assets } = await readRelease();
+    fs.mkdirSync(cacheRoot, { recursive: true });
+    await hydrateCache(releaseId, assets);
+    copyToDist(assets);
+    process.stdout.write(
+      `Hydrated ${assets.length} verified font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes) from ${releaseId}\n`,
+    );
   }
-  process.stdout.write(
-    `Hydrated ${assets.length} verified local full-font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes, ${manifest.fontFamilies.length} families)\n`,
-  );
-} else {
-  const { releaseId, assets } = await readRelease();
-  fs.mkdirSync(cacheRoot, { recursive: true });
-  await hydrateCache(releaseId, assets);
-  copyToDist(assets);
-  process.stdout.write(
-    `Hydrated ${assets.length} verified font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes) from ${releaseId}\n`,
-  );
+}
+
+function isDirectRun() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  }
+}
+
+if (isDirectRun()) {
+  await main();
 }
