@@ -122,7 +122,8 @@ describe('SW fetch routing', () => {
     expect(sw).toContain("const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work'");
     expect(sw).toContain("const LOCAL_CANONICAL_OFFICE_HOST = 'onlyoffice.localhost'");
     expect(sw).toContain('if (isLocalEditorHost) return null;');
-    expect(sw).toContain('EDITOR_HOST_PATTERN.test(self.location.hostname) || isLocalEditorHost');
+    expect(sw).toContain('isProductionOfficeEditorHostname(self.location.hostname)');
+    expect(sw).toContain('LEGACY_EDITOR_HOST_PATTERN.test(self.location.hostname)');
     expect(sw).toContain('const shouldProxySharedAsset = (request, url)');
     expect(sw).toContain('revisions.get(path) || version');
     expect(sw).toContain('loadCurrentRelease()');
@@ -132,6 +133,10 @@ describe('SW fetch routing', () => {
     expect(sw).toContain("segmentUrl.searchParams.set('segment', segment.id)");
     expect(sw).toContain('const overlappingSegments = pack.segments.filter(');
     expect(sw).toContain('const MAX_PACKAGE_SEGMENT_BUFFERS = 4');
+    expect(sw).toContain("const PACKAGE_SEGMENT_CACHE_NAME = 'onlyoffice-browser-package-segments-v1'");
+    expect(sw).toContain('await readPersistedOfficePackSegment(cache, segmentUrl, segment)');
+    expect(sw).toContain("headers.set('x-onlyoffice-segment-sha256', segment.sha256)");
+    expect(sw).toContain('await prunePersistedOfficePackSegments(cache, release.releaseId)');
     expect(sw).toContain("crypto.subtle.digest('SHA-256', bytes)");
     expect(sw).toContain('new Uint8Array(await loadOfficePackSegment(release, segment))');
     expect(sw).toContain("headers.set('x-onlyoffice-pack-release', release.releaseId)");

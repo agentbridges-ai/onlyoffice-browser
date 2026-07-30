@@ -3,6 +3,7 @@ import { ExpirationPlugin } from 'workbox-expiration';
 import { cleanupOutdatedCaches, matchPrecache, precacheAndRoute } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
 import { NetworkFirst, StaleWhileRevalidate } from 'workbox-strategies';
+import { isProductionOfficeEditorHostname } from './lib/office-origin-pool';
 
 const SERVICE_WORKER_VERSION = 'SW_VERSION_PLACEHOLDER';
 const PRINT_PDF_CACHE_NAME = 'onlyoffice-browser-print-pdfs';
@@ -14,8 +15,10 @@ const ONLYOFFICE_RUNTIME_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const FONT_MANIFEST_PATH = '/onlyoffice-browser-font-assets.json';
 const RELEASE_CHANNEL_PATH = '/channels/stable.json';
 const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work';
-const EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
-const LOCAL_EDITOR_HOST_PATTERN = /^host-office-editor-[a-z0-9-]+\.office\.localhost$/;
+const LEGACY_EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
+const LOCAL_EDITOR_HOST_PATTERN =
+  /^host-(?:aries|taurus|gemini|cancer|leo|virgo|libra|scorpio|sagittarius|capricorn|aquarius|pisces)\.office\.localhost$/;
+const LOCAL_LEGACY_EDITOR_HOST_PATTERN = /^host-office-editor-[a-z0-9-]+\.office\.localhost$/;
 // Match the local PWA origin so the matrix exercises the same cross-editor
 // HTTP cache key sharing used by onlyoffice.getpi.work in production.
 const LOCAL_CANONICAL_OFFICE_HOST = 'onlyoffice.localhost';
@@ -24,17 +27,24 @@ const ORIGIN_BOUND_DESTINATIONS = new Set(['document', 'iframe', 'worker', 'shar
 
 const MAX_CACHE_ITEMS = 100;
 const MAX_PACKAGE_SEGMENT_BUFFERS = 4;
+const PACKAGE_SEGMENT_CACHE_NAME = 'onlyoffice-browser-package-segments-v1';
 const RUNTIME_CACHE_NAME = 'onlyoffice-browser-runtime-v1';
 const STATIC_CACHE_NAME = 'onlyoffice-browser-static-v1';
 
 const isCanonicalPwaHost = self.location.hostname === CANONICAL_OFFICE_HOST;
-const isLocalEditorHost = LOCAL_EDITOR_HOST_PATTERN.test(self.location.hostname);
-const isIsolatedEditorHost = EDITOR_HOST_PATTERN.test(self.location.hostname) || isLocalEditorHost;
+const isLocalEditorHost =
+  LOCAL_EDITOR_HOST_PATTERN.test(self.location.hostname) ||
+  LOCAL_LEGACY_EDITOR_HOST_PATTERN.test(self.location.hostname);
+const isIsolatedEditorHost =
+  isProductionOfficeEditorHostname(self.location.hostname) ||
+  LEGACY_EDITOR_HOST_PATTERN.test(self.location.hostname) ||
+  isLocalEditorHost;
 const canonicalOfficeOrigin = isLocalEditorHost
   ? `${self.location.protocol}//${LOCAL_CANONICAL_OFFICE_HOST}${self.location.port ? `:${self.location.port}` : ''}`
   : `https://${CANONICAL_OFFICE_HOST}`;
 let sharedAssetManifestPromise;
 const packageSegmentBuffers = new Map();
+const packageSegmentCachePrunes = new Map();
 setCacheNameDetails({
   prefix: 'onlyoffice-browser',
   precache: 'shell-v1',
@@ -167,6 +177,52 @@ const digestHex = async (bytes) =>
     byte.toString(16).padStart(2, '0'),
   ).join('');
 
+const readPersistedOfficePackSegment = async (cache, segmentUrl, segment) => {
+  const response = await cache.match(segmentUrl.href);
+  if (!response) return null;
+  const expectedDigest = response.headers.get('x-onlyoffice-segment-sha256');
+  const expectedBytes = Number(response.headers.get('content-length'));
+  if (
+    !response.ok ||
+    expectedDigest !== segment.sha256 ||
+    !Number.isSafeInteger(expectedBytes) ||
+    expectedBytes !== segment.bytes
+  ) {
+    await cache.delete(segmentUrl.href);
+    return null;
+  }
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength === segment.bytes && (await digestHex(bytes)) === segment.sha256) return bytes;
+  await cache.delete(segmentUrl.href);
+  return null;
+};
+
+const prunePersistedOfficePackSegments = (cache, releaseId) => {
+  const existing = packageSegmentCachePrunes.get(releaseId);
+  if (existing) return existing;
+  const currentReleasePrefix = `/p/${encodeURIComponent(releaseId)}/`;
+  const prune = cache
+    .keys()
+    .then((requests) =>
+      Promise.all(
+        requests
+          .filter(({ url }) => {
+            const pathname = new URL(url).pathname;
+            return pathname.startsWith('/p/') && !pathname.startsWith(currentReleasePrefix);
+          })
+          .map((request) => cache.delete(request)),
+      ),
+    )
+    .catch((error) => {
+      console.warn('[onlyoffice-browser] Unable to prune stale Office Pack segments', {
+        releaseId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  packageSegmentCachePrunes.set(releaseId, prune);
+  return prune;
+};
+
 const loadOfficePackSegment = (release, segment) => {
   const key = `${release.releaseId}/${segment.id}`;
   const existing = packageSegmentBuffers.get(key);
@@ -177,6 +233,10 @@ const loadOfficePackSegment = (release, segment) => {
       canonicalOfficeOrigin,
     );
     segmentUrl.searchParams.set('segment', segment.id);
+    const cache = await caches.open(PACKAGE_SEGMENT_CACHE_NAME);
+    await prunePersistedOfficePackSegments(cache, release.releaseId);
+    const persisted = await readPersistedOfficePackSegment(cache, segmentUrl, segment);
+    if (persisted) return persisted;
     const response = await fetch(segmentUrl.href, {
       mode: 'cors',
       credentials: 'omit',
@@ -189,6 +249,27 @@ const loadOfficePackSegment = (release, segment) => {
     const bytes = await response.arrayBuffer();
     if (bytes.byteLength !== segment.bytes || (await digestHex(bytes)) !== segment.sha256) {
       throw new Error(`Office Pack segment integrity mismatch: ${segment.id}`);
+    }
+    const headers = new Headers(response.headers);
+    headers.delete('content-encoding');
+    headers.delete('content-range');
+    headers.delete('transfer-encoding');
+    headers.set('content-length', String(segment.bytes));
+    headers.set('x-onlyoffice-segment-sha256', segment.sha256);
+    try {
+      await cache.put(
+        segmentUrl.href,
+        new Response(bytes.slice(0), {
+          status: 200,
+          headers,
+        }),
+      );
+    } catch (error) {
+      console.warn('[onlyoffice-browser] Unable to persist verified Office Pack segment', {
+        releaseId: release.releaseId,
+        segmentId: segment.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     return bytes;
   })().catch((error) => {
@@ -471,7 +552,7 @@ registerRoute(
   'HEAD',
 );
 
-// A unique editor origin keeps its host documents and workers origin-bound,
+// A reusable editor-pool origin keeps host documents and workers origin-bound,
 // while every shareable request uses the canonical content-revision URL.
 registerRoute(
   ({ request, sameOrigin, url }) => sameOrigin && isEligibleGet(request, url) && shouldProxySharedAsset(request, url),

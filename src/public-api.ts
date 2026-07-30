@@ -21,11 +21,18 @@ export {
   type OfficeHostIdentity,
   OfficeHostIdentityMismatchError,
   OfficeHostIsolationError,
+  OfficeHostPoolExhaustedError,
   type OfficeSaveBehavior,
   type OfficeSaveAsCallbackResult,
   type OfficeSaveCallbackResult,
   type OfficeSaveToNewFormatConfirmationOptions,
 } from './lib/office-editor';
+export {
+  OFFICE_EDITOR_ORIGIN_SLOTS,
+  isOfficeEditorOriginSlot,
+  isProductionOfficeEditorHostname,
+  type OfficeEditorOriginSlot,
+} from './lib/office-origin-pool';
 export {
   createOfficeRuntimeResourceManager,
   OfficeRuntimeResourceManager,

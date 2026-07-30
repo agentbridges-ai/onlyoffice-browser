@@ -246,7 +246,7 @@ async function main() {
     port: workerPort,
     method: 'HEAD',
     pathname: `/r/${releasePointer.releaseId}/office-host.html`,
-    headers: { Host: 'office-editor-matrix.localhost' },
+    headers: { Host: 'aries.localhost' },
   });
   if (hostResponse.status !== 200 || hostResponse.headers['content-type'] !== 'text/html; charset=utf-8') {
     throw new Error(

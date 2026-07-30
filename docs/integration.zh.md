@@ -32,7 +32,7 @@ npm run assets:build
 
 创建编辑器时通过 `hostUrl` 传入这个 host 页面。组件会拒绝与父页面同 origin 的 `hostUrl`，因为内存隔离清理依赖独立 iframe origin。
 
-如果同一页面会同时打开多个大文档，推荐为每个 editor 分配一个独立 host origin，而不是所有实例共用同一个 `office-host.example.com`。生产环境可配置 wildcard DNS/TLS，例如 `*.office-host.example.com`，然后用 `hostUrl` resolver 返回每个实例自己的子域名；这样逐个关闭文档时，对应子框架 renderer 可以单独退出。开发环境下，组件会自动把 `.localhost` host 派生为 `host-<session>.localhost`，用于复现同样的逐实例隔离效果。
+如果同一页面会同时打开多个大文档，请配置固定的 12 个星座 host（`aries` 到 `pisces`）或匹配的 wildcard。`hostUrl` resolver 使用 `hostSlot`；组件会为每个活动 editor 租用不同的稳定 origin，在 `destroy()` 时释放，并在第 13 个编辑器同时打开时抛出 `OfficeHostPoolExhaustedError`。这样既能在关闭文档时单独回收对应 renderer，又能让稳定 origin 继续复用已经校验的资源分段。开发环境下，组件会自动把 `.localhost` URL 派生为 `host-<hostSlot>.office.localhost`。
 
 不需要 OnlyOffice DocumentServer，不需要后端会话服务，也不需要上传用户文档。
 
@@ -42,8 +42,8 @@ npm run assets:build
 import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 
 const container = document.querySelector('#editor') as HTMLElement;
-const officeHostUrl = ({ sessionId }: { sessionId: string }) =>
-  `https://${sessionId}.office-host.example.com/office-host.html`;
+const officeHostUrl = ({ hostSlot }: { hostSlot: string }) =>
+  `https://${hostSlot}.office-host.example.com/office-host.html`;
 
 const editor = await createOfficeEditor(container, {
   hostUrl: officeHostUrl,
@@ -129,7 +129,7 @@ editors[1].setReadonly(true);
 editors[2].destroy();
 ```
 
-OnlyOffice API script 和 x2t WASM 初始化由各自 host iframe 内部完成；多个实例会各自拥有 iframe 运行上下文，这是同时编辑多个文档的必要成本。若希望“关闭其中一个文档”时 Chrome 任务管理器里的子框架内存同步下降，请使用上面的 per-editor wildcard host origin。
+OnlyOffice API script 和 x2t WASM 初始化由各自 host iframe 内部完成；多个实例会各自拥有 iframe 运行上下文，这是同时编辑多个文档的必要成本。上面的固定 12-origin 池既允许 Chrome 单独回收各文档 renderer，也避免产生无限数量且缓存全冷的新 origin。
 
 ## 打开文档
 

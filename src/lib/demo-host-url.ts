@@ -4,14 +4,14 @@ const PRODUCTION_DEMO_HOST = 'onlyoffice.getpi.work';
 const LEGACY_R2_HOST_PATTERN = /^pub-[a-f0-9]+\.r2\.dev$/i;
 const LEGACY_STORAGE_KEY = 'onlyoffice-browser:last-host-url';
 
-function productionHostUrl({ sessionId }: OfficeHostUrlContext): string {
-  return `https://${sessionId}.getpi.work/office-host.html`;
+function productionHostUrl({ hostSlot }: OfficeHostUrlContext): string {
+  return `https://${hostSlot}.getpi.work/office-host.html`;
 }
 
 function configuredHostUrlResolver(configured: string, pageUrl: URL): OfficeHostUrlResolver {
-  if (configured.includes('{sessionId}')) {
-    return ({ sessionId }) =>
-      new URL(configured.replaceAll('{sessionId}', sessionId), pageUrl).href;
+  if (configured.includes('{sessionId}') || configured.includes('{hostSlot}')) {
+    return ({ sessionId, hostSlot }) =>
+      new URL(configured.replaceAll('{sessionId}', sessionId).replaceAll('{hostSlot}', hostSlot), pageUrl).href;
   }
   return new URL(configured, pageUrl).href;
 }
@@ -21,10 +21,7 @@ export function resolveDemoHostUrl(pageUrl: URL): OfficeHostUrlResolver {
   if (pageUrl.hostname === PRODUCTION_DEMO_HOST) {
     if (!configured) return productionHostUrl;
     const configuredUrl = new URL(configured, pageUrl);
-    if (
-      LEGACY_R2_HOST_PATTERN.test(configuredUrl.hostname) ||
-      configuredUrl.hostname === PRODUCTION_DEMO_HOST
-    ) {
+    if (LEGACY_R2_HOST_PATTERN.test(configuredUrl.hostname) || configuredUrl.hostname === PRODUCTION_DEMO_HOST) {
       return productionHostUrl;
     }
   }
@@ -59,10 +56,7 @@ export function clearLegacyDemoHostState(location: Location, storage: Storage): 
   const configured = current.searchParams.get('hostUrl');
   if (!configured) return;
   const configuredUrl = new URL(configured, current);
-  if (
-    !LEGACY_R2_HOST_PATTERN.test(configuredUrl.hostname) &&
-    configuredUrl.hostname !== PRODUCTION_DEMO_HOST
-  ) {
+  if (!LEGACY_R2_HOST_PATTERN.test(configuredUrl.hostname) && configuredUrl.hostname !== PRODUCTION_DEMO_HOST) {
     return;
   }
   current.searchParams.delete('hostUrl');

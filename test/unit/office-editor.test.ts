@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OFFICE_HOST_PROTOCOL, type OfficeHostParentMessage } from '../../src/lib/office-host-protocol';
 import { createOfficeEditor, loadOfficeEditorApi, mountOfficeEditor } from '../../src/lib/office-editor';
+import { OFFICE_EDITOR_ORIGIN_SLOTS } from '../../src/lib/office-origin-pool';
 
 const HOST_URL = 'http://127.0.0.1:5173/office-host.html';
 const HOST_IDENTITY = {
@@ -198,6 +199,50 @@ describe('office-editor parent proxy', () => {
     await first.destroy();
   });
 
+  it('leases the twelve fixed constellation origins and reuses a released slot', async () => {
+    const mounts = OFFICE_EDITOR_ORIGIN_SLOTS.map((expectedSlot, index) => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const mount = mountOfficeEditor(container, {
+        hostUrl: ({ hostSlot }) => `https://${hostSlot}.getpi.work/office-host.html`,
+        file: new File([String(index)], `document-${index}.docx`),
+        destroyTimeoutMs: 1,
+      });
+      expect(new URL(container.querySelector<HTMLIFrameElement>('iframe')!.src).hostname).toBe(
+        `${expectedSlot}.getpi.work`,
+      );
+      return mount;
+    });
+    const overflowContainer = document.createElement('div');
+    document.body.appendChild(overflowContainer);
+
+    expect(() =>
+      mountOfficeEditor(overflowContainer, {
+        hostUrl: ({ hostSlot }) => `https://${hostSlot}.getpi.work/office-host.html`,
+        file: new File(['overflow'], 'overflow.docx'),
+        destroyTimeoutMs: 1,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        name: 'OfficeHostPoolExhaustedError',
+        capacity: 12,
+      }),
+    );
+    expect(overflowContainer.querySelector('iframe')).toBeNull();
+
+    await mounts[0].destroy();
+    const reusedContainer = document.createElement('div');
+    document.body.appendChild(reusedContainer);
+    const reused = mountOfficeEditor(reusedContainer, {
+      hostUrl: ({ hostSlot }) => `https://${hostSlot}.getpi.work/office-host.html`,
+      file: new File(['reused'], 'reused.docx'),
+      destroyTimeoutMs: 1,
+    });
+    expect(new URL(reusedContainer.querySelector<HTMLIFrameElement>('iframe')!.src).hostname).toBe('aries.getpi.work');
+
+    await Promise.all([...mounts.slice(1).map((mount) => mount.destroy()), reused.destroy()]);
+  });
+
   it('accepts an HTMLElement container from another window', async () => {
     const popupFrame = document.createElement('iframe');
     document.body.appendChild(popupFrame);
@@ -336,7 +381,7 @@ describe('office-editor parent proxy', () => {
     ).toBe(true);
   });
 
-  it('isolates localhost hostUrl to a per-editor origin', async () => {
+  it('isolates localhost hostUrl with a reusable constellation slot origin', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
 
@@ -351,7 +396,7 @@ describe('office-editor parent proxy', () => {
     const iframeUrl = new URL(iframe.src);
 
     expect(iframeUrl.origin).not.toBe(window.location.origin);
-    expect(iframeUrl.hostname).toMatch(/^host-office-editor-/);
+    expect(iframeUrl.hostname).toBe('host-aries.office.localhost');
     expect(iframeUrl.hostname.endsWith('.localhost')).toBe(true);
     await instance.destroy();
   });
@@ -378,6 +423,7 @@ describe('office-editor parent proxy', () => {
     expect(hostUrl).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: expect.stringMatching(/^office-editor-/),
+        hostSlot: 'aries',
         fileName: 'alpha.docx',
         fileType: 'docx',
         mode: 'preview',

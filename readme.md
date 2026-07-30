@@ -12,7 +12,7 @@ The component opens DOCX, XLSX, PPTX, and CSV documents inside a host-provided D
 
 - JS/TS API: `createOfficeEditor(container, options)`.
 - Multiple simultaneous documents by creating one component instance per container.
-- Independent-origin `office-host.html` with per-editor wildcard host support for document-by-document iframe teardown and memory isolation.
+- Independent-origin `office-host.html` with a reusable 12-origin pool for document-by-document iframe teardown, memory isolation, and cache reuse.
 - Local conversion through `public/wasm/x2t`.
 - OnlyOffice browser runtime under `public/web-apps` and `public/sdkjs`.
 - A minimal demo/test host at `/`.
@@ -46,7 +46,7 @@ The production build selects the Word, Spreadsheet, and Presentation editors, sh
 import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 
 const editor = await createOfficeEditor(document.querySelector('#editor') as HTMLElement, {
-  hostUrl: ({ sessionId }) => `https://${sessionId}.office-host.example.com/office-host.html`,
+  hostUrl: ({ hostSlot }) => `https://${hostSlot}.office-host.example.com/office-host.html`,
   file,
   fileName: file.name,
   mode: 'edit',
@@ -79,7 +79,7 @@ Word and presentation documents opened in the editor runtime default to fit-to-w
 Autosave and force-save are disabled. User-facing saves should go through the native OnlyOffice Save button; `editor.save()` is kept for programmatic integrations and tests.
 OnlyOffice interface themes are intentionally limited to the modern set. Pass `interfaceTheme: 'system' | 'light' | 'dark'`; the wrapper maps these to `theme-system`, `theme-white`, and `theme-night`, and migrates legacy OnlyOffice theme ids such as `theme-classic-light`, `theme-light`, `theme-gray`, `theme-dark`, and `theme-contrast-dark` to the closest modern theme. Do not remove `sdkjs/slide/themes`; those are presentation document theme assets, not UI skins.
 
-For multiple documents, create one container and one component instance per document. Prefer wildcard DNS/TLS so each instance gets its own host origin, such as `https://<session>.office-host.example.com/office-host.html`; this lets the corresponding subframe task exit when an individual document closes. In local development, `.localhost` hosts are automatically derived into `host-<session>.localhost`.
+For multiple documents, create one container and one component instance per document. The component leases one of 12 stable constellation slots (`aries` through `pisces`) to every active editor and releases it on `destroy()`. Configure those 12 DNS/TLS names (or a matching wildcard) and resolve `hostUrl` from `hostSlot`. Stable origins preserve document-by-document renderer isolation while allowing the editor Service Worker to reuse verified Office Pack segments. A thirteenth simultaneous editor throws `OfficeHostPoolExhaustedError`. In local development, `.localhost` URLs are automatically derived into `host-<hostSlot>.office.localhost`.
 
 ## Development
 

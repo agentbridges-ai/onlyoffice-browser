@@ -1,10 +1,11 @@
-# Cloudflare wildcard runtime deployment
+# Cloudflare fixed-pool runtime deployment
 
 The production runtime is served by the `onlyoffice-browser-runtime` Worker:
 
 - `https://onlyoffice.getpi.work` is the canonical shared-asset origin.
-- `https://office-editor-<session>.getpi.work/office-host.html` gives every
-  editor its own host origin and renderer lifecycle.
+- Twelve stable constellation hosts, from `https://aries.getpi.work` through
+  `https://pisces.getpi.work`, provide one leased origin and renderer lifecycle
+  per active editor.
 - The `onlyoffice-getpi-work` R2 bucket stores the compact runtime and generated
   font overlay.
 
@@ -40,7 +41,9 @@ Both records may use the same placeholder origin because the Worker routes
 intercept requests before an origin fetch. Editor hosts stay directly below
 `getpi.work`, so Cloudflare Universal SSL covers them without Total TLS or an
 Advanced Certificate Manager subscription. The Worker rejects first-level
-wildcard hostnames that do not start with `office-editor-`.
+wildcard hostnames outside the fixed constellation set. Legacy
+`office-editor-<session>.getpi.work` hosts remain routable during rollback, but
+new clients never allocate them.
 
 ## Deployment
 
@@ -94,13 +97,15 @@ The package URL is
 24 MiB package segment as a separate immutable HTTP cache entry, while the base
 URL retains single-range compatibility. The package SHA-256 and every segment
 SHA-256 are part of the release identity. Unversioned
-canonical documents and per-editor bootstrap files revalidate so a deployment
+canonical documents and fixed-pool bootstrap files revalidate so a deployment
 cannot strand a new editor on stale HTML.
 
-Standalone PWA and cross-origin Piwork integration warm the same browser HTTP
-cache with complete segment responses. Chrome does not reliably synthesize an
-offline Range response from a very large cached object, so the editor Service
-Worker reads a verified cached segment and slices the requested resource
-itself. It retains only four segment buffers in memory. If package discovery or
-a segment request fails, v3 immutable resource URLs remain the compatibility
-fallback.
+Every fixed editor origin stores each successfully SHA-256-verified package
+segment in its own Cache Storage and reuses it across later editors assigned to
+that origin. This is deliberately origin-owned instead of relying on an
+unobservable cross-origin HTTP-cache warmup. Chrome does not reliably
+synthesize an offline Range response from a very large cached object, so the
+editor Service Worker reads the verified segment and slices the requested
+resource itself. It retains only four segment buffers in memory. If package
+discovery or a segment request fails, v3 immutable resource URLs remain the
+compatibility fallback.
