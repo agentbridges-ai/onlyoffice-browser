@@ -98,6 +98,15 @@ describe('immutable release builder', () => {
       x2tCommit: 'abc123',
     });
     expect(second.releaseId).toBe(first.releaseId);
+    expect(first.version).toBe(4);
+    expect(first.package).toMatchObject({
+      format: 'onlyoffice-pack-v1',
+      path: 'office-resources.oobpack',
+    });
+    expect(second.package.sha256).toBe(first.package.sha256);
+    expect(first.package.segments.reduce((sum: number, segment: { bytes: number }) => sum + segment.bytes, 0)).toBe(
+      first.package.bytes,
+    );
     expect(first.assets.every((item: { sha256: string }) => /^[a-f0-9]{64}$/.test(item.sha256))).toBe(true);
     expect(first.profiles.word).toContain('sdkjs/word/word.js');
     expect(first.profiles['fonts-basic']).toEqual(
@@ -111,6 +120,18 @@ describe('immutable release builder', () => {
     expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('.vite/manifest.json');
     expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('wasm/x2t/x2t.wasm.br');
     expect(fs.existsSync(path.join(output, 'releases', first.releaseId, 'manifest.json'))).toBe(true);
+    const packPath = path.join(output, 'packages/sha256', `${first.package.sha256}.oobpack`);
+    expect(fs.existsSync(packPath)).toBe(true);
+    expect(fs.readFileSync(packPath).subarray(0, 8).toString()).toBe('OOBPACK1');
+    expect(fs.statSync(packPath).size).toBe(first.package.bytes);
+    expect(
+      first.assets.every(
+        (item: { packageOffset?: number; bytes: number }) =>
+          Number.isSafeInteger(item.packageOffset) &&
+          Number(item.packageOffset) >= first.package.headerBytes &&
+          Number(item.packageOffset) + item.bytes <= first.package.bytes,
+      ),
+    ).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(output, 'channels/stable.json'), 'utf8'))).toEqual({
       version: 1,
       releaseId: first.releaseId,

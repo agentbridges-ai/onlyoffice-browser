@@ -3,10 +3,6 @@ import { ExpirationPlugin } from 'workbox-expiration';
 import { cleanupOutdatedCaches, matchPrecache, precacheAndRoute } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
 import { NetworkFirst, StaleWhileRevalidate } from 'workbox-strategies';
-import {
-  buildAllFontsMetadataFallbackBootstrap,
-  resolveFontMetadataFallbackConfig,
-} from './lib/font-metadata-fallback';
 
 const SERVICE_WORKER_VERSION = 'SW_VERSION_PLACEHOLDER';
 const PRINT_PDF_CACHE_NAME = 'onlyoffice-browser-print-pdfs';
@@ -16,14 +12,18 @@ const ONLYOFFICE_NAVIGATION_PATHS = new Set(['/office-host.html', '/reset.html']
 const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html']);
 const ONLYOFFICE_RUNTIME_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const FONT_MANIFEST_PATH = '/onlyoffice-browser-font-assets.json';
+const RELEASE_CHANNEL_PATH = '/channels/stable.json';
 const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work';
 const EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
 const LOCAL_EDITOR_HOST_PATTERN = /^host-office-editor-[a-z0-9-]+\.office\.localhost$/;
-const LOCAL_CANONICAL_OFFICE_HOST = 'assets.office.localhost';
+// Match the local PWA origin so the matrix exercises the same cross-editor
+// HTTP cache key sharing used by onlyoffice.getpi.work in production.
+const LOCAL_CANONICAL_OFFICE_HOST = 'onlyoffice.localhost';
 const SHARED_ASSET_VERSION_QUERY = '__oobv';
 const ORIGIN_BOUND_DESTINATIONS = new Set(['document', 'iframe', 'worker', 'sharedworker', 'serviceworker']);
 
 const MAX_CACHE_ITEMS = 100;
+const MAX_PACKAGE_SEGMENT_BUFFERS = 4;
 const RUNTIME_CACHE_NAME = 'onlyoffice-browser-runtime-v1';
 const STATIC_CACHE_NAME = 'onlyoffice-browser-static-v1';
 
@@ -34,7 +34,7 @@ const canonicalOfficeOrigin = isLocalEditorHost
   ? `${self.location.protocol}//${LOCAL_CANONICAL_OFFICE_HOST}${self.location.port ? `:${self.location.port}` : ''}`
   : `https://${CANONICAL_OFFICE_HOST}`;
 let sharedAssetManifestPromise;
-let downloadedFontPaths = new Set();
+const packageSegmentBuffers = new Map();
 setCacheNameDetails({
   prefix: 'onlyoffice-browser',
   precache: 'shell-v1',
@@ -69,6 +69,54 @@ const loadVersionedJson = async (pathname, version) => {
   return response.json();
 };
 
+const loadCurrentRelease = async () => {
+  const channelUrl = new URL(RELEASE_CHANNEL_PATH, canonicalOfficeOrigin);
+  const channelResponse = await fetch(channelUrl.href, {
+    cache: 'no-store',
+    credentials: 'omit',
+  });
+  if (!channelResponse.ok) {
+    throw new Error(`Office release channel request failed (${channelResponse.status})`);
+  }
+  const channel = await channelResponse.json();
+  if (channel?.version !== 1 || typeof channel.releaseId !== 'string') {
+    throw new Error('Office release channel is invalid');
+  }
+  const manifestUrl = new URL(
+    `/releases/${encodeURIComponent(channel.releaseId)}/manifest.json`,
+    canonicalOfficeOrigin,
+  );
+  const manifestResponse = await fetch(manifestUrl.href, {
+    cache: 'no-store',
+    credentials: 'omit',
+  });
+  if (!manifestResponse.ok) {
+    throw new Error(`Office release manifest request failed (${manifestResponse.status})`);
+  }
+  const manifest = await manifestResponse.json();
+  if (
+    (manifest?.version !== 3 && manifest?.version !== 4) ||
+    manifest.releaseId !== channel.releaseId ||
+    !Array.isArray(manifest.assets)
+  ) {
+    throw new Error('Office release manifest is invalid');
+  }
+  return manifest;
+};
+
+const loadCurrentReleaseForOrigin = async () => {
+  try {
+    return await loadCurrentRelease();
+  } catch (error) {
+    // Vite's local assets.office.localhost origin serves generated assets
+    // directly and intentionally has no Cloudflare channel/release routes.
+    // Keep production fail-closed while allowing the same generated
+    // AllFonts.js/font files to be exercised by local editor tests.
+    if (isLocalEditorHost) return null;
+    throw error;
+  }
+};
+
 const resolveSharedAssetManifest = async () => {
   if (!sharedAssetManifestPromise) {
     const manifestUrl = new URL(ONLYOFFICE_RUNTIME_MANIFEST_PATH, canonicalOfficeOrigin);
@@ -86,9 +134,10 @@ const resolveSharedAssetManifest = async () => {
         if (!response.ok || !version) {
           throw new Error(`Shared Office asset version request failed (${response.status})`);
         }
-        const [runtime, fonts] = await Promise.all([
+        const [runtime, fonts, release] = await Promise.all([
           loadVersionedJson(ONLYOFFICE_RUNTIME_MANIFEST_PATH, version),
           loadVersionedJson(FONT_MANIFEST_PATH, version),
+          loadCurrentReleaseForOrigin(),
         ]);
         const revisions = new Map();
         for (const asset of [...(runtime.assets || []), ...(fonts.assets || [])]) {
@@ -102,6 +151,7 @@ const resolveSharedAssetManifest = async () => {
           version,
           revisions,
           fonts,
+          release,
         };
       })
       .catch((error) => {
@@ -112,9 +162,117 @@ const resolveSharedAssetManifest = async () => {
   return sharedAssetManifestPromise;
 };
 
+const digestHex = async (bytes) =>
+  Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
+
+const loadOfficePackSegment = (release, segment) => {
+  const key = `${release.releaseId}/${segment.id}`;
+  const existing = packageSegmentBuffers.get(key);
+  if (existing) return existing;
+  const promise = (async () => {
+    const segmentUrl = new URL(
+      `/p/${encodeURIComponent(release.releaseId)}/office-resources.oobpack`,
+      canonicalOfficeOrigin,
+    );
+    segmentUrl.searchParams.set('segment', segment.id);
+    const response = await fetch(segmentUrl.href, {
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'force-cache',
+    });
+    if (response.status !== 200) {
+      response.body?.cancel();
+      throw new Error(`Office Pack segment request failed (${response.status}): ${segment.id}`);
+    }
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength !== segment.bytes || (await digestHex(bytes)) !== segment.sha256) {
+      throw new Error(`Office Pack segment integrity mismatch: ${segment.id}`);
+    }
+    return bytes;
+  })().catch((error) => {
+    packageSegmentBuffers.delete(key);
+    throw error;
+  });
+  packageSegmentBuffers.set(key, promise);
+  while (packageSegmentBuffers.size > MAX_PACKAGE_SEGMENT_BUFFERS) {
+    const oldest = packageSegmentBuffers.keys().next().value;
+    if (!oldest || oldest === key) break;
+    packageSegmentBuffers.delete(oldest);
+  }
+  return promise;
+};
+
+const fetchOfficePackAsset = async (request, asset, release) => {
+  const pack = release?.package;
+  if (
+    release?.version !== 4 ||
+    pack?.format !== 'onlyoffice-pack-v1' ||
+    pack.path !== 'office-resources.oobpack' ||
+    !Array.isArray(pack.segments) ||
+    !Number.isSafeInteger(asset.packageOffset) ||
+    !Number.isSafeInteger(asset.bytes) ||
+    asset.bytes <= 0
+  ) {
+    return null;
+  }
+  const requestedRange = request.headers.has('range')
+    ? parseRangeHeader(request.headers.get('range'), asset.bytes)
+    : null;
+  if (request.headers.has('range') && !requestedRange) {
+    return new Response(null, {
+      status: 416,
+      headers: { 'content-range': `bytes */${asset.bytes}` },
+    });
+  }
+  const relativeStart = requestedRange?.start || 0;
+  const relativeEnd = requestedRange?.end ?? asset.bytes - 1;
+  const start = asset.packageOffset + relativeStart;
+  const end = asset.packageOffset + relativeEnd;
+  const expectedLength = relativeEnd - relativeStart + 1;
+  const overlappingSegments = pack.segments.filter(
+    (segment) =>
+      Number.isSafeInteger(segment?.offset) &&
+      Number.isSafeInteger(segment?.bytes) &&
+      segment.bytes > 0 &&
+      start < segment.offset + segment.bytes &&
+      end >= segment.offset,
+  );
+  const output = new Uint8Array(expectedLength);
+  let outputOffset = 0;
+  let receivedLength = 0;
+  for (const segment of overlappingSegments) {
+    const overlapStart = Math.max(start, segment.offset);
+    const overlapEnd = Math.min(end, segment.offset + segment.bytes - 1);
+    const rangeLength = overlapEnd - overlapStart + 1;
+    const segmentBytes = new Uint8Array(await loadOfficePackSegment(release, segment));
+    output.set(segmentBytes.subarray(overlapStart - segment.offset, overlapEnd - segment.offset + 1), outputOffset);
+    outputOffset += rangeLength;
+    receivedLength += rangeLength;
+  }
+  if (receivedLength !== expectedLength || overlappingSegments.length === 0) {
+    throw new Error(`Office Pack segment coverage mismatch: ${asset.path}`);
+  }
+  const headers = new Headers();
+  headers.set('accept-ranges', 'bytes');
+  headers.set('content-length', String(expectedLength));
+  headers.set('content-type', asset.mime || 'application/octet-stream');
+  headers.set('x-onlyoffice-pack-release', release.releaseId);
+  if (requestedRange) {
+    headers.set('content-range', `bytes ${relativeStart}-${relativeEnd}/${asset.bytes}`);
+  } else {
+    headers.delete('content-range');
+  }
+  return new Response(output, {
+    status: requestedRange ? 206 : 200,
+    headers,
+  });
+};
+
 const fetchSharedAsset = async (request, url) => {
   try {
-    const { version, revisions, fonts } = await resolveSharedAssetManifest();
+    const { version, revisions, release } = await resolveSharedAssetManifest();
     const canonicalUrl = new URL(`${url.pathname}${url.search}`, canonicalOfficeOrigin);
     const path = canonicalUrl.pathname.slice(1);
     // Keep each font URL bound to its own bytes. The x2t converter mounts the
@@ -126,39 +284,23 @@ const fetchSharedAsset = async (request, url) => {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
-    const response = await fetch(canonicalUrl.href, {
-      method: request.method,
-      headers,
-      mode: 'cors',
-      credentials: 'omit',
-      cache: 'force-cache',
-      redirect: 'follow',
-    });
-    // Never append the JavaScript bootstrap to a partial response: doing so
-    // corrupts the 206 body and can poison a later full-script fetch in the
-    // HTTP cache. Current reachability checks use HEAD, but this remains a
-    // protocol-level safeguard for third-party callers.
-    if (
-      path !== fonts.allFonts ||
-      request.method !== 'GET' ||
-      request.headers.has('range') ||
-      response.status !== 200
-    ) {
-      return response;
-    }
-
-    const config = resolveFontMetadataFallbackConfig(fonts, downloadedFontPaths);
-    const responseHeaders = new Headers(response.headers);
-    for (const name of ['content-encoding', 'content-length', 'etag', 'last-modified']) {
-      responseHeaders.delete(name);
-    }
-    responseHeaders.set('cache-control', 'no-store');
-    responseHeaders.set('content-type', 'application/javascript; charset=utf-8');
-    return new Response(`${await response.text()}${buildAllFontsMetadataFallbackBootstrap(config)}`, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: responseHeaders,
-    });
+    const releaseAsset = release?.assets?.find((asset) => asset?.path === path);
+    const packedResponse = releaseAsset ? await fetchOfficePackAsset(request, releaseAsset, release) : null;
+    const response =
+      packedResponse ||
+      (await fetch(canonicalUrl.href, {
+        method: request.method,
+        headers,
+        mode: 'cors',
+        credentials: 'omit',
+        cache: 'force-cache',
+        redirect: 'follow',
+      }));
+    // AllFonts.js and font_selection.bin are generated by DocumentServer as a
+    // matched set. Return the metadata unchanged so its PANOSE, Unicode-range,
+    // metrics, weight and width penalties select the closest installed font.
+    // Product defaults are applied only when a new document is created.
+    return response;
   } catch (error) {
     if (url.pathname.startsWith('/fonts/')) {
       console.error('[onlyoffice-browser] Shared font fetch failed', error);
@@ -280,11 +422,8 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') {
     void self.skipWaiting();
   } else if (event.data?.type === 'SET_FONT_ALLOWLIST') {
-    downloadedFontPaths = new Set(
-      Array.isArray(event.data.paths)
-        ? event.data.paths.filter((path) => typeof path === 'string' && /^fonts\/[^/]+$/.test(path))
-        : [],
-    );
+    // Retain the v2 message contract for older clients. Release v4 always
+    // exposes the complete generated font catalog to native ONLYOFFICE lookup.
     event.ports[0]?.postMessage({ ok: true });
   } else if (event.data?.type === 'GET_VERSION') {
     event.ports[0]?.postMessage({ version: SERVICE_WORKER_VERSION });

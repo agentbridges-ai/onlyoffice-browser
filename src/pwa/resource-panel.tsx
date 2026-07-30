@@ -1,4 +1,4 @@
-import { Alert, Button, Disclosure, ProgressBar } from '@heroui/react';
+import { Alert, Button, ProgressBar } from '@heroui/react';
 import { useSyncExternalStore } from 'react';
 import type { OfficeRuntimeResourceManager, OfficeRuntimeResourceSnapshot } from '../lib/runtime-resources';
 import type { OfficeCopy } from './i18n';
@@ -14,11 +14,31 @@ function percent(value: number, total: number): number {
 }
 
 function phaseLabel(snapshot: OfficeRuntimeResourceSnapshot, copy: OfficeCopy): string {
-  if (snapshot.phase === 'verifying' || snapshot.phase === 'repairing') return copy.verifying;
+  if (snapshot.phase === 'verifying') return copy.verifying;
+  if (snapshot.phase === 'repairing') return copy.repairing;
   if (snapshot.phase === 'paused') return copy.paused;
   if (snapshot.phase === 'activating') return copy.activating;
   if (snapshot.phase === 'planning') return copy.planning;
-  return copy.downloading;
+  if (snapshot.phase === 'downloading') return copy.downloading;
+  return copy.readyToDownload;
+}
+
+function phaseStep(phase: OfficeRuntimeResourceSnapshot['phase']): number {
+  if (phase === 'planning' || phase === 'repairing') return 1;
+  if (phase === 'downloading' || phase === 'paused' || phase === 'idle') return 2;
+  if (phase === 'verifying') return 3;
+  return 4;
+}
+
+function phaseProgress(snapshot: OfficeRuntimeResourceSnapshot): { completed: number; total: number } {
+  if (snapshot.phase === 'verifying' || snapshot.phase === 'repairing') {
+    return { completed: snapshot.verifiedBytes, total: snapshot.verifyBytes };
+  }
+  if (snapshot.phase === 'activating') {
+    const total = Math.max(snapshot.downloadBytes, snapshot.verifyBytes);
+    return { completed: total, total };
+  }
+  return { completed: snapshot.downloadedBytes, total: snapshot.downloadBytes };
 }
 
 function errorLabel(snapshot: OfficeRuntimeResourceSnapshot, copy: OfficeCopy): string {
@@ -33,18 +53,15 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
     () => manager.getSnapshot(),
   );
   const busy = snapshot.phase !== 'idle';
-  const verifying = snapshot.phase === 'verifying' || snapshot.phase === 'repairing';
-  const completed = verifying ? snapshot.verifiedBytes : snapshot.downloadedBytes;
-  const total = verifying ? snapshot.verifyBytes : snapshot.downloadBytes;
+  const { completed, total } = phaseProgress(snapshot);
   const progressValue = percent(completed, total);
   const showProgress = busy || (snapshot.readiness !== 'ready' && total > 0);
-  const profileLabels = {
-    core: copy.core,
-    word: copy.word,
-    cell: copy.cell,
-    slide: copy.slide,
-    fonts: copy.fonts,
-  };
+  const stage = phaseStep(snapshot.phase);
+  const segmentLabel =
+    snapshot.currentChunkCount > 0 && snapshot.currentChunkIndex > 0
+      ? `${copy.packageSegment} ${snapshot.currentChunkIndex}/${snapshot.currentChunkCount}`
+      : '';
+  const progressValueLabel = `${phaseLabel(snapshot, copy)} · ${formatBytes(completed)} / ${formatBytes(total)}`;
 
   return (
     <div className="resource-panel">
@@ -70,11 +87,19 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
         <ProgressBar
           aria-label={copy.resourceProgress}
           className="resource-progress"
+          isIndeterminate={snapshot.phase === 'planning'}
           maxValue={Math.max(total, 1)}
           value={Math.min(completed, Math.max(total, 1))}
+          valueLabel={progressValueLabel}
         >
           <div className="resource-progress__label">
-            <span>{phaseLabel(snapshot, copy)}</span>
+            <span className="resource-progress__stage">
+              <span>
+                {copy.resourceStage} {stage}/4
+              </span>
+              <strong>{phaseLabel(snapshot, copy)}</strong>
+              {segmentLabel && <span>{segmentLabel}</span>}
+            </span>
             <span>
               {formatBytes(completed)} / {formatBytes(total)}
             </span>
@@ -86,17 +111,20 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
         </ProgressBar>
       )}
 
-      <div className="resource-profile-grid">
-        {snapshot.packs.map((pack) => (
-          <div key={pack.id} className="resource-profile-row">
-            <span>{profileLabels[pack.id]}</span>
-            <span>{pack.ready ? copy.installed : copy.resourcesNeeded}</span>
-          </div>
-        ))}
+      <div className="resource-package-card" data-ready={snapshot.readiness === 'ready'}>
+        <div>
+          <strong>{copy.completePackage}</strong>
+          <span>{copy.packageIncludes}</span>
+        </div>
+        <div>
+          <strong>{snapshot.readiness === 'ready' ? copy.installed : total > 0 ? formatBytes(total) : '—'}</strong>
+          <span>{copy.completePackageHint}</span>
+        </div>
       </div>
 
       {errorLabel(snapshot, copy) && (
         <Alert status="danger">
+          <Alert.Indicator />
           <Alert.Content>
             <Alert.Title>{errorLabel(snapshot, copy)}</Alert.Title>
             {snapshot.failedResources[0]?.path && (
@@ -112,16 +140,26 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
             {copy.resume}
           </Button>
         ) : snapshot.canRetry ? (
-          <Button size="sm" variant="primary" onPress={() => void manager.repair()}>
+          <Button size="sm" variant="primary" onPress={() => void manager.repair({ scope: 'all' })}>
             {copy.retry}
+          </Button>
+        ) : snapshot.readiness === 'ready' ? (
+          <Button
+            isDisabled={busy}
+            isPending={snapshot.operation === 'check-health'}
+            size="sm"
+            variant="secondary"
+            onPress={() => void manager.repair({ scope: 'all' })}
+          >
+            {copy.repair}
           </Button>
         ) : (
           <Button
             isDisabled={busy}
-            isPending={snapshot.operation === 'prefetch-recommended'}
+            isPending={snapshot.operation === 'load-all'}
             size="sm"
             variant="primary"
-            onPress={() => void manager.prefetchRecommended()}
+            onPress={() => void manager.loadAll()}
           >
             {copy.basicPreset}
           </Button>
@@ -132,74 +170,6 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
           </Button>
         )}
       </div>
-
-      <Disclosure className="resource-disclosure">
-        <Disclosure.Heading>
-          <Disclosure.Trigger>
-            {copy.advancedFonts}
-            <Disclosure.Indicator />
-          </Disclosure.Trigger>
-        </Disclosure.Heading>
-        <Disclosure.Content>
-          <Disclosure.Body>
-            <div className="resource-font-list">
-              {snapshot.fonts.map((font) => (
-                <div key={font.id} className="resource-font-row">
-                  <span>
-                    {font.name} · {formatBytes(font.bytes)}
-                  </span>
-                  {font.removable ? (
-                    <Button
-                      isDisabled={busy}
-                      isPending={snapshot.operation === (font.downloaded ? 'remove-font' : 'download-font')}
-                      size="sm"
-                      variant="secondary"
-                      onPress={() =>
-                        void (font.downloaded
-                          ? manager.uninstallFontFamily(font.id)
-                          : manager.downloadFontFamily(font.id))
-                      }
-                    >
-                      {font.downloaded ? copy.remove : copy.download}
-                    </Button>
-                  ) : (
-                    <span>{copy.required}</span>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="resource-actions">
-              <Button
-                isDisabled={busy}
-                isPending={snapshot.operation === 'check-health'}
-                size="sm"
-                variant="secondary"
-                onPress={() => void manager.repair()}
-              >
-                {copy.repair}
-              </Button>
-              <Button
-                isDisabled={busy}
-                isPending={snapshot.operation === 'install-font-preset'}
-                size="sm"
-                variant="secondary"
-                onPress={() => void manager.installFontPreset('office-compatibility')}
-              >
-                {copy.compatPreset}
-              </Button>
-              <Button
-                isDisabled={busy}
-                isPending={snapshot.operation === 'load-all'}
-                size="sm"
-                variant="secondary"
-                onPress={() => void manager.loadAll()}
-              >
-                {copy.allResources}
-              </Button>
-            </div>
-          </Disclosure.Body>
-        </Disclosure.Content>
-      </Disclosure>
     </div>
   );
 }

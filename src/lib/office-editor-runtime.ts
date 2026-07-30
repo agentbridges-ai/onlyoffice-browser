@@ -21,7 +21,8 @@ import { assertGeneratedFontAssetsAvailable, resolveAvailableFontFamilyNames } f
 
 const ONLYOFFICE_BROWSER_BUILD_VERSION = '9.3.0';
 const ONLYOFFICE_BROWSER_BUILD_NUMBER = 140;
-const ONLYOFFICE_DEFAULT_FONT_FAMILY = 'DengXian';
+const ONLYOFFICE_LATIN_DEFAULT_FONT_FAMILY = 'Aptos';
+const ONLYOFFICE_EAST_ASIA_DEFAULT_FONT_FAMILY = 'DengXian';
 const ONLYOFFICE_ZOOM_FIT_TO_WIDTH = -2;
 const SAVE_TIMEOUT_MS = 60_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
@@ -115,7 +116,10 @@ export interface CreateOfficeEditorOptions {
   plugins?: OfficePluginOptions;
   /** Picker-visible families derived from font files verified by the host. */
   visibleFontNames?: string[];
-  /** Catalog families whose requested files are unavailable and render through the default fallback. */
+  /**
+   * @deprecated Retained for source compatibility. Missing-font substitution
+   * is always delegated to ONLYOFFICE's generated native font dictionary.
+   */
   fallbackFontNames?: string[];
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
@@ -386,6 +390,13 @@ type OnlyOfficeFrameWindow = Window & {
         GetDocument?: () => {
           GetDefaultTextPr?: () => {
             SetFontFamily?: (fontFamily: string) => unknown;
+            TextPr?: {
+              RFonts?: {
+                EastAsia?: { Name: string; Index: number };
+                EastAsiaTheme?: string;
+              };
+            };
+            private_OnChange?: () => unknown;
           } | null;
         } | null;
       };
@@ -1822,13 +1833,23 @@ export function filterEditorFontsByVisibleNames(guiFonts: unknown[], visibleName
 
 export function applyDefaultWordFont(
   frameWindow: OnlyOfficeFrameWindow,
-  fontFamilyName = ONLYOFFICE_DEFAULT_FONT_FAMILY,
+  latinFontFamilyName = ONLYOFFICE_LATIN_DEFAULT_FONT_FAMILY,
+  eastAsiaFontFamilyName = ONLYOFFICE_EAST_ASIA_DEFAULT_FONT_FAMILY,
 ): boolean {
   const defaultTextPr = frameWindow.AscBuilder?.Word?.Api?.GetDocument?.()?.GetDefaultTextPr?.();
   if (!defaultTextPr || typeof defaultTextPr.SetFontFamily !== 'function') return false;
 
-  defaultTextPr.SetFontFamily(fontFamilyName);
-  frameWindow.Asc?.editor?.put_TextPrFontName?.(fontFamilyName);
+  // ApiTextPr.SetFontFamily intentionally sets all four OOXML font slots.
+  // Keep the public API for the Western default, then restore the EastAsia
+  // slot on the underlying CTextPr. This mirrors OOXML rFonts semantics while
+  // leaving ONLYOFFICE's native missing-font selection untouched.
+  defaultTextPr.SetFontFamily(latinFontFamilyName);
+  if (defaultTextPr.TextPr?.RFonts) {
+    defaultTextPr.TextPr.RFonts.EastAsia = { Name: eastAsiaFontFamilyName, Index: -1 };
+    defaultTextPr.TextPr.RFonts.EastAsiaTheme = undefined;
+    defaultTextPr.private_OnChange?.();
+  }
+  frameWindow.Asc?.editor?.put_TextPrFontName?.(latinFontFamilyName);
   frameWindow.Asc?.editor?.UpdateInterfaceState?.();
   return true;
 }
@@ -1837,145 +1858,16 @@ export function installFontPickerFilter(
   frameWindow: OnlyOfficeFrameWindow,
   configuredNames?: string[],
   fallbackNames?: string[],
-  fallbackFamilyName = ONLYOFFICE_DEFAULT_FONT_FAMILY,
+  fallbackFamilyName = ONLYOFFICE_EAST_ASIA_DEFAULT_FONT_FAMILY,
 ): boolean {
   const visibleNames = new Set(configuredNames || []);
-  const unavailableNames = new Set(fallbackNames || []);
-
-  const editor = frameWindow.Asc?.editor;
-  const originalFontFamilyCallback =
-    editor?.__onlyOfficeBrowserOriginalFontFamilyCallback || editor?.sync_TextPrFontFamilyCallBack;
-  if (editor && typeof originalFontFamilyCallback === 'function') {
-    editor.__onlyOfficeBrowserOriginalFontFamilyCallback = originalFontFamilyCallback;
-    editor.__onlyOfficeBrowserFallbackFontNames = unavailableNames;
-    editor.__onlyOfficeBrowserFallbackFontFamilyName = fallbackFamilyName;
-    if (!editor.__onlyOfficeBrowserFontFamilyCallbackPatched) {
-      editor.sync_TextPrFontFamilyCallBack = function syncTextPrFontFamilyWithFallback(fontFamily) {
-        const currentFallbackNames = editor.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
-        const currentFallbackFamilyName =
-          editor.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName;
-        const currentName =
-          typeof fontFamily?.Name === 'string'
-            ? fontFamily.Name
-            : typeof fontFamily?.get_Name === 'function'
-              ? fontFamily.get_Name()
-              : '';
-        if (fontFamily && currentFallbackNames.has(currentName)) {
-          if (typeof fontFamily.put_Name === 'function') fontFamily.put_Name(currentFallbackFamilyName);
-          else fontFamily.Name = currentFallbackFamilyName;
-        }
-        return originalFontFamilyCallback.call(this, fontFamily);
-      };
-      editor.__onlyOfficeBrowserFontFamilyCallbackPatched = true;
-    }
-  }
-
-  const fontApplication = frameWindow.AscFonts?.g_fontApplication;
-  const originalGetFontFileWeb =
-    fontApplication?.__onlyOfficeBrowserOriginalGetFontFileWeb || fontApplication?.GetFontFileWeb;
-  if (fontApplication && typeof originalGetFontFileWeb === 'function') {
-    const previouslyUnavailableNames = fontApplication.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
-    fontApplication.__onlyOfficeBrowserOriginalGetFontFileWeb = originalGetFontFileWeb;
-    fontApplication.__onlyOfficeBrowserFallbackFontNames = unavailableNames;
-    fontApplication.__onlyOfficeBrowserFallbackFontFamilyName = fallbackFamilyName;
-
-    // GetFontFileWeb caches the result under the requested family name. Drop
-    // entries whose availability changed so installing or removing a font in a
-    // reused host cannot retain a stale substitution.
-    for (const name of new Set([...previouslyUnavailableNames, ...unavailableNames])) {
-      if (fontApplication.FontPickerMap) delete fontApplication.FontPickerMap[name];
-    }
-
-    if (!fontApplication.__onlyOfficeBrowserFontFileFallback) {
-      fontApplication.GetFontFileWeb = function getFontFileWebWithFallback(name: string, style?: number) {
-        const currentFallbackNames = fontApplication.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
-        const resolvedName = currentFallbackNames.has(name)
-          ? fontApplication.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName
-          : name;
-        return originalGetFontFileWeb.call(this, resolvedName, style);
-      };
-      fontApplication.__onlyOfficeBrowserFontFileFallback = true;
-    }
-  }
-
-  const textFontPrototype = frameWindow.AscCommon?.asc_CTextFontFamily?.prototype;
-  const originalTextFontName =
-    textFontPrototype?.__onlyOfficeBrowserOriginalTextFontName ||
-    textFontPrototype?.get_Name ||
-    textFontPrototype?.asc_getName;
-  if (textFontPrototype && typeof originalTextFontName === 'function') {
-    textFontPrototype.__onlyOfficeBrowserOriginalTextFontName = originalTextFontName;
-    textFontPrototype.__onlyOfficeBrowserFallbackFontNames = unavailableNames;
-    textFontPrototype.__onlyOfficeBrowserFallbackFontFamilyName = fallbackFamilyName;
-    if (!textFontPrototype.__onlyOfficeBrowserFontNameFallback) {
-      const getTextFontNameWithFallback = function (this: { Name?: string }) {
-        const currentFallbackNames = textFontPrototype.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
-        if (typeof this.Name === 'string' && currentFallbackNames.has(this.Name)) {
-          return originalTextFontName.call({
-            Name: textFontPrototype.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName,
-          });
-        }
-        return originalTextFontName.call(this);
-      };
-      textFontPrototype.get_Name = getTextFontNameWithFallback;
-      textFontPrototype.asc_getName = getTextFontNameWithFallback;
-      textFontPrototype.__onlyOfficeBrowserFontNameFallback = true;
-    }
-
-    const synchronizeFallbackFontInputs = () => {
-      const currentFallbackNames = textFontPrototype.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
-      const currentFallbackFamilyName =
-        textFontPrototype.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName;
-      const fallbackDisplayName = originalTextFontName.call({ Name: currentFallbackFamilyName });
-      const unavailableDisplayNames = new Set(
-        [...currentFallbackNames].map((name) => originalTextFontName.call({ Name: name })),
-      );
-      for (const input of frameWindow.document?.querySelectorAll<HTMLInputElement>('input[role="combobox"]') || []) {
-        if (unavailableDisplayNames.has(input.value)) input.value = fallbackDisplayName;
-      }
-    };
-    synchronizeFallbackFontInputs();
-
-    if (typeof frameWindow.setTimeout === 'function') {
-      frameWindow.__onlyOfficeBrowserFontInputFallbackUntil = Date.now() + 10_000;
-      if (frameWindow.__onlyOfficeBrowserFontInputFallbackTimer === undefined) {
-        const synchronizeWhileEditorStarts = () => {
-          synchronizeFallbackFontInputs();
-          if (Date.now() < (frameWindow.__onlyOfficeBrowserFontInputFallbackUntil || 0)) {
-            frameWindow.__onlyOfficeBrowserFontInputFallbackTimer = frameWindow.setTimeout(
-              synchronizeWhileEditorStarts,
-              100,
-            );
-          } else {
-            frameWindow.__onlyOfficeBrowserFontInputFallbackTimer = undefined;
-          }
-        };
-        frameWindow.__onlyOfficeBrowserFontInputFallbackTimer = frameWindow.setTimeout(
-          synchronizeWhileEditorStarts,
-          100,
-        );
-      }
-    }
-  }
-
-  const fontPrototype = frameWindow.AscFonts?.CFont?.prototype;
-  const originalFontName = fontPrototype?.asc_getFontName;
-  if (fontPrototype && typeof originalFontName === 'function') {
-    fontPrototype.__onlyOfficeBrowserFallbackFontNames = unavailableNames;
-    fontPrototype.__onlyOfficeBrowserFallbackFontFamilyName = fallbackFamilyName;
-    if (!fontPrototype.__onlyOfficeBrowserFontNameFallback) {
-      fontPrototype.asc_getFontName = function getFontNameWithFallback(this: { name?: string }) {
-        const currentFallbackNames = fontPrototype.__onlyOfficeBrowserFallbackFontNames || new Set<string>();
-        if (typeof this.name === 'string' && currentFallbackNames.has(this.name)) {
-          return originalFontName.call({
-            name: fontPrototype.__onlyOfficeBrowserFallbackFontFamilyName || fallbackFamilyName,
-          });
-        }
-        return originalFontName.call(this);
-      };
-      fontPrototype.__onlyOfficeBrowserFontNameFallback = true;
-    }
-  }
+  // Keep unavailable names out of the picker, but do not rewrite document font
+  // names or GetFontFileWeb. DocumentServer's generated font dictionary ranks
+  // missing-font candidates by name, PANOSE, Unicode/code-page ranges, weight,
+  // width and font metrics. Preserving that path gives old documents the same
+  // substitution behavior as native ONLYOFFICE Docs.
+  void fallbackNames;
+  void fallbackFamilyName;
 
   const prototype = frameWindow.AscCommon?.baseEditorsApi?.prototype;
   const original = prototype?.sync_InitEditorFonts;
@@ -1994,10 +1886,7 @@ export function installFontPickerFilter(
   return true;
 }
 
-export function installNestedFontPickerFilter(
-  visibleFontNames?: string[],
-  fallbackFontNames?: string[],
-): () => void {
+export function installNestedFontPickerFilter(visibleFontNames?: string[], fallbackFontNames?: string[]): () => void {
   const startedAt = Date.now();
   const timeoutMs = 10_000;
   const intervalMs = 50;

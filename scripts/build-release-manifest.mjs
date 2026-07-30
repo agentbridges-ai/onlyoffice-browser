@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 const TARGET_CHUNK_BYTES = 24 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 32 * 1024 * 1024;
+const OFFICE_PACK_MAGIC = Buffer.from('OOBPACK1');
+const OFFICE_PACK_SEGMENT_BYTES = 24 * 1024 * 1024;
 const PROFILES = ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'];
 
 function sha256(bytes) {
@@ -35,6 +37,7 @@ function mimeFor(file) {
       '.json': 'application/json; charset=utf-8',
       '.otc': 'font/collection',
       '.otf': 'font/otf',
+      '.oobpack': 'application/vnd.onlyoffice.browser-pack',
       '.png': 'image/png',
       '.svg': 'image/svg+xml',
       '.ttc': 'font/collection',
@@ -45,6 +48,94 @@ function mimeFor(file) {
       '.woff2': 'font/woff2',
     }[extension] || 'application/octet-stream'
   );
+}
+
+export function buildOfficePack(root, output, assets, segmentBytes = OFFICE_PACK_SEGMENT_BYTES) {
+  const entries = [];
+  let relativeOffset = 0;
+  for (const asset of assets) {
+    entries.push({
+      path: asset.path,
+      offset: relativeOffset,
+      bytes: asset.bytes,
+      mime: asset.mime,
+      sha256: asset.sha256,
+    });
+    relativeOffset += asset.bytes;
+  }
+
+  const indexBytes = Buffer.from(JSON.stringify({ version: 1, entries }));
+  const header = Buffer.alloc(OFFICE_PACK_MAGIC.byteLength + 4);
+  OFFICE_PACK_MAGIC.copy(header, 0);
+  header.writeUInt32BE(indexBytes.byteLength, OFFICE_PACK_MAGIC.byteLength);
+  const headerBytes = header.byteLength + indexBytes.byteLength;
+  for (let index = 0; index < assets.length; index += 1) {
+    assets[index].packageOffset = headerBytes + entries[index].offset;
+  }
+
+  fs.mkdirSync(output, { recursive: true });
+  const temporaryPath = path.join(output, '.office-resources.oobpack.tmp');
+  const file = fs.openSync(temporaryPath, 'w');
+  const completeDigest = crypto.createHash('sha256');
+  let segmentDigest = crypto.createHash('sha256');
+  let segmentOffset = 0;
+  let segmentLength = 0;
+  let totalBytes = 0;
+  const segments = [];
+
+  const write = (bytes) => {
+    fs.writeSync(file, bytes);
+    completeDigest.update(bytes);
+    let cursor = 0;
+    while (cursor < bytes.byteLength) {
+      const available = segmentBytes - segmentLength;
+      const length = Math.min(available, bytes.byteLength - cursor);
+      segmentDigest.update(bytes.subarray(cursor, cursor + length));
+      segmentLength += length;
+      cursor += length;
+      totalBytes += length;
+      if (segmentLength === segmentBytes) {
+        segments.push({
+          id: `segment-${String(segments.length + 1).padStart(3, '0')}`,
+          offset: segmentOffset,
+          bytes: segmentLength,
+          sha256: segmentDigest.digest('hex'),
+        });
+        segmentOffset += segmentLength;
+        segmentLength = 0;
+        segmentDigest = crypto.createHash('sha256');
+      }
+    }
+  };
+
+  try {
+    write(header);
+    write(indexBytes);
+    for (const asset of assets) write(fs.readFileSync(path.join(root, asset.path)));
+  } finally {
+    fs.closeSync(file);
+  }
+  if (segmentLength > 0) {
+    segments.push({
+      id: `segment-${String(segments.length + 1).padStart(3, '0')}`,
+      offset: segmentOffset,
+      bytes: segmentLength,
+      sha256: segmentDigest.digest('hex'),
+    });
+  }
+
+  return {
+    temporaryPath,
+    descriptor: {
+      format: 'onlyoffice-pack-v1',
+      path: 'office-resources.oobpack',
+      bytes: totalBytes,
+      sha256: completeDigest.digest('hex'),
+      headerBytes,
+      segmentBytes,
+      segments,
+    },
+  };
 }
 
 function excludeFromRelease(assetPath) {
@@ -169,6 +260,8 @@ export function buildRelease({ root, output, packageVersion, x2tVersion, x2tComm
     })
     .sort((left, right) => left.path.localeCompare(right.path));
   const chunks = chunkReleaseAssets(assets);
+  fs.rmSync(output, { recursive: true, force: true });
+  const officePack = buildOfficePack(root, output, assets);
   const hostAssets = assets.filter(
     (asset) => asset.path === 'office-host.html' || /^assets\/officeHost-[^/]+\.js$/.test(asset.path),
   );
@@ -203,15 +296,18 @@ export function buildRelease({ root, output, packageVersion, x2tVersion, x2tComm
     },
     profiles,
     chunks,
+    package: officePack.descriptor,
     assets,
     fontFamilies: fonts.fontFamilies || [],
   };
   const releaseId = `v${packageVersion}-${sha256(JSON.stringify(identity)).slice(0, 16)}`;
-  const manifest = { version: 3, releaseId, ...identity };
-  fs.rmSync(output, { recursive: true, force: true });
+  const manifest = { version: 4, releaseId, ...identity };
   for (const asset of assets) {
     linkOrCopy(path.join(root, asset.path), path.join(output, 'blobs', 'sha256', asset.sha256));
   }
+  const packagePath = path.join(output, 'packages', 'sha256', `${officePack.descriptor.sha256}.oobpack`);
+  fs.mkdirSync(path.dirname(packagePath), { recursive: true });
+  fs.renameSync(officePack.temporaryPath, packagePath);
   const releaseDir = path.join(output, 'releases', releaseId);
   fs.mkdirSync(releaseDir, { recursive: true });
   fs.writeFileSync(path.join(releaseDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -235,10 +331,9 @@ if (isMain) {
     output: path.resolve(option('--output', '.onlyoffice-release')),
     packageVersion: option('--package-version', process.env.npm_package_version || '0.0.0'),
     x2tVersion: option('--x2t-version', process.env.ONLYOFFICE_X2T_VERSION || '9.3.0+2'),
-    x2tCommit: option(
-      '--x2t-commit',
-      process.env.ONLYOFFICE_X2T_COMMIT || '1bb9b45a399f87ca162eea0c86abd4660f295469',
-    ),
+    x2tCommit: option('--x2t-commit', process.env.ONLYOFFICE_X2T_COMMIT || '1bb9b45a399f87ca162eea0c86abd4660f295469'),
   });
-  console.log(`Built immutable OnlyOffice release ${manifest.releaseId} with ${manifest.assets.length} assets`);
+  console.log(
+    `Built immutable OnlyOffice release ${manifest.releaseId} with one ${manifest.package.bytes}-byte Office Pack`,
+  );
 }

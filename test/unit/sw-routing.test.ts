@@ -116,14 +116,25 @@ describe('SW fetch routing', () => {
     expect(source).toContain('10 * 60 * 1000');
   });
 
-  it('proxies isolated-host shared assets directly to the immutable canonical URL', () => {
+  it('serves isolated-host shared assets from the immutable all-in-one Office Pack', () => {
     const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
 
     expect(sw).toContain("const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work'");
-    expect(sw).toContain("const LOCAL_CANONICAL_OFFICE_HOST = 'assets.office.localhost'");
+    expect(sw).toContain("const LOCAL_CANONICAL_OFFICE_HOST = 'onlyoffice.localhost'");
+    expect(sw).toContain('if (isLocalEditorHost) return null;');
     expect(sw).toContain('EDITOR_HOST_PATTERN.test(self.location.hostname) || isLocalEditorHost');
     expect(sw).toContain('const shouldProxySharedAsset = (request, url)');
     expect(sw).toContain('revisions.get(path) || version');
+    expect(sw).toContain('loadCurrentRelease()');
+    expect(sw).toContain("pack?.format !== 'onlyoffice-pack-v1'");
+    expect(sw).toContain('fetchOfficePackAsset(request, releaseAsset, release)');
+    expect(sw).toContain('`/p/${encodeURIComponent(release.releaseId)}/office-resources.oobpack`');
+    expect(sw).toContain("segmentUrl.searchParams.set('segment', segment.id)");
+    expect(sw).toContain('const overlappingSegments = pack.segments.filter(');
+    expect(sw).toContain('const MAX_PACKAGE_SEGMENT_BUFFERS = 4');
+    expect(sw).toContain("crypto.subtle.digest('SHA-256', bytes)");
+    expect(sw).toContain('new Uint8Array(await loadOfficePackSegment(release, segment))');
+    expect(sw).toContain("headers.set('x-onlyoffice-pack-release', release.releaseId)");
     expect(sw).toContain("response.headers.get('last-modified')");
     expect(sw).toContain('({ request, url }) => fetchSharedAsset(request, url)');
     expect(sw).toContain('if (isCanonicalPwaHost)');
@@ -131,12 +142,12 @@ describe('SW fetch routing', () => {
     expect(sw).toContain('new StaleWhileRevalidate');
     expect(sw).toContain('url.searchParams.has(SHARED_ASSET_VERSION_QUERY)');
     expect(sw).toContain("event.data?.type === 'SET_FONT_ALLOWLIST'");
-    expect(sw).toContain('downloadedFontPaths = new Set(');
-    expect(sw).toContain('path !== fonts.allFonts');
+    expect(sw).toContain('Retain the v2 message contract for older clients');
+    expect(sw).not.toContain('downloadedFontPaths = new Set(');
     expect(sw).toContain("request.headers.has('range')");
-    expect(sw).toContain('response.status !== 200');
-    expect(sw).toContain('buildAllFontsMetadataFallbackBootstrap(config)');
-    expect(sw).toContain("responseHeaders.set('cache-control', 'no-store')");
+    expect(sw).not.toContain('buildAllFontsMetadataFallbackBootstrap');
+    expect(sw).toContain('PANOSE, Unicode-range');
+    expect(sw).not.toContain("responseHeaders.set('cache-control', 'no-store')");
     expect(sw).not.toContain("return new Response('Font is not installed'");
     expect(sw).not.toContain('selectFallbackFont');
     expect(sw).toContain("if (url.pathname.startsWith('/fonts/'))");

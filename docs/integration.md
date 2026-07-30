@@ -352,8 +352,9 @@ await resources.removeFont('Microsoft YaHei');
 const downloadedFonts = await resources.getVerifiedFontPaths();
 ```
 
-`DengXian` is the required default font and cannot be removed. `Microsoft YaHei`
-is an optional downloadable font. Pass `getVerifiedFontPaths()` to the editor's
+`Aptos` and `DengXian` are the required defaults for Western and East Asian
+text respectively and cannot be removed. `Microsoft YaHei` is an optional
+downloadable font. Pass `getVerifiedFontPaths()` to the editor's
 `downloadedFonts` option when mounting a new editor. Existing editors are not
 reloaded automatically, so unsaved document state remains untouched.
 

@@ -38,7 +38,7 @@ The runtime assets must be reachable from the editor host origin:
 - generated font assets: `/onlyoffice-browser-font-assets.json`, `/sdkjs/common/AllFonts.js`, `/sdkjs/common/Images/fonts_thumbnail*.png`, `/fonts/`, and `/server/FileConverter/bin/font_selection.bin`
 - `/document_editor_service_worker.js`, `/plugins.json`, `/themes.json`, and `/reset.html`
 
-The production build uses a compact runtime profile. It keeps the Word, Spreadsheet, and Presentation editors, shared runtime files, `x2t`, `libs`, and `en_US` dictionaries, and removes low-frequency bundled assets such as PDF/Visio SDKs, non-selected dictionaries, bundled help images, and package fonts. It also emits canonical-path packs under `.onlyoffice-runtime-asset-packs/{core,word,cell,slide}`. Deploy `core` plus the document-type packs you support; each pack can be copied to the same editor-host root without rewriting OnlyOffice paths.
+The production build selects the Word, Spreadsheet, and Presentation editors, shared runtime files, `x2t`, `libs`, and supported dictionaries while excluding unused SDKs, help images, and duplicate compressed assets. `release:build` seals that runtime together with the generated complete font set into one immutable `office-resources.oobpack`; the installer transfers it in verified 24 MiB segments while presenting one package and one progress flow. Canonical-path packs under `.onlyoffice-runtime-asset-packs/{core,word,cell,slide}` remain build-time compatibility outputs, not separate end-user downloads.
 
 ## Usage
 
@@ -138,7 +138,7 @@ The workflow uses GitHub OIDC through `id-token: write`, so it does not need a l
 
 ## Fonts
 
-This project does not ship runtime font files. Generate and mount fonts before opening documents: `npm run fonts:generate -- --input /path/to/fonts --output .onlyoffice-font-assets` or `npx onlyoffice-browser-generate-font-assets --input /path/to/fonts --output .onlyoffice-font-assets`, verify with `npm run fonts:verify -- --input .onlyoffice-font-assets` or `npx onlyoffice-browser-verify-font-assets --input .onlyoffice-font-assets`, then start local dev with `npm run dev:fonts`. The generator defaults to a compact `zh-core` set for Simplified Chinese and classic English Office documents; pass `--font-set full` only when broad language coverage is required. See [docs/fonts.md](docs/fonts.md).
+This project does not ship runtime font files. Generate and mount fonts before opening documents: `npm run fonts:generate -- --input /path/to/fonts --output .onlyoffice-font-assets` or `npx onlyoffice-browser-generate-font-assets --input /path/to/fonts --output .onlyoffice-font-assets`, verify with `npm run fonts:verify -- --input .onlyoffice-font-assets` or `npx onlyoffice-browser-verify-font-assets --input .onlyoffice-font-assets`, then start local dev with `npm run dev:fonts`. The generator defaults to the complete `full` set used by the All-in-One Office package; pass `--font-set zh-core` only for an explicitly compact deployment. See [docs/fonts.md](docs/fonts.md).
 
 ## References
 

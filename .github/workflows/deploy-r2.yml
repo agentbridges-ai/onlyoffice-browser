@@ -58,56 +58,78 @@ jobs:
           pnpm build
           node -e "const manifest = require('./dist/onlyoffice-runtime-assets.json'); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected || manifest.totalBytes <= 0) process.exit(1)"
       - run: rclone version
-      - name: Hydrate the retained font release
+      - name: Generate and hydrate the complete font release
         env:
           ONLYOFFICE_X2T_VERSION: 9.3.0+2
           ONLYOFFICE_X2T_COMMIT: 1bb9b45a399f87ca162eea0c86abd4660f295469
         run: |
-          rclone copy r2:onlyoffice-getpi-work dist \
+          rclone copy r2:onlyoffice-getpi-work "${RUNNER_TEMP}/retained-font-input" \
             --fast-list \
             --checkers 32 \
-            --transfers 16 \
+            --transfers 8 \
+            --retries 6 \
+            --low-level-retries 20 \
+            --retries-sleep 2s \
             --include "/fonts/**" \
-            --include "/onlyoffice-browser-font-assets.json" \
-            --include "/onlyoffice-browser-font-source-map.json" \
-            --include "/sdkjs/common/AllFonts.js" \
-            --include "/sdkjs/common/Images/fonts_thumbnail*.png" \
-            --include "/server/FileConverter/bin/AllFonts.js" \
-            --include "/server/FileConverter/bin/font_selection.bin" \
             --exclude "*" \
             --stats-one-line
+          pnpm fonts:generate \
+            --input "${RUNNER_TEMP}/retained-font-input" \
+            --output "${RUNNER_TEMP}/full-font-assets" \
+            --font-set full
+          pnpm fonts:verify --input "${RUNNER_TEMP}/full-font-assets"
+          rclone copy "${RUNNER_TEMP}/full-font-assets" dist \
+            --fast-list \
+            --checkers 32 \
+            --transfers 8 \
+            --retries 6 \
+            --low-level-retries 20 \
+            --retries-sleep 2s
           pnpm release:build
-          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); if(manifest.x2t.version !== process.env.ONLYOFFICE_X2T_VERSION || manifest.x2t.commit !== process.env.ONLYOFFICE_X2T_COMMIT) throw new Error('x2t release identity mismatch')"
+          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); if(manifest.version !== 4 || manifest.x2t.version !== process.env.ONLYOFFICE_X2T_VERSION || manifest.x2t.commit !== process.env.ONLYOFFICE_X2T_COMMIT) throw new Error('Office Pack/x2t release identity mismatch')"
           node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); const misplaced=manifest.assets.filter(({path,profile})=>(path.startsWith('fonts/')&&!profile.startsWith('fonts-'))||path.endsWith('.br')); if(!manifest.profiles['fonts-basic']?.length||!manifest.profiles['fonts-office-compat']?.length||misplaced.length) throw new Error('release contains incomplete font profiles or duplicate compressed assets: '+misplaced.map(({path})=>path).join(','))"
+          node -e "const fonts=require('./dist/onlyoffice-browser-font-assets.json'); const names=new Set((fonts.fontFamilies||[]).map(({name})=>name)); if(fonts.fontSet!=='full'||names.size<170||!names.has('Aptos')||!names.has('DengXian')||!names.has('Calibri')) throw new Error('complete Aptos/DengXian/Calibri font matrix is missing')"
       - name: Upload missing immutable objects and verify the complete release
         run: |
           rclone copy .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs \
             --fast-list \
             --checkers 32 \
-            --transfers 16 \
+            --transfers 8 \
+            --retries 6 \
+            --low-level-retries 20 \
+            --retries-sleep 2s \
             --ignore-existing \
             --stats-one-line
           rclone copy .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases \
             --fast-list \
             --checkers 16 \
             --transfers 8 \
+            --retries 6 \
+            --low-level-retries 20 \
+            --retries-sleep 2s \
+            --ignore-existing \
+            --stats-one-line
+          rclone copy .onlyoffice-release/packages r2:onlyoffice-getpi-work/packages \
+            --fast-list \
+            --checkers 16 \
+            --transfers 4 \
+            --retries 6 \
+            --low-level-retries 20 \
+            --retries-sleep 2s \
             --ignore-existing \
             --stats-one-line
           rclone check .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs --one-way --checksum
           rclone check .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases --one-way --checksum
+          rclone check .onlyoffice-release/packages r2:onlyoffice-getpi-work/packages --one-way --checksum
       - name: Update v2 compatibility files without deleting retained releases
         run: |
           rclone copy dist r2:onlyoffice-getpi-work \
             --fast-list \
             --checkers 32 \
-            --transfers 16 \
-            --exclude "/fonts/**" \
-            --exclude "/onlyoffice-browser-font-assets.json" \
-            --exclude "/onlyoffice-browser-font-source-map.json" \
-            --exclude "/sdkjs/common/AllFonts.js" \
-            --exclude "/sdkjs/common/Images/fonts_thumbnail*.png" \
-            --exclude "/server/FileConverter/bin/AllFonts.js" \
-            --exclude "/server/FileConverter/bin/font_selection.bin" \
+            --transfers 8 \
+            --retries 6 \
+            --low-level-retries 20 \
+            --retries-sleep 2s \
             --exclude "/onlyoffice-plugin/**" \
             --stats-one-line
       - name: Deploy wildcard runtime Worker
@@ -130,7 +152,10 @@ jobs:
         run: |
           rclone copyto \
             .onlyoffice-release/channels/stable.json \
-            r2:onlyoffice-getpi-work/channels/stable.json
+            r2:onlyoffice-getpi-work/channels/stable.json \
+            --retries 6 \
+            --low-level-retries 20 \
+            --retries-sleep 2s
       - name: Verify production deployment
         run: |
           EXPECTED_VERSION="$(
@@ -168,3 +193,12 @@ jobs:
               "https://office-editor-github-actions-smoke.getpi.work/r/${RELEASE_ID}/office-host.html"
           )"
           test "${SMOKE_RESULT}" = "200 0 text/html; charset=utf-8"
+          PACK_RESULT="$(
+            curl --fail --silent --show-error \
+              --range 0-7 \
+              --output "${RUNNER_TEMP}/onlyoffice-pack-magic" \
+              --write-out "%{http_code} %{size_download} %{content_type}" \
+              "https://onlyoffice.getpi.work/p/${RELEASE_ID}/office-resources.oobpack"
+          )"
+          test "${PACK_RESULT}" = "206 8 application/vnd.onlyoffice.browser-pack"
+          test "$(cat "${RUNNER_TEMP}/onlyoffice-pack-magic")" = "OOBPACK1"

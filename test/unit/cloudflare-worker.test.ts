@@ -7,6 +7,7 @@ import {
   isOnlyOfficeHost,
   resolveEditorAssetRoute,
   resolveObjectKey,
+  resolveReleasePackageRequest,
   resolveReleaseRequest,
   releaseIdFromReferrer,
   resolveRuntimeHost,
@@ -85,6 +86,13 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
       'v0.4.0-abcd',
     );
     expect(releaseIdFromReferrer('not a url')).toBeNull();
+    expect(resolveReleasePackageRequest('/p/v0.5.0-abcd/office-resources.oobpack')).toEqual({
+      releaseId: 'v0.5.0-abcd',
+    });
+    expect(resolveReleasePackageRequest('/p/v0.5.0%2B1/office-resources.oobpack')).toEqual({
+      releaseId: 'v0.5.0+1',
+    });
+    expect(resolveReleasePackageRequest('/p/../../secret/office-resources.oobpack')).toBeNull();
   });
 
   it('classifies explicit release assets by their inner path without nesting the release route', () => {

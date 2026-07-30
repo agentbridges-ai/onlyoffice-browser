@@ -51,6 +51,8 @@ export type OfficeRuntimeResourceSnapshot = {
   storageMode: 'cache-storage' | 'http-cache';
   phase: ResourceInstallerSnapshot['phase'];
   currentChunk: string | null;
+  currentChunkIndex: number;
+  currentChunkCount: number;
   downloadedBytes: number;
   downloadBytes: number;
   verifiedBytes: number;
@@ -237,7 +239,16 @@ export class OfficeRuntimeResourceManager {
       });
     }
     return this.run('font-preset:office-compatibility', 'install-font-preset', async (notify) => {
-      const preferredFamilies = ['Arial', 'Calibri', 'Cambria', 'Times New Roman', 'Microsoft YaHei', 'SimSun'];
+      const preferredFamilies = [
+        'Aptos',
+        'DengXian',
+        'Arial',
+        'Calibri',
+        'Cambria',
+        'Times New Roman',
+        'Microsoft YaHei',
+        'SimSun',
+      ];
       let progress = await this.controller.loadCategories(['fonts', 'core'], notify);
       const available = this.controller.listFonts();
       for (const name of preferredFamilies) {
@@ -335,6 +346,8 @@ export class OfficeRuntimeResourceManager {
       storageMode: installer?.storageMode || 'http-cache',
       phase: installer?.phase || (operation ? 'downloading' : 'idle'),
       currentChunk: installer?.currentChunk || null,
+      currentChunkIndex: installer?.currentChunkIndex || 0,
+      currentChunkCount: installer?.currentChunkCount || 0,
       downloadedBytes: installer?.downloadedBytes || progress.completedBytes,
       downloadBytes: installer?.downloadBytes || progress.totalBytes,
       verifiedBytes: installer?.verifiedBytes || progress.completedBytes,

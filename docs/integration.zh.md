@@ -351,8 +351,8 @@ await resources.removeFont('Microsoft YaHei');
 const downloadedFonts = await resources.getVerifiedFontPaths();
 ```
 
-`DengXian`（等线）是必需的唯一默认字体，不能移除；`Microsoft YaHei`
-（微软雅黑）是可选下载字体。新建编辑器时，将
+`Aptos` 和 `DengXian`（等线）分别是西文与东亚文字必需的默认字体，
+不能移除；`Microsoft YaHei`（微软雅黑）是可选下载字体。新建编辑器时，将
 `getVerifiedFontPaths()` 的结果传给 `downloadedFonts`。管理器不会自动重载
 已经打开的编辑器，因此不会打断可能含有未保存内容的文档。
 
