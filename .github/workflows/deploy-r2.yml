@@ -37,8 +37,12 @@ jobs:
       RCLONE_CONFIG_R2_ENDPOINT: https://40a503f1c86c028edfcd6f113c562b5b.r2.cloudflarestorage.com
       RCLONE_CONFIG_R2_ACL: private
       RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+      ONLYOFFICE_MATRIX_FONT_RELEASE_ID: v0.5.0-648c486d1c558acd
+      ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256: 09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
     steps:
       - uses: actions/checkout@v6
+      - name: Initialize reproducible build metadata
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "${GITHUB_ENV}"
       - uses: pnpm/action-setup@v4
         with:
           version: 11.4.0
@@ -58,33 +62,14 @@ jobs:
           pnpm build
           node -e "const manifest = require('./dist/onlyoffice-runtime-assets.json'); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected || manifest.totalBytes <= 0) process.exit(1)"
       - run: rclone version
-      - name: Generate and hydrate the complete font release
+      - name: Hydrate the pinned immutable font release
         env:
           ONLYOFFICE_X2T_VERSION: 9.3.0+2
           ONLYOFFICE_X2T_COMMIT: 1bb9b45a399f87ca162eea0c86abd4660f295469
+          ONLYOFFICE_MATRIX_FONT_CACHE: ${{ runner.temp }}/onlyoffice-font-release
         run: |
-          rclone copy r2:onlyoffice-getpi-work "${RUNNER_TEMP}/retained-font-input" \
-            --fast-list \
-            --checkers 32 \
-            --transfers 8 \
-            --retries 6 \
-            --low-level-retries 20 \
-            --retries-sleep 2s \
-            --include "/fonts/**" \
-            --exclude "*" \
-            --stats-one-line
-          pnpm fonts:generate \
-            --input "${RUNNER_TEMP}/retained-font-input" \
-            --output "${RUNNER_TEMP}/full-font-assets" \
-            --font-set full
-          pnpm fonts:verify --input "${RUNNER_TEMP}/full-font-assets"
-          rclone copy "${RUNNER_TEMP}/full-font-assets" dist \
-            --fast-list \
-            --checkers 32 \
-            --transfers 8 \
-            --retries 6 \
-            --low-level-retries 20 \
-            --retries-sleep 2s
+          node scripts/hydrate-cloudflare-matrix-fonts.mjs
+          pnpm fonts:verify --input dist
           pnpm release:build
           node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); if(manifest.version !== 4 || manifest.x2t.version !== process.env.ONLYOFFICE_X2T_VERSION || manifest.x2t.commit !== process.env.ONLYOFFICE_X2T_COMMIT) throw new Error('Office Pack/x2t release identity mismatch')"
           node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); const misplaced=manifest.assets.filter(({path,profile})=>(path.startsWith('fonts/')&&!profile.startsWith('fonts-'))||path.endsWith('.br')); if(!manifest.profiles['fonts-basic']?.length||!manifest.profiles['fonts-office-compat']?.length||misplaced.length) throw new Error('release contains incomplete font profiles or duplicate compressed assets: '+misplaced.map(({path})=>path).join(','))"
