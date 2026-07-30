@@ -33,6 +33,7 @@ export interface ReleaseAsset {
   sha256: string;
   profile: ResourceProfile;
   chunk: string;
+  packageOffset?: number;
 }
 
 export interface ReleaseChunk {
@@ -42,8 +43,25 @@ export interface ReleaseChunk {
   paths: string[];
 }
 
+export interface ReleasePackageSegment {
+  id: string;
+  offset: number;
+  bytes: number;
+  sha256: string;
+}
+
+export interface ReleasePackage {
+  format: 'onlyoffice-pack-v1';
+  path: 'office-resources.oobpack';
+  bytes: number;
+  sha256: string;
+  headerBytes: number;
+  segmentBytes: number;
+  segments: ReleasePackageSegment[];
+}
+
 export interface ReleaseManifestV3 {
-  version: 3;
+  version: 3 | 4;
   releaseId: string;
   packageVersion: string;
   hostBuildId: string;
@@ -57,9 +75,15 @@ export interface ReleaseManifestV3 {
   };
   profiles: Record<ResourceProfile, string[]>;
   chunks: ReleaseChunk[];
+  package?: ReleasePackage;
   assets: ReleaseAsset[];
   fontFamilies?: Array<{ name: string; paths: string[] }>;
 }
+
+export type ReleaseManifestV4 = ReleaseManifestV3 & {
+  version: 4;
+  package: ReleasePackage;
+};
 
 export interface ReleaseChannel {
   version: 1;
@@ -91,6 +115,8 @@ export interface ResourceInstallerSnapshot {
   phase: ResourcePhase;
   storageMode: 'cache-storage' | 'http-cache';
   currentChunk: string | null;
+  currentChunkIndex: number;
+  currentChunkCount: number;
   downloadedBytes: number;
   downloadBytes: number;
   verifiedBytes: number;
@@ -136,6 +162,8 @@ export type JournalRelease = {
   releaseId: string;
   installedProfiles: ResourceProfile[];
   activatedAt: number;
+  packageSha256?: string;
+  packageBytes?: number;
 };
 
 export interface InstallationJournal {
@@ -263,7 +291,7 @@ function isProfile(value: unknown): value is ResourceProfile {
 export function parseReleaseManifest(value: unknown): ReleaseManifestV3 {
   const manifest = value as Partial<ReleaseManifestV3>;
   if (
-    manifest.version !== 3 ||
+    (manifest.version !== 3 && manifest.version !== 4) ||
     typeof manifest.releaseId !== 'string' ||
     !/^[a-zA-Z0-9._+-]{1,128}$/.test(manifest.releaseId) ||
     typeof manifest.packageVersion !== 'string' ||
@@ -291,7 +319,8 @@ export function parseReleaseManifest(value: unknown): ReleaseManifestV3 {
       isDigest(asset.sha256) &&
       isProfile(asset.profile) &&
       typeof asset.chunk === 'string' &&
-      asset.chunk.length > 0,
+      asset.chunk.length > 0 &&
+      (manifest.version !== 4 || (Number.isSafeInteger(asset.packageOffset) && Number(asset.packageOffset) >= 0)),
   );
   if (assets.length !== manifest.assets.length || new Set(assets.map((asset) => asset.path)).size !== assets.length) {
     throw new ResourceInstallerError('manifest');
@@ -300,6 +329,50 @@ export function parseReleaseManifest(value: unknown): ReleaseManifestV3 {
   for (const profile of Object.keys(manifest.profiles)) {
     if (!isProfile(profile) || !Array.isArray(manifest.profiles[profile])) throw new ResourceInstallerError('manifest');
     if (!manifest.profiles[profile].every((path) => assetPaths.has(path))) throw new ResourceInstallerError('manifest');
+  }
+  if (manifest.version === 4) {
+    const pack = manifest.package;
+    if (
+      !pack ||
+      pack.format !== 'onlyoffice-pack-v1' ||
+      pack.path !== 'office-resources.oobpack' ||
+      !Number.isSafeInteger(pack.bytes) ||
+      pack.bytes <= 0 ||
+      !isDigest(pack.sha256) ||
+      !Number.isSafeInteger(pack.headerBytes) ||
+      pack.headerBytes <= 12 ||
+      !Number.isSafeInteger(pack.segmentBytes) ||
+      pack.segmentBytes <= 0 ||
+      !Array.isArray(pack.segments) ||
+      pack.segments.length === 0
+    ) {
+      throw new ResourceInstallerError('manifest');
+    }
+    let expectedOffset = 0;
+    for (const segment of pack.segments) {
+      if (
+        !segment ||
+        typeof segment.id !== 'string' ||
+        segment.id.length === 0 ||
+        segment.offset !== expectedOffset ||
+        !Number.isSafeInteger(segment.bytes) ||
+        segment.bytes <= 0 ||
+        !isDigest(segment.sha256)
+      ) {
+        throw new ResourceInstallerError('manifest');
+      }
+      expectedOffset += segment.bytes;
+    }
+    if (expectedOffset !== pack.bytes) throw new ResourceInstallerError('manifest');
+    for (const asset of assets) {
+      if (
+        !Number.isSafeInteger(asset.packageOffset) ||
+        Number(asset.packageOffset) < pack.headerBytes ||
+        Number(asset.packageOffset) + asset.bytes > pack.bytes
+      ) {
+        throw new ResourceInstallerError('manifest');
+      }
+    }
   }
   return manifest as ReleaseManifestV3;
 }
@@ -343,23 +416,47 @@ export class ReleaseRepository {
     if (!isSafePath(path)) throw new ResourceInstallerError('manifest');
     return new URL(`r/${encodeURIComponent(releaseId)}/${path}`, this.baseUrl);
   }
+
+  packageUrl(releaseId: string): URL {
+    return new URL(`p/${encodeURIComponent(releaseId)}/office-resources.oobpack`, this.baseUrl);
+  }
+
+  packageSegmentUrl(releaseId: string, segmentId: string): URL {
+    const url = this.packageUrl(releaseId);
+    url.searchParams.set('segment', segmentId);
+    return url;
+  }
 }
 
 export class ResourcePlanner {
   constructor(
     private readonly manifest: ReleaseManifestV3,
     private readonly installed: ReadonlyMap<string, JournalAsset>,
+    private readonly activeRelease: JournalRelease | null = null,
   ) {}
 
   create(request: ResourcePlanRequest): { plan: ResourcePlan; assets: ReleaseAsset[] } {
-    const profiles = profilesForRequest(request);
+    const profiles = this.manifest.package
+      ? (['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'] satisfies ResourceProfile[])
+      : profilesForRequest(request);
     const selectedPaths = new Set(profiles.flatMap((profile) => this.manifest.profiles[profile] || []));
     const assets = this.manifest.assets.filter((asset) => selectedPaths.has(asset.path));
-    const totalBytes = assets.reduce((total, asset) => total + asset.bytes, 0);
-    const reusedBytes = assets.reduce((total, asset) => {
-      const record = this.installed.get(asset.path);
-      return total + (record?.sha256 === asset.sha256 && record.bytes === asset.bytes ? asset.bytes : 0);
-    }, 0);
+    const packageReady =
+      this.manifest.package &&
+      this.activeRelease?.releaseId === this.manifest.releaseId &&
+      this.activeRelease.packageSha256 === this.manifest.package.sha256 &&
+      this.activeRelease.packageBytes === this.manifest.package.bytes;
+    const totalBytes = this.manifest.package
+      ? this.manifest.package.bytes
+      : assets.reduce((total, asset) => total + asset.bytes, 0);
+    const reusedBytes = this.manifest.package
+      ? packageReady
+        ? this.manifest.package.bytes
+        : 0
+      : assets.reduce((total, asset) => {
+          const record = this.installed.get(asset.path);
+          return total + (record?.sha256 === asset.sha256 && record.bytes === asset.bytes ? asset.bytes : 0);
+        }, 0);
     const plan: ResourcePlan = {
       planId: crypto.randomUUID(),
       releaseId: this.manifest.releaseId,
@@ -443,6 +540,46 @@ async function readAndVerify(
   return result;
 }
 
+async function readAndVerifySegment(
+  response: Response,
+  expectedDigest: string,
+  onDownload: (bytes: Uint8Array) => void | Promise<void>,
+  signal: AbortSignal,
+  waitIfPaused: () => Promise<void>,
+): Promise<Uint8Array> {
+  const digest = sha256.create();
+  let length = 0;
+  const chunks: Uint8Array[] = [];
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (signal.aborted) throw new ResourceInstallerError('aborted');
+    digest.update(bytes);
+    chunks.push(bytes);
+    await onDownload(bytes);
+    length = bytes.byteLength;
+  } else {
+    while (true) {
+      await waitIfPaused();
+      if (signal.aborted) throw new ResourceInstallerError('aborted');
+      const next = await reader.read();
+      if (next.done) break;
+      digest.update(next.value);
+      chunks.push(next.value);
+      length += next.value.byteLength;
+      await onDownload(next.value);
+    }
+  }
+  if (bytesToHex(digest.digest()) !== expectedDigest) throw new ResourceInstallerError('integrity');
+  const result = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
 export type ResourceInstallerOptions = {
   assetBaseUrl: string | URL;
   fetch: typeof fetch;
@@ -465,6 +602,8 @@ const initialSnapshot = (storageMode: 'cache-storage' | 'http-cache'): ResourceI
   phase: 'idle',
   storageMode,
   currentChunk: null,
+  currentChunkIndex: 0,
+  currentChunkCount: 0,
   downloadedBytes: 0,
   downloadBytes: 0,
   verifiedBytes: 0,
@@ -532,6 +671,15 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     this.installedPaths.clear();
     for (const asset of installedAssets) this.installedPaths.add(asset.path);
     this.currentManifest = release.manifest;
+    const packageLedgerReady =
+      !release.manifest.package ||
+      (active?.packageSha256 === release.manifest.package.sha256 &&
+        active.packageBytes === release.manifest.package.bytes);
+    const packageStorageReady =
+      !release.manifest.package ||
+      this.options.storageMode === 'http-cache' ||
+      (await this.findMissingPackageSegments(release.manifest.releaseId, release.manifest.package)).length === 0;
+    const packageReady = packageLedgerReady && packageStorageReady;
     this.snapshot = {
       ...this.snapshot,
       installedRelease: active?.releaseId || null,
@@ -539,7 +687,13 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
       targetRelease: release.manifest.releaseId,
       availableRelease: release.manifest.releaseId,
       readiness:
-        active?.releaseId === release.manifest.releaseId ? 'ready' : active ? 'update-available' : 'needs-download',
+        active?.releaseId === release.manifest.releaseId && packageReady
+          ? 'ready'
+          : active?.releaseId === release.manifest.releaseId
+            ? 'repair-needed'
+            : active
+              ? 'update-available'
+              : 'needs-download',
     };
     this.publish();
   }
@@ -550,9 +704,25 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     const installed = new Map(
       (await this.options.journal.listAssets(manifest.releaseId)).map((item) => [item.path, item]),
     );
-    const planned = new ResourcePlanner(manifest, installed).create(request);
+    const active = await this.options.journal.getActiveRelease();
+    const planned = new ResourcePlanner(manifest, installed, active).create(request);
+    if (manifest.package && this.options.storageMode === 'cache-storage') {
+      const missing = await this.findMissingPackageSegments(manifest.releaseId, manifest.package);
+      const missingIds = new Set(missing.map((segment) => segment.id));
+      const downloadBytes = manifest.package.segments
+        .filter((segment) => missingIds.has(segment.id))
+        .reduce((sum, segment) => sum + segment.bytes, 0);
+      planned.plan.downloadBytes = downloadBytes;
+      planned.plan.reusedBytes = manifest.package.bytes - downloadBytes;
+    }
     this.plans.set(planned.plan.planId, { manifest, assets: planned.assets, plan: planned.plan });
-    this.patch({ phase: 'idle' });
+    this.patch({
+      phase: 'idle',
+      downloadedBytes: planned.plan.reusedBytes,
+      downloadBytes: planned.plan.totalBytes,
+      verifiedBytes: planned.plan.reusedBytes,
+      verifyBytes: planned.plan.totalBytes,
+    });
     return { ...planned.plan, profiles: [...planned.plan.profiles] };
   }
 
@@ -570,21 +740,57 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
 
   async checkForUpdates(): Promise<void> {
     const { manifest } = await this.repository.current();
+    const active = await this.options.journal.getActiveRelease();
+    const packageLedgerReady =
+      !manifest.package ||
+      (active?.packageSha256 === manifest.package.sha256 && active.packageBytes === manifest.package.bytes);
+    const packageStorageReady =
+      !manifest.package ||
+      this.options.storageMode === 'http-cache' ||
+      (await this.findMissingPackageSegments(manifest.releaseId, manifest.package)).length === 0;
+    const packageReady = packageLedgerReady && packageStorageReady;
     this.currentManifest = manifest;
     this.patch({
       availableRelease: manifest.releaseId,
       targetRelease: manifest.releaseId,
       readiness:
-        this.snapshot.installedRelease === manifest.releaseId
+        this.snapshot.installedRelease === manifest.releaseId && packageReady
           ? 'ready'
-          : this.snapshot.installedRelease
-            ? 'update-available'
-            : 'needs-download',
+          : this.snapshot.installedRelease === manifest.releaseId
+            ? 'repair-needed'
+            : this.snapshot.installedRelease
+              ? 'update-available'
+              : 'needs-download',
     });
   }
 
   async checkHealth(): Promise<void> {
     const manifest = await this.ensureManifest();
+    if (manifest.package) {
+      const active = await this.options.journal.getActiveRelease();
+      const ledgerReady =
+        active?.releaseId === manifest.releaseId &&
+        active.packageSha256 === manifest.package.sha256 &&
+        active.packageBytes === manifest.package.bytes;
+      const missing =
+        this.options.storageMode === 'cache-storage'
+          ? await this.findMissingPackageSegments(manifest.releaseId, manifest.package)
+          : [];
+      const ready = ledgerReady && missing.length === 0;
+      const failures: FailedResource[] = !ledgerReady
+        ? [{ path: manifest.package.path, code: 'integrity', attempts: 0 }]
+        : missing.map((segment) => ({
+            path: `${manifest.package!.path}?segment=${segment.id}`,
+            code: 'storage' as const,
+            attempts: 0,
+          }));
+      this.patch({
+        failedResources: failures,
+        readiness: ready ? 'ready' : 'repair-needed',
+        errorCode: ready ? null : failures[0]?.code || 'integrity',
+      });
+      return;
+    }
     const installed = await this.options.journal.listAssets(manifest.releaseId);
     const expected = new Map(manifest.assets.map((asset) => [asset.path, asset]));
     const failures = installed
@@ -602,6 +808,25 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
 
   async repair(options: { scope: 'required' | 'installed' | 'all' }): Promise<void> {
     const manifest = await this.ensureManifest();
+    if (manifest.package) {
+      const missing =
+        this.options.storageMode === 'cache-storage'
+          ? await this.findMissingPackageSegments(manifest.releaseId, manifest.package)
+          : manifest.package.segments;
+      const downloadBytes = missing.reduce((sum, segment) => sum + segment.bytes, 0);
+      const plan: ResourcePlan = {
+        planId: crypto.randomUUID(),
+        releaseId: manifest.releaseId,
+        scope: 'repair',
+        profiles: ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'],
+        totalBytes: manifest.package.bytes,
+        downloadBytes,
+        reusedBytes: manifest.package.bytes - downloadBytes,
+      };
+      this.plans.set(plan.planId, { manifest, assets: manifest.assets, plan });
+      await this.apply(plan);
+      return;
+    }
     const records = await this.options.journal.listAssets(manifest.releaseId);
     const installedPaths = new Set(records.map((record) => record.path));
     const requiredProfiles: ResourceProfile[] =
@@ -689,15 +914,40 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     return this.currentManifest;
   }
 
+  private async findMissingPackageSegments(releaseId: string, pack: ReleasePackage): Promise<ReleasePackageSegment[]> {
+    if (
+      this.options.storageMode !== 'cache-storage' ||
+      !this.options.cacheStorage ||
+      typeof this.options.cacheStorage.match !== 'function'
+    ) {
+      return [...pack.segments];
+    }
+    const missing: ReleasePackageSegment[] = [];
+    for (const segment of pack.segments) {
+      const response = await this.options.cacheStorage.match(this.repository.packageSegmentUrl(releaseId, segment.id));
+      const contentLength = response ? Number(response.headers.get('content-length')) : Number.NaN;
+      if (!response?.ok || !Number.isFinite(contentLength) || contentLength !== segment.bytes) {
+        missing.push(segment);
+      }
+    }
+    return missing;
+  }
+
   private async applyUnlocked(internal: {
     manifest: ReleaseManifestV3;
     assets: ReleaseAsset[];
     plan: ResourcePlan;
   }): Promise<void> {
+    if (internal.manifest.package) {
+      await this.applyPackageUnlocked(internal);
+      return;
+    }
     const existing = new Map(
       (await this.options.journal.listAssets(internal.manifest.releaseId)).map((asset) => [asset.path, asset]),
     );
     const pending = internal.assets.filter((asset) => existing.get(asset.path)?.sha256 !== asset.sha256);
+    const pendingChunks = [...new Set(pending.map((asset) => asset.chunk))];
+    const chunkIndexes = new Map(pendingChunks.map((chunk, index) => [chunk, index + 1]));
     this.abortController = new AbortController();
     const startedAt = performance.now();
     this.patch({
@@ -705,6 +955,8 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
       readiness: 'updating',
       phase: 'downloading',
       currentChunk: pending[0]?.chunk || null,
+      currentChunkIndex: pending.length ? 1 : 0,
+      currentChunkCount: pendingChunks.length,
       downloadedBytes: 0,
       downloadBytes: pending.reduce((sum, asset) => sum + asset.bytes, 0),
       verifiedBytes: 0,
@@ -725,7 +977,11 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         const asset = pending[cursor++];
         if (this.paused) await this.resumePromise;
         if (this.abortController?.signal.aborted) throw new ResourceInstallerError('aborted');
-        this.patch({ currentChunk: asset.chunk });
+        this.patch({
+          currentChunk: asset.chunk,
+          currentChunkIndex: chunkIndexes.get(asset.chunk) || 0,
+          currentChunkCount: pendingChunks.length,
+        });
         try {
           await this.transfer(asset, internal.manifest.releaseId);
         } catch (error) {
@@ -762,10 +1018,121 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         installedProfiles,
         phase: 'idle',
         currentChunk: null,
+        currentChunkIndex: 0,
+        currentChunkCount: 0,
         readiness: 'ready',
         canRetry: false,
       });
-      this.cleanupLegacyState();
+      this.cleanupLegacyState(internal.manifest.releaseId);
+    } finally {
+      this.abortController = null;
+    }
+  }
+
+  private async applyPackageUnlocked(internal: {
+    manifest: ReleaseManifestV3;
+    assets: ReleaseAsset[];
+    plan: ResourcePlan;
+  }): Promise<void> {
+    const pack = internal.manifest.package;
+    if (!pack) throw new ResourceInstallerError('manifest');
+    const active = await this.options.journal.getActiveRelease();
+    const alreadyInstalled =
+      internal.plan.scope !== 'repair' &&
+      internal.plan.downloadBytes === 0 &&
+      active?.releaseId === internal.manifest.releaseId &&
+      active.packageSha256 === pack.sha256 &&
+      active.packageBytes === pack.bytes;
+    this.abortController = new AbortController();
+    const startedAt = performance.now();
+    this.patch({
+      targetRelease: internal.manifest.releaseId,
+      readiness: alreadyInstalled ? 'ready' : 'updating',
+      phase: alreadyInstalled ? 'activating' : 'downloading',
+      currentChunk: alreadyInstalled ? null : pack.segments[0]?.id || null,
+      currentChunkIndex: alreadyInstalled ? 0 : 1,
+      currentChunkCount: alreadyInstalled ? 0 : pack.segments.length,
+      downloadedBytes: alreadyInstalled ? pack.bytes : internal.plan.reusedBytes,
+      downloadBytes: pack.bytes,
+      verifiedBytes: alreadyInstalled ? pack.bytes : 0,
+      verifyBytes: pack.bytes,
+      bytesPerSecond: 0,
+      failedResources: [],
+      canPause: !alreadyInstalled,
+      canResume: false,
+      canRetry: false,
+      errorCode: null,
+    });
+    try {
+      if (!alreadyInstalled) {
+        await this.transferPackage(internal.manifest.releaseId, pack, startedAt);
+      }
+      this.patch({
+        phase: 'activating',
+        currentChunk: null,
+        currentChunkIndex: 0,
+        currentChunkCount: 0,
+        canPause: false,
+      });
+      for (let offset = 0; offset < internal.assets.length; offset += 24) {
+        await Promise.all(
+          internal.assets.slice(offset, offset + 24).map((asset) =>
+            this.options.journal.putAsset({
+              releaseId: internal.manifest.releaseId,
+              path: asset.path,
+              sha256: asset.sha256,
+              bytes: asset.bytes,
+              verifiedAt: Date.now(),
+            }),
+          ),
+        );
+      }
+      this.installedPaths.clear();
+      for (const asset of internal.assets) this.installedPaths.add(asset.path);
+      const installedProfiles: ResourceProfile[] = [
+        'base',
+        'word',
+        'cell',
+        'slide',
+        'fonts-basic',
+        'fonts-office-compat',
+      ];
+      await this.options.journal.activateRelease({
+        releaseId: internal.manifest.releaseId,
+        installedProfiles,
+        activatedAt: Date.now(),
+        packageSha256: pack.sha256,
+        packageBytes: pack.bytes,
+      });
+      this.patch({
+        installedRelease: internal.manifest.releaseId,
+        installedProfiles,
+        phase: 'idle',
+        currentChunk: null,
+        currentChunkIndex: 0,
+        currentChunkCount: 0,
+        readiness: 'ready',
+        downloadedBytes: pack.bytes,
+        verifiedBytes: pack.bytes,
+        bytesPerSecond: Math.round(pack.bytes / Math.max((performance.now() - startedAt) / 1_000, 0.001)),
+        canPause: false,
+        canResume: false,
+        canRetry: false,
+      });
+      this.cleanupLegacyState(internal.manifest.releaseId);
+    } catch (error) {
+      const failure =
+        error instanceof ResourceInstallerError ? error : new ResourceInstallerError('network', pack.path);
+      this.patch({
+        phase: 'idle',
+        readiness: 'error',
+        failedResources: [{ path: pack.path, code: failure.code, attempts: this.retryDelays().length + 1 }],
+        canPause: false,
+        canResume: false,
+        canRetry: true,
+        errorCode: failure.code,
+      });
+      throw failure;
     } finally {
       this.abortController = null;
     }
@@ -773,6 +1140,159 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
 
   private retryDelays(): number[] {
     return this.options.retryDelaysMs || [1_000, 3_000, 10_000];
+  }
+
+  private async transferPackage(releaseId: string, pack: ReleasePackage, startedAt: number): Promise<void> {
+    const completeDigest = sha256.create();
+    for (const [segmentIndex, segment] of pack.segments.entries()) {
+      const delays = [0, ...this.retryDelays()];
+      let segmentBytes: Uint8Array | null = null;
+      let lastError: unknown;
+      const url = this.repository.packageSegmentUrl(releaseId, segment.id);
+      this.patch({
+        phase: 'downloading',
+        currentChunk: segment.id,
+        currentChunkIndex: segmentIndex + 1,
+        currentChunkCount: pack.segments.length,
+      });
+      if (
+        this.options.storageMode === 'cache-storage' &&
+        this.options.cacheStorage &&
+        typeof this.options.cacheStorage.match === 'function'
+      ) {
+        const cached = await this.options.cacheStorage.match(url);
+        if (cached) {
+          try {
+            segmentBytes = await readAndVerifySegment(
+              cached,
+              segment.sha256,
+              () => undefined,
+              this.abortController?.signal || new AbortController().signal,
+              async () => {
+                if (this.paused) await this.resumePromise;
+              },
+            );
+            if (segmentBytes.byteLength !== segment.bytes) {
+              throw new ResourceInstallerError('integrity', pack.path);
+            }
+            this.patch({
+              phase: 'verifying',
+              currentChunk: segment.id,
+              currentChunkIndex: segmentIndex + 1,
+              currentChunkCount: pack.segments.length,
+              verifiedBytes: this.snapshot.verifiedBytes + segmentBytes.byteLength,
+            });
+          } catch {
+            segmentBytes = null;
+            this.patch({
+              downloadedBytes: Math.max(0, this.snapshot.downloadedBytes - segment.bytes),
+            });
+            const cache = await this.options.cacheStorage.open(`onlyoffice-release-staging-${releaseId}`);
+            await cache.delete(url);
+          }
+        }
+      }
+      for (let attempt = 0; attempt < delays.length && !segmentBytes; attempt += 1) {
+        let attemptDownloaded = 0;
+        if (delays[attempt]) await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+        if (this.paused) await this.resumePromise;
+        const controller = new AbortController();
+        const parentSignal = this.abortController?.signal;
+        const abort = () => controller.abort();
+        parentSignal?.addEventListener('abort', abort, { once: true });
+        let idleTimeout: ReturnType<typeof setTimeout> | undefined;
+        const resetIdleTimeout = () => {
+          if (idleTimeout) clearTimeout(idleTimeout);
+          idleTimeout = setTimeout(() => controller.abort(), this.options.timeoutMs || 30_000);
+        };
+        resetIdleTimeout();
+        try {
+          const response = await this.options.fetch(url, {
+            cache: attempt === 0 ? 'force-cache' : 'reload',
+            credentials: 'omit',
+            mode: url.origin === location.origin ? 'same-origin' : 'cors',
+            signal: controller.signal,
+          });
+          if (!response.ok) throw networkError(response.status);
+          const cacheResponse = response.clone();
+          const contentLength = Number(response.headers.get('content-length'));
+          if (Number.isFinite(contentLength) && contentLength !== segment.bytes) {
+            throw new ResourceInstallerError('integrity', pack.path);
+          }
+          const bytes = await readAndVerifySegment(
+            response,
+            segment.sha256,
+            async (chunk) => {
+              resetIdleTimeout();
+              attemptDownloaded += chunk.byteLength;
+              const downloadedBytes = this.snapshot.downloadedBytes + chunk.byteLength;
+              const seconds = Math.max((performance.now() - startedAt) / 1_000, 0.001);
+              this.patch({
+                phase: 'downloading',
+                currentChunk: segment.id,
+                currentChunkIndex: segmentIndex + 1,
+                currentChunkCount: pack.segments.length,
+                downloadedBytes,
+                bytesPerSecond: Math.round(downloadedBytes / seconds),
+              });
+            },
+            controller.signal,
+            async () => {
+              if (this.paused) await this.resumePromise;
+            },
+          );
+          if (bytes.byteLength !== segment.bytes) throw new ResourceInstallerError('integrity', pack.path);
+          if (this.options.storageMode === 'cache-storage' && this.options.cacheStorage) {
+            try {
+              const cache = await this.options.cacheStorage.open(`onlyoffice-release-staging-${releaseId}`);
+              await cache.put(url, cacheResponse);
+            } catch (error) {
+              throw new ResourceInstallerError(
+                error instanceof DOMException && error.name === 'QuotaExceededError' ? 'quota' : 'storage',
+                pack.path,
+              );
+            }
+          }
+          this.patch({
+            phase: 'verifying',
+            currentChunk: segment.id,
+            currentChunkIndex: segmentIndex + 1,
+            currentChunkCount: pack.segments.length,
+            verifiedBytes: this.snapshot.verifiedBytes + bytes.byteLength,
+          });
+          segmentBytes = bytes;
+        } catch (error) {
+          this.patch({
+            downloadedBytes: Math.max(0, this.snapshot.downloadedBytes - attemptDownloaded),
+            phase: 'downloading',
+          });
+          lastError =
+            controller.signal.aborted && !parentSignal?.aborted
+              ? new ResourceInstallerError('timeout', pack.path)
+              : error instanceof ResourceInstallerError && !error.path
+                ? new ResourceInstallerError(error.code, pack.path)
+                : error;
+        } finally {
+          if (idleTimeout) clearTimeout(idleTimeout);
+          parentSignal?.removeEventListener('abort', abort);
+        }
+      }
+      if (!segmentBytes) {
+        if (lastError instanceof ResourceInstallerError) throw lastError;
+        throw networkError();
+      }
+      completeDigest.update(segmentBytes);
+    }
+    if (bytesToHex(completeDigest.digest()) !== pack.sha256) {
+      throw new ResourceInstallerError('integrity', pack.path);
+    }
+    this.patch({
+      phase: 'verifying',
+      currentChunk: null,
+      currentChunkIndex: 0,
+      currentChunkCount: pack.segments.length,
+      verifiedBytes: pack.bytes,
+    });
   }
 
   private async transfer(asset: ReleaseAsset, releaseId: string): Promise<void> {
@@ -874,7 +1394,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     this.publish();
   }
 
-  private cleanupLegacyState(): void {
+  private cleanupLegacyState(activeReleaseId?: string): void {
     try {
       this.options.legacyStorage?.removeItem('onlyoffice-browser:shared-runtime-cache');
       this.options.legacyStorage?.removeItem('onlyoffice-browser:installed-fonts');
@@ -888,7 +1408,12 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key.startsWith('onlyoffice-browser-font-packages-'))
+            .filter(
+              (key) =>
+                key.startsWith('onlyoffice-browser-font-packages-') ||
+                (key.startsWith('onlyoffice-release-staging-') &&
+                  key !== `onlyoffice-release-staging-${activeReleaseId || ''}`),
+            )
             .map((key) => this.options.cacheStorage!.delete(key)),
         ),
       );

@@ -138,6 +138,7 @@ function mimeFor(file) {
       '.woff': 'font/woff',
       '.woff2': 'font/woff2',
       '.otf': 'font/otf',
+      '.oobpack': 'application/vnd.onlyoffice.browser-pack',
       '.ttf': 'font/ttf',
     }[extension] || 'application/octet-stream'
   );
@@ -145,27 +146,35 @@ function mimeFor(file) {
 
 async function uploadObject(file) {
   const bytes = fs.readFileSync(file.absolute);
-  const response = await request({
-    port: seederPort,
-    method: 'PUT',
-    pathname: '/__matrix__/object',
-    headers: {
-      'Content-Length': String(bytes.byteLength),
-      'Content-Type': mimeFor(file.key),
-      'X-Matrix-R2-Key': file.key,
-      'X-Matrix-Seed-Token': token,
-    },
-    body: bytes,
-  });
-  if (response.status !== 204) {
-    throw new Error(`Unable to seed ${file.key}: HTTP ${response.status} ${response.body.toString()}`);
+  let lastFailure = '';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await request({
+        port: seederPort,
+        method: 'PUT',
+        pathname: '/__matrix__/object',
+        headers: {
+          'Content-Length': String(bytes.byteLength),
+          'Content-Type': mimeFor(file.key),
+          'X-Matrix-R2-Key': file.key,
+          'X-Matrix-Seed-Token': token,
+        },
+        body: bytes,
+      });
+      if (response.status === 204) return;
+      lastFailure = `HTTP ${response.status} ${response.body.toString()}`;
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, [100, 500][attempt]));
   }
+  throw new Error(`Unable to seed ${file.key} after 3 attempts: ${lastFailure}`);
 }
 
 async function uploadFiles(files) {
   let cursor = 0;
   let completed = 0;
-  const workers = Array.from({ length: 12 }, async () => {
+  const workers = Array.from({ length: 8 }, async () => {
     while (cursor < files.length) {
       const file = files[cursor++];
       await uploadObject(file);
@@ -189,8 +198,12 @@ async function main() {
     fs.readFileSync(path.join(root, `.onlyoffice-release/releases/${releasePointer.releaseId}/manifest.json`)),
   );
   const packageManifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json')));
-  if (releaseManifest.version !== 3 || releaseManifest.releaseId !== releasePointer.releaseId) {
-    throw new Error('Release v3 pointer and manifest do not match');
+  if (
+    releaseManifest.version !== 4 ||
+    releaseManifest.releaseId !== releasePointer.releaseId ||
+    releaseManifest.package?.format !== 'onlyoffice-pack-v1'
+  ) {
+    throw new Error('Release v4 Office Pack pointer and manifest do not match');
   }
 
   const seeder = command(
@@ -239,6 +252,21 @@ async function main() {
     throw new Error(
       `Immutable Host preflight failed: ${hostResponse.status} ${hostResponse.headers['content-type'] || 'missing MIME'}`,
     );
+  }
+  const packResponse = await request({
+    port: workerPort,
+    pathname: `/p/${releasePointer.releaseId}/office-resources.oobpack`,
+    headers: {
+      Host: 'onlyoffice.localhost',
+      Range: 'bytes=0-7',
+    },
+  });
+  if (
+    packResponse.status !== 206 ||
+    packResponse.body.toString() !== 'OOBPACK1' ||
+    packResponse.headers['content-type'] !== 'application/vnd.onlyoffice.browser-pack'
+  ) {
+    throw new Error(`Office Pack preflight failed: ${packResponse.status} ${packResponse.body.toString('hex')}`);
   }
 
   const playwrightArgs = ['exec', 'playwright', 'test', '--config', 'playwright.cloudflare.config.ts'];

@@ -38,7 +38,7 @@ npm 主包只包含 JS/TS 组件 API。`office-host.html` 和 OnlyOffice runtime
 - 生成后的字体资产：`/onlyoffice-browser-font-assets.json`、`/sdkjs/common/AllFonts.js`、`/sdkjs/common/Images/fonts_thumbnail*.png`、`/fonts/`、`/server/FileConverter/bin/font_selection.bin`
 - `/document_editor_service_worker.js`、`/plugins.json`、`/themes.json`、`/reset.html`
 
-生产构建默认使用精简 runtime profile：保留 Word、Spreadsheet、Presentation 三类编辑器、共享运行时、`x2t`、`libs` 和 `en_US` 字典；移除 PDF/Visio SDK、未选中字典、内置 help 大图和包内字体等低频资产。构建同时会在 `.onlyoffice-runtime-asset-packs/{core,word,cell,slide}` 生成 canonical 路径的拆分包。生产可部署 `core` 加实际支持的文档类型包；这些 pack 都可以直接拷贝到同一个 editor-host 根路径，不需要改写 OnlyOffice 内部路径。
+生产构建会选择 Word、Spreadsheet、Presentation 三类编辑器、共享运行时、`x2t`、`libs` 和支持的字典，并排除未使用的 SDK、帮助图片和重复压缩资源。`release:build` 会把这些运行时与生成后的完整字体集封装为一个不可变的 `office-resources.oobpack`；安装器以经过校验的 24 MiB 分段传输，但始终向用户呈现一个资源包和一条进度流程。`.onlyoffice-runtime-asset-packs/{core,word,cell,slide}` 中的 canonical 路径包仅保留为构建期兼容产物，不再作为独立的用户下载项。
 
 ## 使用
 
@@ -136,7 +136,7 @@ npm run assets:build
 
 ## 字体
 
-本项目不内置 runtime 字体文件。打开文档前必须先生成并挂载字体资产：`npm run fonts:generate -- --input /path/to/fonts --output .onlyoffice-font-assets` 或 `npx onlyoffice-browser-generate-font-assets --input /path/to/fonts --output .onlyoffice-font-assets`，再用 `npm run fonts:verify -- --input .onlyoffice-font-assets` 或 `npx onlyoffice-browser-verify-font-assets --input .onlyoffice-font-assets` 验证，本地开发用 `npm run dev:fonts` 启动。生成器默认使用精简的 `zh-core` 字体集，面向简体中文和经典英文 Office 文档；只有确实需要广泛语言覆盖时再传 `--font-set full`。详见 [docs/fonts.zh.md](docs/fonts.zh.md)。
+本项目不内置 runtime 字体文件。打开文档前必须先生成并挂载字体资产：`npm run fonts:generate -- --input /path/to/fonts --output .onlyoffice-font-assets` 或 `npx onlyoffice-browser-generate-font-assets --input /path/to/fonts --output .onlyoffice-font-assets`，再用 `npm run fonts:verify -- --input .onlyoffice-font-assets` 或 `npx onlyoffice-browser-verify-font-assets --input .onlyoffice-font-assets` 验证，本地开发用 `npm run dev:fonts` 启动。生成器默认导出 All-in-One Office 包使用的完整 `full` 字体集；只有明确需要精简部署时才传入 `--font-set zh-core`。详见 [docs/fonts.zh.md](docs/fonts.zh.md)。
 
 ## 参考
 

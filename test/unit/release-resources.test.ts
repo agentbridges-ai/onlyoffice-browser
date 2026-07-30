@@ -16,6 +16,7 @@ function digest(bytes: Uint8Array | string): string {
 }
 
 const body = new Uint8Array([1, 2, 3, 4]);
+const packBody = new Uint8Array(20).fill(7);
 const asset: ReleaseAsset = {
   path: 'sdkjs/word/word.js',
   bytes: body.byteLength,
@@ -65,6 +66,72 @@ function resourceFetch(release = manifest()) {
   });
 }
 
+function packageManifest(releaseId = 'v0.5.0-pack'): ReleaseManifestV3 {
+  const release = manifest(releaseId);
+  return {
+    ...release,
+    version: 4,
+    packageVersion: '0.5.0',
+    package: {
+      format: 'onlyoffice-pack-v1',
+      path: 'office-resources.oobpack',
+      bytes: packBody.byteLength,
+      sha256: digest(packBody),
+      headerBytes: 16,
+      segmentBytes: packBody.byteLength,
+      segments: [
+        {
+          id: 'segment-001',
+          offset: 0,
+          bytes: packBody.byteLength,
+          sha256: digest(packBody),
+        },
+      ],
+    },
+    assets: [{ ...asset, packageOffset: 16 }],
+  };
+}
+
+function packageFetch(release = packageManifest()) {
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/channels/stable.json') {
+      return Response.json({ version: 1, releaseId: release.releaseId });
+    }
+    if (url.pathname === `/releases/${release.releaseId}/manifest.json`) {
+      return Response.json(release);
+    }
+    if (url.pathname === `/p/${release.releaseId}/office-resources.oobpack`) {
+      expect(init?.cache).not.toBe('only-if-cached');
+      const segment = release.package?.segments.find((candidate) => candidate.id === url.searchParams.get('segment'));
+      if (!segment) return new Response(null, { status: 404 });
+      const bytes = packBody.slice(segment.offset, segment.offset + segment.bytes);
+      return new Response(bytes, {
+        headers: { 'Content-Length': String(bytes.byteLength) },
+      });
+    }
+    return new Response(null, { status: 404 });
+  });
+}
+
+function memoryCacheStorage() {
+  const entries = new Map<string, Response>();
+  const cache = {
+    put: vi.fn(async (input: RequestInfo | URL, response: Response) => {
+      entries.set(String(input), response.clone());
+    }),
+    match: vi.fn(async (input: RequestInfo | URL) => entries.get(String(input))?.clone()),
+    delete: vi.fn(async (input: RequestInfo | URL) => entries.delete(String(input))),
+  };
+  const storage = {
+    open: vi.fn(async () => cache as unknown as Cache),
+    match: vi.fn(async (input: RequestInfo | URL) => entries.get(String(input))?.clone()),
+    keys: vi.fn(async () => ['onlyoffice-release-staging-v0.5.0-pack']),
+    delete: vi.fn(async () => true),
+  } as unknown as CacheStorage;
+  return { storage, entries, cache };
+}
+
 describe('Release Manifest v3', () => {
   it('rejects truncated digests and unsafe paths', () => {
     expect(parseReleaseManifest(manifest())).toMatchObject({ version: 3, releaseId: 'v0.4.0-test' });
@@ -109,6 +176,227 @@ describe('Release Manifest v3', () => {
     });
     expect(changed.plan).toMatchObject({ downloadBytes: 4, reusedBytes: 0 });
     expect(changed.assets).toHaveLength(1);
+  });
+});
+
+describe('Release Manifest v4 Office Pack', () => {
+  it('requires a complete contiguous package descriptor and safe entry offsets', () => {
+    expect(parseReleaseManifest(packageManifest())).toMatchObject({
+      version: 4,
+      package: { format: 'onlyoffice-pack-v1', bytes: 20 },
+    });
+    expect(() =>
+      parseReleaseManifest({
+        ...packageManifest(),
+        package: { ...packageManifest().package!, segments: [] },
+      }),
+    ).toThrowError('manifest');
+    expect(() =>
+      parseReleaseManifest({
+        ...packageManifest(),
+        assets: [{ ...asset, packageOffset: 19 }],
+      }),
+    ).toThrowError('manifest');
+  });
+
+  it('installs every component and font through one immutable package request', async () => {
+    const journal = new MemoryInstallationJournal();
+    const fetchMock = packageFetch();
+    const create = async () => {
+      const installer = new TransactionalResourceInstaller({
+        assetBaseUrl: 'https://onlyoffice.example.test',
+        fetch: fetchMock as unknown as typeof fetch,
+        journal,
+        storageMode: 'http-cache',
+        retryDelaysMs: [],
+      });
+      await installer.initialize();
+      return installer;
+    };
+
+    const first = await create();
+    const plan = await first.plan({ scope: 'document', documentType: 'word' });
+    expect(plan).toMatchObject({
+      downloadBytes: packBody.byteLength,
+      reusedBytes: 0,
+      profiles: ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'],
+    });
+    await first.apply(plan);
+    expect(first.getInstallerSnapshot()).toMatchObject({
+      readiness: 'ready',
+      downloadedBytes: packBody.byteLength,
+      verifiedBytes: packBody.byteLength,
+      installedProfiles: ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'],
+    });
+
+    const restarted = await create();
+    const reused = await restarted.plan({ scope: 'recommended' });
+    expect(reused).toMatchObject({
+      downloadBytes: 0,
+      reusedBytes: packBody.byteLength,
+    });
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/p/'))).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/r/'))).toHaveLength(0);
+  });
+
+  it('keeps verified package segments in Cache Storage for the standalone origin', async () => {
+    const cachePut = vi.fn();
+    const installer = new TransactionalResourceInstaller({
+      assetBaseUrl: 'https://onlyoffice.example.test',
+      fetch: packageFetch() as unknown as typeof fetch,
+      cacheStorage: {
+        open: vi.fn(async () => ({ put: cachePut }) as unknown as Cache),
+        keys: vi.fn(async () => []),
+        delete: vi.fn(async () => true),
+      } as unknown as CacheStorage,
+      journal: new MemoryInstallationJournal(),
+      storageMode: 'cache-storage',
+      retryDelaysMs: [],
+    });
+    await installer.initialize();
+    expect(installer.getInstallerSnapshot().storageMode).toBe('cache-storage');
+    const plan = await installer.plan({ scope: 'all' });
+    await installer.apply(plan);
+    expect(cachePut).toHaveBeenCalledOnce();
+    expect(String(cachePut.mock.calls[0]?.[0])).toContain('segment=segment-001');
+  });
+
+  it('warms only the shared HTTP cache for cross-origin Piwork integration', async () => {
+    const cachePut = vi.fn();
+    const installer = new TransactionalResourceInstaller({
+      assetBaseUrl: 'https://onlyoffice.example.test',
+      fetch: packageFetch() as unknown as typeof fetch,
+      cacheStorage: {
+        open: vi.fn(async () => ({ put: cachePut }) as unknown as Cache),
+        keys: vi.fn(async () => []),
+        delete: vi.fn(async () => true),
+      } as unknown as CacheStorage,
+      journal: new MemoryInstallationJournal(),
+      storageMode: 'http-cache',
+      retryDelaysMs: [],
+    });
+    await installer.initialize();
+    await installer.apply(await installer.plan({ scope: 'all' }));
+    expect(installer.getInstallerSnapshot().storageMode).toBe('http-cache');
+    expect(cachePut).not.toHaveBeenCalled();
+  });
+
+  it('downloads and verifies one immutable cacheable response per package segment', async () => {
+    const release = packageManifest('v0.5.0-segmented');
+    release.package = {
+      ...release.package!,
+      segmentBytes: 10,
+      segments: [
+        { id: 'segment-001', offset: 0, bytes: 10, sha256: digest(packBody.slice(0, 10)) },
+        { id: 'segment-002', offset: 10, bytes: 10, sha256: digest(packBody.slice(10, 20)) },
+      ],
+    };
+    const fetchMock = packageFetch(release);
+    const installer = new TransactionalResourceInstaller({
+      assetBaseUrl: 'https://onlyoffice.example.test',
+      fetch: fetchMock as unknown as typeof fetch,
+      journal: new MemoryInstallationJournal(),
+      storageMode: 'http-cache',
+      retryDelaysMs: [],
+    });
+    await installer.initialize();
+    await installer.apply(await installer.plan({ scope: 'all' }));
+    expect(
+      fetchMock.mock.calls
+        .map(([input]) => new URL(String(input)))
+        .filter((url) => url.pathname.startsWith('/p/'))
+        .map((url) => url.searchParams.get('segment')),
+    ).toEqual(['segment-001', 'segment-002']);
+    expect(installer.getInstallerSnapshot()).toMatchObject({
+      readiness: 'ready',
+      downloadedBytes: packBody.byteLength,
+      verifiedBytes: packBody.byteLength,
+    });
+  });
+
+  it('detects an evicted standalone segment and repairs only the missing segment', async () => {
+    const release = packageManifest('v0.5.0-segmented');
+    release.package = {
+      ...release.package!,
+      segmentBytes: 10,
+      segments: [
+        { id: 'segment-001', offset: 0, bytes: 10, sha256: digest(packBody.slice(0, 10)) },
+        { id: 'segment-002', offset: 10, bytes: 10, sha256: digest(packBody.slice(10, 20)) },
+      ],
+    };
+    const fetchMock = packageFetch(release);
+    const journal = new MemoryInstallationJournal();
+    const cached = memoryCacheStorage();
+    const create = async () => {
+      const installer = new TransactionalResourceInstaller({
+        assetBaseUrl: 'https://onlyoffice.example.test',
+        fetch: fetchMock as unknown as typeof fetch,
+        cacheStorage: cached.storage,
+        journal,
+        storageMode: 'cache-storage',
+        retryDelaysMs: [],
+      });
+      await installer.initialize();
+      return installer;
+    };
+
+    const first = await create();
+    await first.apply(await first.plan({ scope: 'all' }));
+    expect(cached.entries.size).toBe(2);
+    cached.entries.delete(
+      'https://onlyoffice.example.test/p/v0.5.0-segmented/office-resources.oobpack?segment=segment-002',
+    );
+
+    const restarted = await create();
+    expect(restarted.getInstallerSnapshot().readiness).toBe('repair-needed');
+    await restarted.checkHealth();
+    expect(restarted.getInstallerSnapshot()).toMatchObject({
+      readiness: 'repair-needed',
+      failedResources: [
+        {
+          path: 'office-resources.oobpack?segment=segment-002',
+          code: 'storage',
+        },
+      ],
+    });
+    await restarted.repair({ scope: 'all' });
+    expect(restarted.getInstallerSnapshot().readiness).toBe('ready');
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/p/'))).toHaveLength(3);
+  });
+
+  it('fails closed when the all-in-one package digest is wrong', async () => {
+    const release = packageManifest();
+    const fetchMock = packageFetch(release);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/channels/stable.json') {
+        return Response.json({ version: 1, releaseId: release.releaseId });
+      }
+      if (url.pathname.includes('/manifest.json')) return Response.json(release);
+      return new Response(new Uint8Array(packBody.byteLength).fill(9), {
+        headers: { 'Content-Length': String(packBody.byteLength) },
+      });
+    });
+    const installer = new TransactionalResourceInstaller({
+      assetBaseUrl: 'https://onlyoffice.example.test',
+      fetch: fetchMock as unknown as typeof fetch,
+      journal: new MemoryInstallationJournal(),
+      storageMode: 'http-cache',
+      retryDelaysMs: [],
+    });
+    await installer.initialize();
+    const plan = await installer.plan({ scope: 'all' });
+    await expect(installer.apply(plan)).rejects.toMatchObject({
+      code: 'integrity',
+      path: 'office-resources.oobpack',
+    });
+    expect(installer.getInstallerSnapshot()).toMatchObject({
+      readiness: 'error',
+      errorCode: 'integrity',
+      canRetry: true,
+      failedResources: [{ path: 'office-resources.oobpack', code: 'integrity' }],
+    });
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/p/'))).toHaveLength(1);
   });
 });
 

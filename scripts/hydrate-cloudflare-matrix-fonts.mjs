@@ -7,6 +7,9 @@ import path from 'node:path';
 const sourceOrigin = (process.env.ONLYOFFICE_MATRIX_FONT_SOURCE || 'https://onlyoffice.getpi.work').replace(/\/+$/, '');
 const cacheRoot = path.resolve(process.env.ONLYOFFICE_MATRIX_FONT_CACHE || '.onlyoffice-cloudflare-matrix-cache');
 const distRoot = path.resolve(process.env.ONLYOFFICE_MATRIX_DIST || 'dist');
+const localFontRoot = process.env.ONLYOFFICE_MATRIX_FONT_ASSETS_DIR
+  ? path.resolve(process.env.ONLYOFFICE_MATRIX_FONT_ASSETS_DIR)
+  : '';
 const fontProfiles = new Set(['fonts-basic', 'fonts-office-compat']);
 
 function sha256(bytes) {
@@ -40,7 +43,11 @@ async function readRelease() {
   const manifest = await fetchWithRetry(
     `${sourceOrigin}/releases/${encodeURIComponent(channel.releaseId)}/manifest.json`,
   ).then((response) => response.json());
-  if (manifest.version !== 3 || manifest.releaseId !== channel.releaseId || !Array.isArray(manifest.assets)) {
+  if (
+    (manifest.version !== 3 && manifest.version !== 4) ||
+    manifest.releaseId !== channel.releaseId ||
+    !Array.isArray(manifest.assets)
+  ) {
     throw new Error('Cloudflare matrix font source returned an invalid release manifest');
   }
   const assets = manifest.assets.filter(
@@ -123,10 +130,38 @@ function copyToDist(assets) {
   }
 }
 
-const { releaseId, assets } = await readRelease();
-fs.mkdirSync(cacheRoot, { recursive: true });
-await hydrateCache(releaseId, assets);
-copyToDist(assets);
-process.stdout.write(
-  `Hydrated ${assets.length} verified font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes) from ${releaseId}\n`,
-);
+if (localFontRoot) {
+  const manifestPath = path.join(localFontRoot, 'onlyoffice-browser-font-assets.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  if (manifest.fontSet !== 'full' || !Array.isArray(manifest.fontFamilies) || manifest.fontFamilies.length < 70) {
+    throw new Error('Local Cloudflare matrix requires a verified full font set with at least 70 families');
+  }
+  const paths = ['onlyoffice-browser-font-assets.json', ...(manifest.assets || []).map((asset) => asset.path)];
+  const assets = [...new Set(paths)].map((assetPath) => {
+    const source = path.join(localFontRoot, assetPath);
+    if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+      throw new Error(`Local Cloudflare matrix font asset is missing: ${assetPath}`);
+    }
+    return {
+      path: assetPath,
+      bytes: fs.statSync(source).size,
+      sha256: sha256(fs.readFileSync(source)),
+    };
+  });
+  for (const asset of assets) {
+    const destination = path.join(distRoot, asset.path);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(localFontRoot, asset.path), destination);
+  }
+  process.stdout.write(
+    `Hydrated ${assets.length} verified local full-font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes, ${manifest.fontFamilies.length} families)\n`,
+  );
+} else {
+  const { releaseId, assets } = await readRelease();
+  fs.mkdirSync(cacheRoot, { recursive: true });
+  await hydrateCache(releaseId, assets);
+  copyToDist(assets);
+  process.stdout.write(
+    `Hydrated ${assets.length} verified font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes) from ${releaseId}\n`,
+  );
+}

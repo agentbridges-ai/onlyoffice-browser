@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const fontAssetsDirectory = process.env.ONLYOFFICE_MATRIX_FONT_ASSETS_DIR || '.onlyoffice-cloudflare-matrix-cache';
+
 export default defineConfig({
   testDir: 'test/e2e',
   timeout: 30_000,
@@ -23,7 +25,10 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      'node scripts/hydrate-cloudflare-matrix-fonts.mjs && ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-cloudflare-matrix-cache pnpm run build && ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=.onlyoffice-cloudflare-matrix-cache ./node_modules/.bin/vite preview --host 127.0.0.1 --port 4173',
+      `node scripts/hydrate-cloudflare-matrix-fonts.mjs && ` +
+      `ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=${JSON.stringify(fontAssetsDirectory)} pnpm run build && ` +
+      `ONLYOFFICE_BROWSER_FONT_ASSETS_DIR=${JSON.stringify(fontAssetsDirectory)} ` +
+      './node_modules/.bin/vite preview --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

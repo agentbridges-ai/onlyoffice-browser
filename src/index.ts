@@ -150,7 +150,6 @@ let waitingWorkbox: Workbox | null = null;
 let updateActivationPending = false;
 let editorGeneration = 0;
 const hardResetOnLastDestroy = new URLSearchParams(location.search).get('hardResetOnLastDestroy') === 'true';
-const manualResourcePrefetch = new URLSearchParams(location.search).get('resourcePrefetch') === 'manual';
 clearLegacyDemoHostState(location, localStorage);
 const resolvedDemoHost = resolveDemoHostUrl(new URL(location.href));
 const officeHostUrl = (context: OfficeHostUrlContext) => {
@@ -550,9 +549,7 @@ async function initializeResources(): Promise<void> {
     resourceManager = await createOfficeRuntimeResourceManager();
     resourceManager.subscribe(renderResources);
     renderResources(resourceManager.getSnapshot());
-    if (!manualResourcePrefetch) {
-      scheduleIdle(() => resourceManager?.prefetchRecommended() || Promise.resolve());
-    }
+    await resourceManager.plan({ scope: 'all' });
   } catch {
     elements.resourceButton.lastElementChild!.textContent = copy.resourcesError;
     elements.resourceButton.dataset.state = 'error';

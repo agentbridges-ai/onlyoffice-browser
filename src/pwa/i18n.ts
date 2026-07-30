@@ -25,6 +25,10 @@ export type OfficeCopy = {
   failedResources: string;
   repairFailedHint: string;
   resourceIntro: string;
+  completePackage: string;
+  completePackageHint: string;
+  packageIncludes: string;
+  downloadingAndVerifying: string;
   basicPreset: string;
   compatPreset: string;
   repair: string;
@@ -55,7 +59,11 @@ export type OfficeCopy = {
   planning: string;
   downloading: string;
   verifying: string;
+  repairing: string;
   activating: string;
+  readyToDownload: string;
+  resourceStage: string;
+  packageSegment: string;
   paused: string;
   pause: string;
   resume: string;
@@ -91,11 +99,15 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     resourcesError: '资源需要修复',
     failedResources: '未能修复',
     repairFailedHint: '请重试；若仍失败，可能是在线资源暂时缺失。',
-    resourceIntro: '编辑器会按需下载当前文档所需资源，并在空闲时准备基础资源。',
-    basicPreset: '准备基础资源',
+    resourceIntro: '组件、转换引擎和全部字体合并为一个完整 Office 资源包，一次安装即可使用。',
+    completePackage: '完整 Office 资源包',
+    completePackageHint: '一个版本、一个进度、一次完成',
+    packageIncludes: '包含文字、表格、演示、转换组件和全部字体',
+    downloadingAndVerifying: '正在下载并校验',
+    basicPreset: '安装完整资源包',
     compatPreset: '安装 Office 兼容字体',
     repair: '检查并修复',
-    allResources: '下载全部（高级）',
+    allResources: '重新安装完整资源包',
     advancedFonts: '高级字体管理',
     installed: '已安装',
     download: '下载',
@@ -119,10 +131,14 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     officeDocument: 'Office 文档',
     officeDocuments: 'Office 文档',
     writePermissionError: '未获得文件写入权限。',
-    planning: '正在规划',
+    planning: '正在准备下载',
     downloading: '正在下载',
     verifying: '正在校验',
+    repairing: '正在检查并修复',
     activating: '正在完成更新',
+    readyToDownload: '等待开始下载',
+    resourceStage: '阶段',
+    packageSegment: '资源分段',
     paused: '已暂停',
     pause: '暂停',
     resume: '继续',
@@ -163,11 +179,15 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     resourcesError: 'Resources need repair',
     failedResources: 'Not repaired',
     repairFailedHint: 'Try again. If it still fails, an online resource may be temporarily unavailable.',
-    resourceIntro: 'The editor downloads resources for the current document and prepares essentials when idle.',
-    basicPreset: 'Prepare essentials',
+    resourceIntro: 'Components, conversion runtime, and every font are delivered as one complete Office package.',
+    completePackage: 'Complete Office package',
+    completePackageHint: 'One version, one progress bar, one installation',
+    packageIncludes: 'Includes Word, Spreadsheet, Presentation, conversion components, and all fonts',
+    downloadingAndVerifying: 'Downloading and verifying',
+    basicPreset: 'Install complete package',
     compatPreset: 'Install Office-compatible fonts',
     repair: 'Check and repair',
-    allResources: 'Download everything (advanced)',
+    allResources: 'Reinstall complete package',
     advancedFonts: 'Advanced font management',
     installed: 'Installed',
     download: 'Download',
@@ -191,10 +211,14 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     officeDocument: 'Office document',
     officeDocuments: 'Office documents',
     writePermissionError: 'Write permission was not granted.',
-    planning: 'Planning',
+    planning: 'Preparing download',
     downloading: 'Downloading',
     verifying: 'Verifying',
-    activating: 'Finishing update',
+    repairing: 'Checking and repairing',
+    activating: 'Activating resources',
+    readyToDownload: 'Ready to download',
+    resourceStage: 'Stage',
+    packageSegment: 'Package segment',
     paused: 'Paused',
     pause: 'Pause',
     resume: 'Resume',

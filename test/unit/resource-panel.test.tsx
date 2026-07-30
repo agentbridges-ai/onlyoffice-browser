@@ -8,7 +8,7 @@ import { OfficeResourcePanel } from '../../src/pwa/resource-panel';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const snapshot: OfficeRuntimeResourceSnapshot = {
-  packageVersion: '0.4.7',
+  packageVersion: '0.5.0',
   assetVersion: 'v0.4.7-test',
   readiness: 'ready',
   packs: [
@@ -37,6 +37,8 @@ const snapshot: OfficeRuntimeResourceSnapshot = {
   storageMode: 'http-cache',
   phase: 'idle',
   currentChunk: null,
+  currentChunkIndex: 0,
+  currentChunkCount: 0,
   downloadedBytes: 0,
   downloadBytes: 329 * 1024 * 1024,
   verifiedBytes: 0,
@@ -80,9 +82,14 @@ describe('OfficeResourcePanel', () => {
         root.render(<OfficeResourcePanel manager={manager} copy={officeCopy[locale]} />);
       });
 
-      expect(host.textContent).toContain('OnlyOffice 0.4.7');
-      expect(host.textContent).toContain(officeCopy[locale].advancedFonts);
+      expect(host.textContent).toContain('OnlyOffice 0.5.0');
+      expect(host.textContent).toContain(officeCopy[locale].completePackage);
+      expect(host.textContent).toContain(officeCopy[locale].packageIncludes);
+      expect(host.textContent).not.toContain(officeCopy[locale].advancedFonts);
       expect(host.querySelectorAll('button').length).toBeGreaterThan(0);
+      expect([...host.querySelectorAll('button')].every((button) => button.classList.contains('button--sm'))).toBe(
+        true,
+      );
       expect(host.querySelector('[role="progressbar"]')).toBeNull();
       expect(error).not.toHaveBeenCalled();
       expect(warn).not.toHaveBeenCalled();
@@ -92,4 +99,77 @@ describe('OfficeResourcePanel', () => {
       warn.mockRestore();
     },
   );
+
+  it.each(['zh-CN', 'en-US'] as const)('shows the explicit %s download stage and package segment', async (locale) => {
+    const downloadingSnapshot: OfficeRuntimeResourceSnapshot = {
+      ...snapshot,
+      readiness: 'updating',
+      phase: 'downloading',
+      operation: 'load-all',
+      currentChunk: 'segment-006',
+      currentChunkIndex: 6,
+      currentChunkCount: 24,
+      downloadedBytes: 141 * 1024 * 1024,
+      downloadBytes: 594 * 1024 * 1024,
+      verifiedBytes: 120 * 1024 * 1024,
+      verifyBytes: 594 * 1024 * 1024,
+      canPause: true,
+    };
+    const manager = {
+      getSnapshot: () => downloadingSnapshot,
+      subscribe: () => () => undefined,
+      pause: vi.fn(),
+    } as unknown as OfficeRuntimeResourceManager;
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+
+    await act(async () => {
+      root.render(<OfficeResourcePanel manager={manager} copy={officeCopy[locale]} />);
+    });
+
+    expect(host.textContent).toContain(`${officeCopy[locale].resourceStage} 2/4`);
+    expect(host.textContent).toContain(officeCopy[locale].downloading);
+    expect(host.textContent).toContain(`${officeCopy[locale].packageSegment} 6/24`);
+    expect(host.textContent).toContain('141 MB / 594 MB');
+    const progress = host.querySelector('[role="progressbar"]');
+    expect(progress?.getAttribute('aria-valuetext')).toContain(officeCopy[locale].downloading);
+    expect(progress?.getAttribute('aria-valuenow')).toBe(String(141 * 1024 * 1024));
+
+    await act(async () => root.unmount());
+  });
+
+  it('uses verified bytes instead of downloaded bytes during the verification stage', async () => {
+    const verifyingSnapshot: OfficeRuntimeResourceSnapshot = {
+      ...snapshot,
+      readiness: 'updating',
+      phase: 'verifying',
+      operation: 'load-all',
+      currentChunk: 'segment-013',
+      currentChunkIndex: 13,
+      currentChunkCount: 24,
+      downloadedBytes: 594 * 1024 * 1024,
+      downloadBytes: 594 * 1024 * 1024,
+      verifiedBytes: 300 * 1024 * 1024,
+      verifyBytes: 594 * 1024 * 1024,
+    };
+    const manager = {
+      getSnapshot: () => verifyingSnapshot,
+      subscribe: () => () => undefined,
+    } as unknown as OfficeRuntimeResourceManager;
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+
+    await act(async () => {
+      root.render(<OfficeResourcePanel manager={manager} copy={officeCopy['zh-CN']} />);
+    });
+
+    expect(host.textContent).toContain('阶段 3/4');
+    expect(host.textContent).toContain('正在校验');
+    expect(host.textContent).toContain('300 MB / 594 MB');
+    expect(host.textContent).not.toContain('594 MB / 594 MB');
+
+    await act(async () => root.unmount());
+  });
 });

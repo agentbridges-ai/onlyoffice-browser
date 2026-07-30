@@ -81,6 +81,7 @@ describe('generate-onlyoffice-font-assets options', () => {
       keepFonts: [],
       help: false,
     });
+    expect(DEFAULT_FONT_SET).toBe('full');
   });
 
   it('allows image override through env or cli', () => {
@@ -255,6 +256,7 @@ describe('generate-onlyoffice-font-assets options', () => {
   it('uses the same visible font-family list and face files as generated AllFonts.js', () => {
     const source = `
       window["__fonts_files"] = [
+        "Aptos.ttf",
         "arial.ttf",
         "arialbd.ttf",
         "Deng.ttf",
@@ -268,22 +270,24 @@ describe('generate-onlyoffice-font-assets options', () => {
         "cambria.ttc",
         "seguisym.ttf"
       ];
-      window["__fonts_visible_names"] = ["Arial", "DengXian", "Microsoft YaHei"];
+      window["__fonts_visible_names"] = ["Aptos", "Arial", "DengXian", "Microsoft YaHei"];
       window["__fonts_infos"] = [
-        ["Arial", 0, 0, -1, -1, 1, 0, -1, -1],
-        ["DengXian", 2, 0, 2, 0, 3, 0, 3, 0],
-        ["Microsoft YaHei", 4, 0, -1, -1, 4, 1, -1, -1],
-        ["Wingdings", 5, 0, -1, -1, -1, -1, -1, -1],
-        ["MS Gothic", 6, 0, -1, -1, -1, -1, -1, -1],
-        ["Noto Sans KR", 7, 0, -1, -1, 7, 0, -1, -1],
-        ["Noto Naskh Arabic", 8, 0, -1, -1, 8, 0, -1, -1],
-        ["Noto Emoji", 9, 0, -1, -1, -1, -1, -1, -1],
-        ["Cambria Math", 10, 1, -1, -1, -1, -1, -1, -1],
-        ["Segoe UI Symbol", 11, 0, -1, -1, -1, -1, -1, -1]
+        ["Aptos", 0, 0, 0, 0, 0, 0, 0, 0],
+        ["Arial", 1, 0, -1, -1, 2, 0, -1, -1],
+        ["DengXian", 3, 0, 3, 0, 4, 0, 4, 0],
+        ["Microsoft YaHei", 5, 0, -1, -1, 5, 1, -1, -1],
+        ["Wingdings", 6, 0, -1, -1, -1, -1, -1, -1],
+        ["MS Gothic", 7, 0, -1, -1, -1, -1, -1, -1],
+        ["Noto Sans KR", 8, 0, -1, -1, 8, 0, -1, -1],
+        ["Noto Naskh Arabic", 9, 0, -1, -1, 9, 0, -1, -1],
+        ["Noto Emoji", 10, 0, -1, -1, -1, -1, -1, -1],
+        ["Cambria Math", 11, 1, -1, -1, -1, -1, -1, -1],
+        ["Segoe UI Symbol", 12, 0, -1, -1, -1, -1, -1, -1]
       ];
     `;
 
     expect(readGeneratedFontFamilies(source)).toEqual([
+      { name: 'Aptos', paths: ['fonts/Aptos.ttf'] },
       { name: 'Arial', paths: ['fonts/arial.ttf', 'fonts/arialbd.ttf'] },
       { name: 'DengXian', paths: ['fonts/Deng.ttf', 'fonts/Dengb.ttf'] },
       { name: 'Microsoft YaHei', paths: ['fonts/msyh.ttc'] },
@@ -292,7 +296,8 @@ describe('generate-onlyoffice-font-assets options', () => {
       'fonts/wingdings.ttf',
     ]);
     expect(readGeneratedFallbackFonts(source)).toEqual({
-      default: ['fonts/Deng.ttf', 'fonts/Dengb.ttf'],
+      default: ['fonts/Aptos.ttf'],
+      cjk: ['fonts/Deng.ttf', 'fonts/Dengb.ttf'],
       japanese: ['fonts/msgothic.ttc'],
       korean: ['fonts/NotoSansKR-Regular.otf'],
       arabic: ['fonts/NotoNaskhArabic-Regular.ttf'],

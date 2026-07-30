@@ -8,6 +8,7 @@ const VERSION_QUERY = '__oobv';
 const ASSET_REVISION_PATTERN = /^[a-f0-9]{16,64}$/;
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
 const RELEASE_PATH_PATTERN = /^\/r\/([^/]{1,384})\/(.+)$/;
+const RELEASE_PACKAGE_PATH_PATTERN = /^\/p\/([^/]{1,384})\/office-resources\.oobpack$/;
 const RELEASE_ID_PATTERN = /^[a-zA-Z0-9._+-]{1,128}$/;
 
 type R2ObjectLike = {
@@ -18,9 +19,25 @@ type R2ObjectLike = {
 };
 
 type ReleaseManifest = {
-  version: 3;
+  version: 3 | 4;
   releaseId: string;
   assets: Array<{ path: string; sha256: string; mime: string; bytes: number }>;
+  package?: {
+    format: string;
+    path: string;
+    bytes: number;
+    sha256: string;
+    segments?: Array<{ id: string; offset: number; bytes: number; sha256: string }>;
+  };
+};
+
+type ImmutableAsset = {
+  key: string;
+  version: string;
+  publicPath: string;
+  mime: string;
+  objectOffset?: number;
+  publicSize?: number;
 };
 
 type RuntimeBucket = {
@@ -136,6 +153,18 @@ export function resolveReleaseRequest(pathname: string): { releaseId: string; pa
   return assetPath ? { releaseId, path: assetPath } : null;
 }
 
+export function resolveReleasePackageRequest(pathname: string): { releaseId: string } | null {
+  const match = RELEASE_PACKAGE_PATH_PATTERN.exec(pathname);
+  if (!match) return null;
+  let releaseId: string;
+  try {
+    releaseId = decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+  return RELEASE_ID_PATTERN.test(releaseId) ? { releaseId } : null;
+}
+
 export function resolveEditorAssetRoute(pathname: string): { releaseId: string | null; pathname: string } {
   const releaseRequest = resolveReleaseRequest(pathname);
   return releaseRequest
@@ -187,9 +216,13 @@ async function resolveImmutableAsset(
   env: WorkerEnv,
   ctx: WorkerExecutionContext,
   request: { releaseId: string; path: string },
-): Promise<{ key: string; version: string; publicPath: string; mime: string } | null> {
+): Promise<ImmutableAsset | null> {
   const manifest = await readReleaseManifest(env, ctx, request.releaseId);
-  if (manifest?.version !== 3 || manifest.releaseId !== request.releaseId || !Array.isArray(manifest.assets)) {
+  if (
+    (manifest?.version !== 3 && manifest?.version !== 4) ||
+    manifest.releaseId !== request.releaseId ||
+    !Array.isArray(manifest.assets)
+  ) {
     return null;
   }
   const asset = manifest.assets.find((candidate) => candidate.path === request.path);
@@ -199,6 +232,48 @@ async function resolveImmutableAsset(
     version: request.releaseId,
     publicPath: request.path,
     mime: asset.mime,
+  };
+}
+
+async function resolveImmutablePackage(
+  env: WorkerEnv,
+  ctx: WorkerExecutionContext,
+  request: { releaseId: string },
+  segmentId: string | null,
+): Promise<ImmutableAsset | null> {
+  const manifest = await readReleaseManifest(env, ctx, request.releaseId);
+  const pack = manifest?.package;
+  if (
+    manifest?.version !== 4 ||
+    manifest.releaseId !== request.releaseId ||
+    pack?.format !== 'onlyoffice-pack-v1' ||
+    pack.path !== 'office-resources.oobpack' ||
+    !/^[a-f0-9]{64}$/.test(pack.sha256) ||
+    !Number.isSafeInteger(pack.bytes) ||
+    pack.bytes <= 0 ||
+    (segmentId !== null && !Array.isArray(pack.segments))
+  ) {
+    return null;
+  }
+  const segment = segmentId === null ? null : pack.segments?.find((candidate) => candidate.id === segmentId);
+  if (
+    segmentId !== null &&
+    (!segment ||
+      !Number.isSafeInteger(segment.offset) ||
+      segment.offset < 0 ||
+      !Number.isSafeInteger(segment.bytes) ||
+      segment.bytes <= 0 ||
+      segment.offset + segment.bytes > pack.bytes ||
+      !/^[a-f0-9]{64}$/.test(segment.sha256))
+  ) {
+    return null;
+  }
+  return {
+    key: `packages/sha256/${pack.sha256}.oobpack`,
+    version: request.releaseId,
+    publicPath: pack.path,
+    mime: 'application/vnd.onlyoffice.browser-pack',
+    ...(segment ? { objectOffset: segment.offset, publicSize: segment.bytes } : {}),
   };
 }
 
@@ -263,8 +338,16 @@ async function serveAsset(
   isolated: boolean,
 ): Promise<Response> {
   const releaseRequest = resolveReleaseRequest(url.pathname);
-  const immutableAsset = releaseRequest ? await resolveImmutableAsset(env, ctx, releaseRequest) : null;
-  if (releaseRequest && !immutableAsset) return assetError('Release asset not found', 404);
+  const packageRequest = resolveReleasePackageRequest(url.pathname);
+  const packageSegmentId = packageRequest ? url.searchParams.get('segment') : null;
+  const immutableAsset = releaseRequest
+    ? await resolveImmutableAsset(env, ctx, releaseRequest)
+    : packageRequest
+      ? await resolveImmutablePackage(env, ctx, packageRequest, packageSegmentId)
+      : null;
+  if ((releaseRequest || packageRequest) && !immutableAsset) {
+    return assetError(releaseRequest ? 'Release asset not found' : 'Release package not found', 404);
+  }
   const key = immutableAsset?.key || resolveObjectKey(url.pathname);
   const publicPath = immutableAsset?.publicPath || key;
   if (!key || !publicPath) return assetError('Invalid asset path', 400);
@@ -286,19 +369,26 @@ async function serveAsset(
     if (!metadata) return assetError('Not found', 404);
     const headers = responseHeaders(metadata, immutable, isolated, publicPath, assetVersion, immutableAsset?.mime);
     if (matchesEtag(request, metadata.httpEtag)) return new Response(null, { status: 304, headers });
-    headers.set('Content-Length', String(metadata.size));
+    headers.set('Content-Length', String(immutableAsset?.publicSize ?? metadata.size));
     return new Response(null, { status: 200, headers });
   }
 
-  const range = rangeHeader ? parseSingleRange(rangeHeader, (await env.ASSETS.head(key))?.size ?? 0) : null;
+  const metadata = await env.ASSETS.head(key);
+  const publicSize = immutableAsset?.publicSize ?? metadata?.size ?? 0;
+  const objectOffset = immutableAsset?.objectOffset ?? 0;
+  const range = rangeHeader ? parseSingleRange(rangeHeader, publicSize) : null;
   if (rangeHeader && !range) {
-    const metadata = await env.ASSETS.head(key);
-    return assetError(null, 416, metadata ? { 'Content-Range': `bytes */${metadata.size}` } : undefined);
+    return assetError(null, 416, metadata ? { 'Content-Range': `bytes */${publicSize}` } : undefined);
   }
 
+  const objectRange = range
+    ? { start: objectOffset + range.start, end: objectOffset + range.end }
+    : immutableAsset?.publicSize
+      ? { start: objectOffset, end: objectOffset + immutableAsset.publicSize - 1 }
+      : null;
   const object = await env.ASSETS.get(
     key,
-    range ? { range: new Headers({ Range: `bytes=${range.start}-${range.end}` }) } : undefined,
+    objectRange ? { range: new Headers({ Range: `bytes=${objectRange.start}-${objectRange.end}` }) } : undefined,
   );
   if (!object?.body) return assetError('Not found', 404);
   const headers = responseHeaders(object, immutable, isolated, publicPath, assetVersion, immutableAsset?.mime);
@@ -309,9 +399,9 @@ async function serveAsset(
     status = 206;
     headers.set('Accept-Ranges', 'bytes');
     headers.set('Content-Length', String(range.end - range.start + 1));
-    headers.set('Content-Range', `bytes ${range.start}-${range.end}/${object.size}`);
+    headers.set('Content-Range', `bytes ${range.start}-${range.end}/${publicSize}`);
   } else {
-    headers.set('Content-Length', String(object.size));
+    headers.set('Content-Length', String(publicSize));
   }
   const response = new Response(object.body, { status, headers });
   if (cacheable) ctx.waitUntil(cache.put(cacheKey, response.clone()));

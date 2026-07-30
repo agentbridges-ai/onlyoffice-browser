@@ -13,7 +13,7 @@ export const FONT_GENERATOR_IMAGE_ENV = 'ONLYOFFICE_BROWSER_FONT_GENERATOR_IMAGE
 export const FONT_SET_ENV = 'ONLYOFFICE_BROWSER_FONT_SET';
 export const GENERATED_FONT_ASSETS_MANIFEST = 'onlyoffice-browser-font-assets.json';
 export const GENERATED_FONT_SOURCE_MAP = 'onlyoffice-browser-font-source-map.json';
-export const DEFAULT_FONT_SET = 'zh-core';
+export const DEFAULT_FONT_SET = 'full';
 
 const SUPPORTED_FONT_EXTENSIONS = new Set(['.ttf', '.tte', '.otf', '.otc', '.ttc', '.woff', '.woff2']);
 const FONT_SETS = new Set(['zh-core', 'full']);
@@ -152,7 +152,15 @@ const ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY = {
   'Wingdings 2': ['wingdings 2.ttf'],
   'Wingdings 3': ['wingdings 3.ttf'],
 };
-const LATIN_FALLBACK_FONT_FAMILIES = ['Calibri', 'Arial', 'Carlito', 'Liberation Sans', 'DejaVu Sans', 'Open Sans'];
+const LATIN_FALLBACK_FONT_FAMILIES = [
+  'Aptos',
+  'Calibri',
+  'Arial',
+  'Carlito',
+  'Liberation Sans',
+  'DejaVu Sans',
+  'Open Sans',
+];
 const CJK_FALLBACK_FONT_FAMILIES = [
   'DengXian',
   'Microsoft YaHei',
@@ -172,7 +180,8 @@ const ARABIC_FALLBACK_FONT_FAMILIES = ['Noto Naskh Arabic', 'Noto Naskh Arabic U
 const EMOJI_FALLBACK_FONT_FAMILIES = ['Noto Emoji'];
 const MATH_FALLBACK_FONT_FAMILIES = ['Cambria Math', 'Asana Math'];
 const FALLBACK_FONT_FAMILY_BY_ROLE = {
-  default: 'DengXian',
+  default: 'Aptos',
+  cjk: 'DengXian',
   japanese: 'MS Gothic',
   korean: 'Noto Sans KR',
   arabic: 'Noto Naskh Arabic',
@@ -729,8 +738,7 @@ for info in new_infos:
 web_source = replace_js_array(web_source, "__fonts_files", web_files)
 web_source = replace_js_array(web_source, "__fonts_infos", new_infos)
 web_source = replace_js_array(web_source, "__fonts_ranges", web_ranges)
-if font_set == "zh-core":
-    web_source = upsert_js_array(web_source, "__fonts_visible_names", sorted(visible_family_names))
+web_source = upsert_js_array(web_source, "__fonts_visible_names", sorted(visible_family_names))
 
 with open(web_allfonts, "w", encoding="utf-8") as handle:
     handle.write(web_source)
@@ -931,12 +939,10 @@ export function writeGeneratedManifest(output, options) {
       },
     ]),
   );
-  const defaultFonts = (fontSourceMapValue.fonts || [])
-    .filter((font) => ['deng.ttf', 'dengb.ttf'].includes(path.basename(font.source || '').toLowerCase()))
-    .map((font) => font.file);
-  if (defaultFonts.length === 0 && fonts[0]) defaultFonts.push(fonts[0]);
   const builtInFonts = readGeneratedBuiltInFonts(allFontsSource, BUILT_IN_FONT_FAMILIES);
   const fallbackFonts = readGeneratedFallbackFonts(allFontsSource);
+  const defaultFonts = [...new Set([...(fallbackFonts.default || []), ...(fallbackFonts.cjk || [])])];
+  if (defaultFonts.length === 0 && fonts[0]) defaultFonts.push(fonts[0]);
   const assetPaths = [allFonts, fontSelection, fontSourceMap, ...fontThumbnails, ...fonts];
   const manifest = {
     version: 1,

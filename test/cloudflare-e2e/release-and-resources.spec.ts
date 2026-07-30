@@ -10,7 +10,13 @@ type ReleaseManifest = {
   version: number;
   releaseId: string;
   packageVersion: string;
-  assets: Array<{ path: string; mime: string; bytes: number }>;
+  package: {
+    path: string;
+    bytes: number;
+    sha256: string;
+    segments: Array<{ id: string; offset: number; bytes: number; sha256: string }>;
+  };
+  assets: Array<{ path: string; mime: string; bytes: number; packageOffset: number }>;
 };
 
 type BrowserFailure = { source: string; message: string };
@@ -45,11 +51,7 @@ async function readBroadcastCounts(pages: Page[]): Promise<number[]> {
   );
 }
 
-async function waitForStableBroadcastCounts(
-  pages: Page[],
-  stableFor = 2_500,
-  timeout = 15_000,
-): Promise<number[]> {
+async function waitForStableBroadcastCounts(pages: Page[], stableFor = 2_500, timeout = 15_000): Promise<number[]> {
   const startedAt = Date.now();
   let lastCounts = await readBroadcastCounts(pages);
   let stableSince = Date.now();
@@ -104,7 +106,7 @@ async function freshContext(browser: Browser): Promise<BrowserContext> {
 async function browserFetch<T>(
   page: Page,
   url: string,
-  init?: { method?: string; headers?: Record<string, string> },
+  init?: { method?: string; headers?: Record<string, string>; cache?: RequestCache },
 ): Promise<{ status: number; headers: Record<string, string>; body: T }> {
   return page.evaluate(
     async ({ target, requestInit }) => {
@@ -118,7 +120,9 @@ async function browserFetch<T>(
   ) as Promise<{ status: number; headers: Record<string, string>; body: T }>;
 }
 
-test('Release v3 routes reproduce production MIME, cache, range, and immutable behavior', async ({ browser }) => {
+test('Release v4 routes reproduce production MIME, cache, range, and immutable Office Pack behavior', async ({
+  browser,
+}) => {
   expect(releaseId).toBeTruthy();
   const context = await freshContext(browser);
   const page = await context.newPage();
@@ -137,9 +141,17 @@ test('Release v3 routes reproduce production MIME, cache, range, and immutable b
     `${canonicalOrigin}/releases/${releaseId}/manifest.json`,
   );
   expect(manifestResult.status).toBe(200);
-  expect(manifestResult.body.version).toBe(3);
+  expect(manifestResult.body.version).toBe(4);
   expect(manifestResult.body.releaseId).toBe(releaseId);
   expect(manifestResult.body.packageVersion).toBe(packageVersion);
+  expect(manifestResult.body.package.path).toBe('office-resources.oobpack');
+
+  const packMagic = await browserFetch<string>(page, `${canonicalOrigin}/p/${releaseId}/office-resources.oobpack`, {
+    headers: { Range: 'bytes=0-7' },
+  });
+  expect(packMagic.status).toBe(206);
+  expect(packMagic.body).toBe('OOBPACK1');
+  expect(packMagic.headers['content-type']).toBe('application/vnd.onlyoffice.browser-pack');
 
   const host = await browserFetch<string>(page, `${editorOrigin}/r/${releaseId}/office-host.html`, { method: 'HEAD' });
   expect(host.status).toBe(200);
@@ -163,7 +175,7 @@ test('Release v3 routes reproduce production MIME, cache, range, and immutable b
 
 test('two tabs pause, resume, finish resources without broadcast ping-pong', async ({ browser }) => {
   const context = await freshContext(browser);
-  await context.route('**/r/**', async (route) => {
+  await context.route('**/p/**', async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     await route.continue();
   });
@@ -189,9 +201,11 @@ test('two tabs pause, resume, finish resources without broadcast ping-pong', asy
   expect(viewport).not.toBeNull();
   expect(Math.abs(dialogBox!.x + dialogBox!.width / 2 - viewport!.width / 2)).toBeLessThanOrEqual(1);
   expect(Math.abs(dialogBox!.y + dialogBox!.height / 2 - viewport!.height / 2)).toBeLessThanOrEqual(1);
-  await owner.getByRole('button', { name: 'Prepare essentials' }).click();
+  await owner.getByRole('button', { name: 'Install complete package' }).click();
   const pause = owner.getByRole('button', { name: 'Pause' });
   await expect(pause).toBeVisible({ timeout: 90_000 });
+  await expect(owner.getByText('Stage 2/4', { exact: true })).toBeVisible();
+  await expect(owner.getByText(/Package segment \d+\/\d+/, { exact: true })).toBeVisible();
   await pause.click();
   await expect(owner.getByText('Paused', { exact: true }).first()).toBeVisible();
   const pausedValue = await waitForStableProgress(owner);
@@ -208,6 +222,20 @@ test('two tabs pause, resume, finish resources without broadcast ping-pong', asy
   await expect(owner.getByRole('progressbar')).toHaveCount(0);
   await follower.locator('#resource-button').click();
   await expect(follower.getByRole('progressbar')).toHaveCount(0);
+
+  await context.setOffline(true);
+  const offlineMagic = await owner.evaluate(async (url) => {
+    const response = await caches.match(url);
+    if (!response) return { status: 0, body: '' };
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return {
+      status: response.status,
+      body: new TextDecoder().decode(bytes.subarray(0, 8)),
+    };
+  }, `${canonicalOrigin}/p/${releaseId}/office-resources.oobpack?segment=segment-001`);
+  expect(offlineMagic.status).toBe(200);
+  expect(offlineMagic.body).toBe('OOBPACK1');
+  await context.setOffline(false);
 
   const before = await waitForStableBroadcastCounts([owner, follower]);
   await owner.waitForTimeout(2_000);

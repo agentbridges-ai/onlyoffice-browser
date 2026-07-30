@@ -74,92 +74,42 @@ describe('runtime font picker filtering', () => {
     expect(syncInitEditorFonts).toHaveBeenLastCalledWith([fonts[1]]);
   });
 
-  it('shows the actual default fallback family for unavailable catalog fonts', () => {
+  it('keeps DocumentServer native missing-font selection untouched', () => {
     const syncInitEditorFonts = vi.fn();
     const getFontFileWeb = vi.fn((name: string) => ({ m_wsFontName: name }));
-    const fontPickerMap = {
-      'Microsoft YaHei': { m_wsFontName: 'Microsoft YaHei' },
-    };
-    const fontPrototype = {
-      asc_getFontName(this: { name?: string }) {
-        return (
-          {
-            DengXian: '等线',
-            'Microsoft YaHei': '微软雅黑',
-          }[this.name || ''] || this.name
-        );
-      },
-    };
-    const textFontPrototype = {
-      get_Name(this: { Name?: string }) {
-        return (
-          {
-            DengXian: '等线',
-            'Microsoft YaHei': '微软雅黑',
-          }[this.Name || ''] || this.Name
-        );
-      },
-    };
-    const fontInput = document.createElement('input');
-    fontInput.setAttribute('role', 'combobox');
-    fontInput.value = '微软雅黑';
-    document.body.appendChild(fontInput);
+    const syncTextPrFontFamily = vi.fn();
     const frameWindow = {
-      document,
+      Asc: { editor: { sync_TextPrFontFamilyCallBack: syncTextPrFontFamily } },
       AscFonts: {
         g_fontApplication: {
-          FontPickerMap: fontPickerMap,
+          FontPickerMap: {},
           GetFontFileWeb: getFontFileWeb,
         },
-        CFont: { prototype: fontPrototype },
       },
       AscCommon: {
-        asc_CTextFontFamily: { prototype: textFontPrototype },
         baseEditorsApi: { prototype: { sync_InitEditorFonts: syncInitEditorFonts } },
       },
     } as unknown as Parameters<typeof installFontPickerFilter>[0];
 
-    expect(installFontPickerFilter(frameWindow, ['DengXian'], ['Microsoft YaHei'])).toBe(true);
-
-    expect(frameWindow.AscFonts?.g_fontApplication?.GetFontFileWeb?.('Microsoft YaHei', 0)).toEqual({
-      m_wsFontName: 'DengXian',
+    expect(installFontPickerFilter(frameWindow, ['DengXian'], ['Missing Family'])).toBe(true);
+    expect(frameWindow.AscFonts?.g_fontApplication?.GetFontFileWeb).toBe(getFontFileWeb);
+    expect(frameWindow.Asc?.editor?.sync_TextPrFontFamilyCallBack).toBe(syncTextPrFontFamily);
+    expect(frameWindow.AscFonts?.g_fontApplication?.GetFontFileWeb?.('Missing Family', 0)).toEqual({
+      m_wsFontName: 'Missing Family',
     });
-    expect(getFontFileWeb).toHaveBeenLastCalledWith('DengXian', 0);
-    expect(fontPickerMap).not.toHaveProperty('Microsoft YaHei');
-    expect(fontPrototype.asc_getFontName.call({ name: 'Microsoft YaHei' })).toBe('等线');
-    expect(fontPrototype.asc_getFontName.call({ name: 'DengXian' })).toBe('等线');
-    expect(textFontPrototype.get_Name.call({ Name: 'Microsoft YaHei' })).toBe('等线');
-    expect(textFontPrototype.get_Name.call({ Name: 'DengXian' })).toBe('等线');
-    expect(fontInput.value).toBe('等线');
-    fontInput.remove();
+    expect(getFontFileWeb).toHaveBeenCalledWith('Missing Family', 0);
   });
 
-  it('maps later font-family callbacks to the fallback instead of restoring an unavailable name', () => {
-    const syncTextPrFontFamily = vi.fn();
-    const editor = {
-      sync_TextPrFontFamilyCallBack: syncTextPrFontFamily,
-    };
-    const frameWindow = {
-      Asc: { editor },
-      AscCommon: {
-        baseEditorsApi: { prototype: { sync_InitEditorFonts: vi.fn() } },
-      },
-    } as unknown as Parameters<typeof installFontPickerFilter>[0];
-
-    expect(installFontPickerFilter(frameWindow, ['DengXian'], ['Microsoft YaHei'])).toBe(true);
-
-    const fontFamily = { Name: 'Microsoft YaHei' };
-    editor.sync_TextPrFontFamilyCallBack(fontFamily);
-    expect(fontFamily.Name).toBe('DengXian');
-    expect(syncTextPrFontFamily).toHaveBeenCalledWith(fontFamily);
-
-    const availableFontFamily = { Name: 'DengXian' };
-    editor.sync_TextPrFontFamilyCallBack(availableFontFamily);
-    expect(availableFontFamily.Name).toBe('DengXian');
-  });
-
-  it('sets both the document default and current insertion font for a new Word document', () => {
+  it('sets Aptos for Western slots and DengXian for the EastAsia slot in a new Word document', () => {
     const setFontFamily = vi.fn();
+    const privateOnChange = vi.fn();
+    const rFonts: {
+      EastAsia: { Name: string; Index: number };
+      EastAsiaTheme?: string;
+    } = {
+      EastAsia: { Name: 'Arial', Index: -1 },
+      EastAsiaTheme: 'minorEastAsia',
+    };
     const putTextPrFontName = vi.fn();
     const updateInterfaceState = vi.fn();
     const frameWindow = {
@@ -169,6 +119,8 @@ describe('runtime font picker filtering', () => {
             GetDocument: () => ({
               GetDefaultTextPr: () => ({
                 SetFontFamily: setFontFamily,
+                TextPr: { RFonts: rFonts },
+                private_OnChange: privateOnChange,
               }),
             }),
           },
@@ -183,34 +135,12 @@ describe('runtime font picker filtering', () => {
     } as unknown as Parameters<typeof applyDefaultWordFont>[0];
 
     expect(applyDefaultWordFont(frameWindow)).toBe(true);
-    expect(setFontFamily).toHaveBeenCalledWith('DengXian');
-    expect(putTextPrFontName).toHaveBeenCalledWith('DengXian');
+    expect(setFontFamily).toHaveBeenCalledWith('Aptos');
+    expect(rFonts.EastAsia).toEqual({ Name: 'DengXian', Index: -1 });
+    expect(rFonts.EastAsiaTheme).toBeUndefined();
+    expect(privateOnChange).toHaveBeenCalledOnce();
+    expect(putTextPrFontName).toHaveBeenCalledWith('Aptos');
     expect(updateInterfaceState).toHaveBeenCalledOnce();
-  });
-
-  it('refreshes cached font substitution when a font is installed in a reused host', () => {
-    const getFontFileWeb = vi.fn((name: string) => ({ m_wsFontName: name }));
-    const frameWindow = {
-      AscFonts: {
-        g_fontApplication: {
-          FontPickerMap: {},
-          GetFontFileWeb: getFontFileWeb,
-        },
-      },
-      AscCommon: {
-        baseEditorsApi: { prototype: { sync_InitEditorFonts: vi.fn() } },
-      },
-    } as unknown as Parameters<typeof installFontPickerFilter>[0];
-
-    expect(installFontPickerFilter(frameWindow, ['DengXian'], ['Microsoft YaHei'])).toBe(true);
-    expect(frameWindow.AscFonts?.g_fontApplication?.GetFontFileWeb?.('Microsoft YaHei', 0)).toEqual({
-      m_wsFontName: 'DengXian',
-    });
-
-    expect(installFontPickerFilter(frameWindow, ['DengXian', 'Microsoft YaHei'], [])).toBe(true);
-    expect(frameWindow.AscFonts?.g_fontApplication?.GetFontFileWeb?.('Microsoft YaHei', 0)).toEqual({
-      m_wsFontName: 'Microsoft YaHei',
-    });
   });
 });
 

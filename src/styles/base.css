@@ -300,6 +300,84 @@ button:disabled {
   gap: 6px;
 }
 
+.resource-progress__stage {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.resource-progress__stage > span:first-child,
+.resource-progress__stage > span:last-child {
+  white-space: nowrap;
+}
+
+.resource-progress__stage > span:first-child {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.resource-progress__stage strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .resource-progress__label {
+    align-items: flex-start;
+  }
+
+  .resource-progress__stage {
+    flex-wrap: wrap;
+  }
+}
+
+.resource-package-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--control-radius) + 4px);
+  background: var(--surface-secondary);
+}
+
+.resource-package-card > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.resource-package-card > div:last-child {
+  justify-items: end;
+  text-align: right;
+}
+
+.resource-package-card strong {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.resource-package-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.resource-package-card[data-ready='true'] {
+  border-color: color-mix(in srgb, var(--success) 32%, var(--border));
+  background: color-mix(in srgb, var(--success) 6%, var(--surface-secondary));
+}
+
 .resource-profile-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -338,12 +416,22 @@ button:disabled {
 }
 
 @media (max-width: 640px) {
+  .resource-package-card {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .resource-package-card > div:last-child {
+    justify-items: start;
+    text-align: left;
+  }
+
   .resource-profile-grid {
     grid-template-columns: 1fr;
   }
 
   .resource-actions > button {
-    flex: 1 1 auto;
+    flex: 1 1 100%;
   }
 }
 
