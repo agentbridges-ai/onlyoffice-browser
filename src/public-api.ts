@@ -31,6 +31,7 @@ export {
   OFFICE_EDITOR_ORIGIN_SLOTS,
   isOfficeEditorOriginSlot,
   isProductionOfficeEditorHostname,
+  isReusableOfficeEditorHostname,
   type OfficeEditorOriginSlot,
 } from './lib/office-origin-pool';
 export {
