@@ -14,13 +14,21 @@ import {
   shouldDisableResponseTransform,
   shouldShareAsset,
 } from '../../cloudflare/worker';
-import { isOfficeEditorOriginSlot } from '../../src/lib/office-origin-pool';
+import { isOfficeEditorOriginSlot, isReusableOfficeEditorHostname } from '../../src/lib/office-origin-pool';
 
 describe('Cloudflare OnlyOffice runtime routing', () => {
   it('recognizes only canonical lowercase constellation slot values', () => {
     expect(isOfficeEditorOriginSlot('aries')).toBe(true);
     expect(isOfficeEditorOriginSlot('ARIES')).toBe(false);
     expect(isOfficeEditorOriginSlot('orion')).toBe(false);
+  });
+
+  it('retains runtime storage only for the fixed production and local origin pool', () => {
+    expect(isReusableOfficeEditorHostname('aries.getpi.work')).toBe(true);
+    expect(isReusableOfficeEditorHostname('pisces.localhost')).toBe(true);
+    expect(isReusableOfficeEditorHostname('host-gemini.office.localhost')).toBe(true);
+    expect(isReusableOfficeEditorHostname('office-editor-legacy.getpi.work')).toBe(false);
+    expect(isReusableOfficeEditorHostname('orion.getpi.work')).toBe(false);
   });
 
   it('accepts the canonical, fixed constellation, and legacy wildcard editor hosts', () => {

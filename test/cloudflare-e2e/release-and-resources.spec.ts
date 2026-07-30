@@ -5,6 +5,7 @@ const packageVersion = process.env.ONLYOFFICE_CF_MATRIX_PACKAGE_VERSION;
 const port = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_PORT || '8787', 10);
 const canonicalOrigin = `http://onlyoffice.localhost:${port}`;
 const editorOrigin = `http://aries.localhost:${port}`;
+const reusableEditorOrigin = `http://host-aries.office.localhost:${port}`;
 
 type ReleaseManifest = {
   version: number;
@@ -241,6 +242,42 @@ test('two tabs pause, resume, finish resources without broadcast ping-pong', asy
   await owner.waitForTimeout(2_000);
   const after = await readBroadcastCounts([owner, follower]);
   expect(after).toEqual(before);
+  expect(failures).toEqual([]);
+  await context.close();
+});
+
+test('a fixed editor origin can be reused immediately for a different document type', async ({ browser }) => {
+  const context = await freshContext(browser);
+  const page = await context.newPage();
+  const failures: BrowserFailure[] = [];
+  collectFailures(page, failures);
+  const hostUrl = `${reusableEditorOrigin}/r/${releaseId}/office-host.html`;
+
+  const openNewDocument = async (type: 'docx' | 'xlsx', editorPath: string) => {
+    const query = new URLSearchParams({
+      scenario: 'new-document',
+      type,
+      hostUrl,
+    });
+    await page.goto(`${canonicalOrigin}/save-e2e.html?${query}`);
+    await page.waitForFunction(
+      () => {
+        const status = window.__ONLYOFFICE_SAVE_E2E__?.getStatus();
+        return status?.ready === true || Boolean(status?.error);
+      },
+      null,
+      { timeout: 3 * 60_000 },
+    );
+    const status = await page.evaluate(() => window.__ONLYOFFICE_SAVE_E2E__!.getStatus());
+    expect(status.error).toBe('');
+    expect(status.ready).toBe(true);
+    await expect.poll(() => page.frames().some((frame) => frame.url().includes(editorPath))).toBe(true);
+  };
+
+  await openNewDocument('docx', '/documenteditor/main/index.html');
+  await page.evaluate(async () => window.__ONLYOFFICE_SAVE_E2E__!.destroy());
+  await openNewDocument('xlsx', '/spreadsheeteditor/main/index.html');
+
   expect(failures).toEqual([]);
   await context.close();
 });

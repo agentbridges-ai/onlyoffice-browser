@@ -21,6 +21,7 @@ import {
   resolveAvailableFontFamilyNames,
   resolveRuntimeAssetCacheMode,
 } from './lib/font-assets';
+import { isReusableOfficeEditorHostname } from './lib/office-origin-pool';
 import { ONLYOFFICE_BROWSER_VERSION } from './version';
 import './styles/base.css';
 
@@ -38,6 +39,7 @@ const OFFICE_HOST_BUILD_ID = `office-host-${ONLYOFFICE_BROWSER_VERSION}-r1`;
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const OFFICE_SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
 const OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS = 30_000;
+const PRINT_PDF_CACHE_NAME = 'onlyoffice-browser-print-pdfs';
 const STARTUP_HEARTBEAT_INTERVAL_MS = 5_000;
 const PLUGIN_REQUEST_TIMEOUT_MS = 30_000;
 const OFFICE_PLUGIN_PROTOCOL = 'onlyoffice-browser-plugin/v1';
@@ -589,6 +591,10 @@ async function destroyRuntime(): Promise<void> {
 }
 
 async function clearHostWorkersAndCaches(): Promise<void> {
+  if (isReusableOfficeEditorHostname(window.location.hostname)) {
+    await window.caches?.delete(PRINT_PDF_CACHE_NAME).catch(() => undefined);
+    return;
+  }
   await Promise.all([
     navigator.serviceWorker
       ?.getRegistrations()

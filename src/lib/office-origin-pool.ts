@@ -27,3 +27,12 @@ export function isProductionOfficeEditorHostname(hostname: string): boolean {
   const label = normalized.slice(0, -'.getpi.work'.length);
   return !label.includes('.') && isOfficeEditorOriginSlot(label);
 }
+
+export function isReusableOfficeEditorHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  if (isProductionOfficeEditorHostname(normalized)) return true;
+  const localLabel =
+    /^(?<slot>[^.]+)\.localhost$/.exec(normalized)?.groups?.slot ||
+    /^host-(?<slot>[^.]+)\.office\.localhost$/.exec(normalized)?.groups?.slot;
+  return Boolean(localLabel && isOfficeEditorOriginSlot(localLabel));
+}

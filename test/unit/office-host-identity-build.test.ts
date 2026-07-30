@@ -14,7 +14,7 @@ describe('Office Host build identity', () => {
     expect(viteConfig).toContain('entryFileNames: `assets/[name]-v${packageJson.version}-[hash].js`');
     expect(viteConfig).toContain('chunkFileNames: `assets/[name]-v${packageJson.version}-[hash].js`');
     expect(viteConfig).toContain('assetFileNames: `assets/[name]-v${packageJson.version}-[hash][extname]`');
-    expect(packageJson.version).toBe('0.5.4');
+    expect(packageJson.version).toBe('0.5.5');
   });
 
   it('returns saved bytes to the embedding parent instead of downloading inside the isolated iframe', () => {
@@ -22,5 +22,12 @@ describe('Office Host build identity', () => {
     expect(source).toContain("saveBehavior: 'callback'");
     expect(source).not.toContain('saveBehavior: message.options.saveBehavior');
     expect(source).toContain('onSave: (file) => postSavedFile(file, activeSaveRequestId)');
+  });
+
+  it('keeps the fixed origin service worker and verified package cache across editor reuse', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/office-host.ts'), 'utf8');
+    expect(source).toContain('isReusableOfficeEditorHostname(window.location.hostname)');
+    expect(source).toContain('window.caches?.delete(PRINT_PDF_CACHE_NAME)');
+    expect(source).toContain('registrations.map((registration) => registration.unregister())');
   });
 });
