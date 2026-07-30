@@ -153,6 +153,13 @@ test('Release v4 routes reproduce production MIME, cache, range, and immutable O
   expect(packMagic.status).toBe(206);
   expect(packMagic.body).toBe('OOBPACK1');
   expect(packMagic.headers['content-type']).toBe('application/vnd.onlyoffice.browser-pack');
+  const firstSegment = manifestResult.body.package.segments[0];
+  const segment = await browserFetch<string>(page, `${canonicalOrigin}/segments/sha256/${firstSegment.sha256}`, {
+    method: 'HEAD',
+  });
+  expect(segment.status).toBe(200);
+  expect(segment.headers['content-length']).toBe(String(firstSegment.bytes));
+  expect(segment.headers['content-type']).toBe('application/vnd.onlyoffice.browser-pack-segment');
 
   const host = await browserFetch<string>(page, `${editorOrigin}/r/${releaseId}/office-host.html`, { method: 'HEAD' });
   expect(host.status).toBe(200);
@@ -193,9 +200,13 @@ test('two tabs pause, resume, finish resources without broadcast ping-pong', asy
     expect(owner.locator('#resource-button')).toBeVisible(),
     expect(follower.locator('#resource-button')).toBeVisible(),
   ]);
+  await expect(owner.locator('#version-label')).toContainText(`Version ${packageVersion}`);
 
-  await owner.locator('#resource-button').click();
   const dialog = owner.locator('#resource-dialog');
+  await owner.getByText('New', { exact: true }).click();
+  await owner.getByRole('button', { name: 'Word document' }).click();
+  await expect(dialog).toBeVisible();
+  await expect(owner.locator('iframe')).toHaveCount(0);
   const dialogBox = await dialog.boundingBox();
   const viewport = owner.viewportSize();
   expect(dialogBox).not.toBeNull();
@@ -221,9 +232,16 @@ test('two tabs pause, resume, finish resources without broadcast ping-pong', asy
     timeout: 30_000,
   });
   await expect(owner.getByRole('progressbar')).toHaveCount(0);
+  await expect(owner.locator('iframe')).toHaveCount(1, { timeout: 3 * 60_000 });
+  await expect(owner.locator('#document-status')).toHaveText('DOCX', { timeout: 3 * 60_000 });
   await follower.locator('#resource-button').click();
   await expect(follower.getByRole('progressbar')).toHaveCount(0);
 
+  const installedManifest = await browserFetch<ReleaseManifest>(
+    owner,
+    `${canonicalOrigin}/releases/${releaseId}/manifest.json`,
+  );
+  const cachedSegment = installedManifest.body.package.segments[0];
   await context.setOffline(true);
   const offlineMagic = await owner.evaluate(async (url) => {
     const response = await caches.match(url);
@@ -233,7 +251,7 @@ test('two tabs pause, resume, finish resources without broadcast ping-pong', asy
       status: response.status,
       body: new TextDecoder().decode(bytes.subarray(0, 8)),
     };
-  }, `${canonicalOrigin}/p/${releaseId}/office-resources.oobpack?segment=segment-001`);
+  }, `${canonicalOrigin}/segments/sha256/${cachedSegment.sha256}`);
   expect(offlineMagic.status).toBe(200);
   expect(offlineMagic.body).toBe('OOBPACK1');
   await context.setOffline(false);

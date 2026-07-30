@@ -111,6 +111,7 @@ export interface ResourceInstallerSnapshot {
   installedRelease: string | null;
   targetRelease: string | null;
   availableRelease: string | null;
+  availablePackageVersion: string | null;
   readiness: ResourceReadiness;
   phase: ResourcePhase;
   storageMode: 'cache-storage' | 'http-cache';
@@ -166,16 +167,26 @@ export type JournalRelease = {
   packageBytes?: number;
 };
 
+export type JournalSegment = {
+  sha256: string;
+  bytes: number;
+  verifiedAt: number;
+};
+
 export interface InstallationJournal {
   listAssets(releaseId: string): Promise<JournalAsset[]>;
   putAsset(asset: JournalAsset): Promise<void>;
   deleteAsset(releaseId: string, path: string): Promise<void>;
   getActiveRelease(): Promise<JournalRelease | null>;
   activateRelease(release: JournalRelease): Promise<void>;
+  listSegments(): Promise<JournalSegment[]>;
+  putSegment(segment: JournalSegment): Promise<void>;
+  deleteSegment(sha256: string): Promise<void>;
 }
 
 const DB_NAME = 'onlyoffice-browser-resources-v3';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+const RELEASE_SEGMENT_CACHE_NAME = 'onlyoffice-release-segments-v1';
 
 export class IndexedDbInstallationJournal implements InstallationJournal {
   private readonly dbPromise: Promise<IDBDatabase>;
@@ -190,6 +201,7 @@ export class IndexedDbInstallationJournal implements InstallationJournal {
           assets.createIndex('releaseId', 'releaseId');
         }
         if (!db.objectStoreNames.contains('metadata')) db.createObjectStore('metadata');
+        if (!db.objectStoreNames.contains('segments')) db.createObjectStore('segments', { keyPath: 'sha256' });
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
@@ -228,6 +240,25 @@ export class IndexedDbInstallationJournal implements InstallationJournal {
     const db = await this.dbPromise;
     await transactionDone(db, 'metadata', 'readwrite', (store) => store.put(release, 'active-release'));
   }
+
+  async listSegments(): Promise<JournalSegment[]> {
+    const db = await this.dbPromise;
+    return new Promise((resolve, reject) => {
+      const request = db.transaction('segments').objectStore('segments').getAll();
+      request.onsuccess = () => resolve(request.result as JournalSegment[]);
+      request.onerror = () => reject(request.error || new Error('IndexedDB read failed'));
+    });
+  }
+
+  async putSegment(segment: JournalSegment): Promise<void> {
+    const db = await this.dbPromise;
+    await transactionDone(db, 'segments', 'readwrite', (store) => store.put(segment));
+  }
+
+  async deleteSegment(sha256: string): Promise<void> {
+    const db = await this.dbPromise;
+    await transactionDone(db, 'segments', 'readwrite', (store) => store.delete(sha256));
+  }
 }
 
 function transactionDone(
@@ -247,6 +278,7 @@ function transactionDone(
 
 export class MemoryInstallationJournal implements InstallationJournal {
   private readonly assets = new Map<string, JournalAsset>();
+  private readonly segments = new Map<string, JournalSegment>();
   private active: JournalRelease | null = null;
 
   async listAssets(releaseId: string): Promise<JournalAsset[]> {
@@ -267,6 +299,18 @@ export class MemoryInstallationJournal implements InstallationJournal {
 
   async activateRelease(release: JournalRelease): Promise<void> {
     this.active = { ...release, installedProfiles: [...release.installedProfiles] };
+  }
+
+  async listSegments(): Promise<JournalSegment[]> {
+    return [...this.segments.values()].map((segment) => ({ ...segment }));
+  }
+
+  async putSegment(segment: JournalSegment): Promise<void> {
+    this.segments.set(segment.sha256, { ...segment });
+  }
+
+  async deleteSegment(sha256: string): Promise<void> {
+    this.segments.delete(sha256);
   }
 }
 
@@ -352,8 +396,8 @@ export function parseReleaseManifest(value: unknown): ReleaseManifestV3 {
     for (const segment of pack.segments) {
       if (
         !segment ||
-        typeof segment.id !== 'string' ||
-        segment.id.length === 0 ||
+        !isDigest(segment.id) ||
+        segment.id !== segment.sha256 ||
         segment.offset !== expectedOffset ||
         !Number.isSafeInteger(segment.bytes) ||
         segment.bytes <= 0 ||
@@ -421,10 +465,9 @@ export class ReleaseRepository {
     return new URL(`p/${encodeURIComponent(releaseId)}/office-resources.oobpack`, this.baseUrl);
   }
 
-  packageSegmentUrl(releaseId: string, segmentId: string): URL {
-    const url = this.packageUrl(releaseId);
-    url.searchParams.set('segment', segmentId);
-    return url;
+  packageSegmentUrl(segmentSha256: string): URL {
+    if (!isDigest(segmentSha256)) throw new ResourceInstallerError('manifest');
+    return new URL(`segments/sha256/${segmentSha256}`, this.baseUrl);
   }
 }
 
@@ -598,6 +641,7 @@ const initialSnapshot = (storageMode: 'cache-storage' | 'http-cache'): ResourceI
   installedRelease: null,
   targetRelease: null,
   availableRelease: null,
+  availablePackageVersion: null,
   readiness: 'checking',
   phase: 'idle',
   storageMode,
@@ -677,7 +721,6 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         active.packageBytes === release.manifest.package.bytes);
     const packageStorageReady =
       !release.manifest.package ||
-      this.options.storageMode === 'http-cache' ||
       (await this.findMissingPackageSegments(release.manifest.releaseId, release.manifest.package)).length === 0;
     const packageReady = packageLedgerReady && packageStorageReady;
     this.snapshot = {
@@ -686,6 +729,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
       installedProfiles: active?.installedProfiles || [],
       targetRelease: release.manifest.releaseId,
       availableRelease: release.manifest.releaseId,
+      availablePackageVersion: release.manifest.packageVersion,
       readiness:
         active?.releaseId === release.manifest.releaseId && packageReady
           ? 'ready'
@@ -706,7 +750,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     );
     const active = await this.options.journal.getActiveRelease();
     const planned = new ResourcePlanner(manifest, installed, active).create(request);
-    if (manifest.package && this.options.storageMode === 'cache-storage') {
+    if (manifest.package) {
       const missing = await this.findMissingPackageSegments(manifest.releaseId, manifest.package);
       const missingIds = new Set(missing.map((segment) => segment.id));
       const downloadBytes = manifest.package.segments
@@ -718,10 +762,10 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     this.plans.set(planned.plan.planId, { manifest, assets: planned.assets, plan: planned.plan });
     this.patch({
       phase: 'idle',
-      downloadedBytes: planned.plan.reusedBytes,
-      downloadBytes: planned.plan.totalBytes,
-      verifiedBytes: planned.plan.reusedBytes,
-      verifyBytes: planned.plan.totalBytes,
+      downloadedBytes: 0,
+      downloadBytes: planned.plan.downloadBytes,
+      verifiedBytes: 0,
+      verifyBytes: planned.plan.downloadBytes,
     });
     return { ...planned.plan, profiles: [...planned.plan.profiles] };
   }
@@ -745,14 +789,13 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
       !manifest.package ||
       (active?.packageSha256 === manifest.package.sha256 && active.packageBytes === manifest.package.bytes);
     const packageStorageReady =
-      !manifest.package ||
-      this.options.storageMode === 'http-cache' ||
-      (await this.findMissingPackageSegments(manifest.releaseId, manifest.package)).length === 0;
+      !manifest.package || (await this.findMissingPackageSegments(manifest.releaseId, manifest.package)).length === 0;
     const packageReady = packageLedgerReady && packageStorageReady;
     this.currentManifest = manifest;
     this.patch({
       availableRelease: manifest.releaseId,
       targetRelease: manifest.releaseId,
+      availablePackageVersion: manifest.packageVersion,
       readiness:
         this.snapshot.installedRelease === manifest.releaseId && packageReady
           ? 'ready'
@@ -772,10 +815,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         active?.releaseId === manifest.releaseId &&
         active.packageSha256 === manifest.package.sha256 &&
         active.packageBytes === manifest.package.bytes;
-      const missing =
-        this.options.storageMode === 'cache-storage'
-          ? await this.findMissingPackageSegments(manifest.releaseId, manifest.package)
-          : [];
+      const missing = await this.findMissingPackageSegments(manifest.releaseId, manifest.package);
       const ready = ledgerReady && missing.length === 0;
       const failures: FailedResource[] = !ledgerReady
         ? [{ path: manifest.package.path, code: 'integrity', attempts: 0 }]
@@ -809,10 +849,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
   async repair(options: { scope: 'required' | 'installed' | 'all' }): Promise<void> {
     const manifest = await this.ensureManifest();
     if (manifest.package) {
-      const missing =
-        this.options.storageMode === 'cache-storage'
-          ? await this.findMissingPackageSegments(manifest.releaseId, manifest.package)
-          : manifest.package.segments;
+      const missing = await this.findMissingPackageSegments(manifest.releaseId, manifest.package);
       const downloadBytes = missing.reduce((sum, segment) => sum + segment.bytes, 0);
       const plan: ResourcePlan = {
         planId: crypto.randomUUID(),
@@ -915,19 +952,26 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
   }
 
   private async findMissingPackageSegments(releaseId: string, pack: ReleasePackage): Promise<ReleasePackageSegment[]> {
-    if (
-      this.options.storageMode !== 'cache-storage' ||
-      !this.options.cacheStorage ||
-      typeof this.options.cacheStorage.match !== 'function'
-    ) {
-      return [...pack.segments];
-    }
+    void releaseId;
+    const verified = new Map((await this.options.journal.listSegments()).map((segment) => [segment.sha256, segment]));
     const missing: ReleasePackageSegment[] = [];
     for (const segment of pack.segments) {
-      const response = await this.options.cacheStorage.match(this.repository.packageSegmentUrl(releaseId, segment.id));
-      const contentLength = response ? Number(response.headers.get('content-length')) : Number.NaN;
-      if (!response?.ok || !Number.isFinite(contentLength) || contentLength !== segment.bytes) {
+      const record = verified.get(segment.sha256);
+      if (!record || record.bytes !== segment.bytes) {
         missing.push(segment);
+        continue;
+      }
+      if (
+        this.options.storageMode === 'cache-storage' &&
+        this.options.cacheStorage &&
+        typeof this.options.cacheStorage.match === 'function'
+      ) {
+        const response = await this.options.cacheStorage.match(this.repository.packageSegmentUrl(segment.sha256));
+        const contentLength = response ? Number(response.headers.get('content-length')) : Number.NaN;
+        if (!response?.ok || !Number.isFinite(contentLength) || contentLength !== segment.bytes) {
+          await this.options.journal.deleteSegment(segment.sha256);
+          missing.push(segment);
+        }
       }
     }
     return missing;
@@ -1023,7 +1067,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         readiness: 'ready',
         canRetry: false,
       });
-      this.cleanupLegacyState(internal.manifest.releaseId);
+      this.cleanupLegacyState();
     } finally {
       this.abortController = null;
     }
@@ -1052,10 +1096,10 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
       currentChunk: alreadyInstalled ? null : pack.segments[0]?.id || null,
       currentChunkIndex: alreadyInstalled ? 0 : 1,
       currentChunkCount: alreadyInstalled ? 0 : pack.segments.length,
-      downloadedBytes: alreadyInstalled ? pack.bytes : internal.plan.reusedBytes,
-      downloadBytes: pack.bytes,
-      verifiedBytes: alreadyInstalled ? pack.bytes : 0,
-      verifyBytes: pack.bytes,
+      downloadedBytes: 0,
+      downloadBytes: alreadyInstalled ? 0 : internal.plan.downloadBytes,
+      verifiedBytes: 0,
+      verifyBytes: alreadyInstalled ? 0 : internal.plan.downloadBytes,
       bytesPerSecond: 0,
       failedResources: [],
       canPause: !alreadyInstalled,
@@ -1112,14 +1156,16 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         currentChunkIndex: 0,
         currentChunkCount: 0,
         readiness: 'ready',
-        downloadedBytes: pack.bytes,
-        verifiedBytes: pack.bytes,
-        bytesPerSecond: Math.round(pack.bytes / Math.max((performance.now() - startedAt) / 1_000, 0.001)),
+        downloadedBytes: this.snapshot.downloadBytes,
+        verifiedBytes: this.snapshot.verifyBytes,
+        bytesPerSecond: Math.round(
+          this.snapshot.downloadBytes / Math.max((performance.now() - startedAt) / 1_000, 0.001),
+        ),
         canPause: false,
         canResume: false,
         canRetry: false,
       });
-      this.cleanupLegacyState(internal.manifest.releaseId);
+      this.cleanupLegacyState();
     } catch (error) {
       const failure =
         error instanceof ResourceInstallerError ? error : new ResourceInstallerError('network', pack.path);
@@ -1144,16 +1190,28 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
 
   private async transferPackage(releaseId: string, pack: ReleasePackage, startedAt: number): Promise<void> {
     const completeDigest = sha256.create();
-    for (const [segmentIndex, segment] of pack.segments.entries()) {
+    const missing = await this.findMissingPackageSegments(releaseId, pack);
+    const transferBytes = missing.reduce((sum, segment) => sum + segment.bytes, 0);
+    this.patch({
+      currentChunk: missing[0]?.id || null,
+      currentChunkIndex: missing.length ? 1 : 0,
+      currentChunkCount: missing.length,
+      downloadedBytes: 0,
+      downloadBytes: transferBytes,
+      verifiedBytes: 0,
+      verifyBytes: transferBytes,
+      canPause: missing.length > 0,
+    });
+    for (const [segmentIndex, segment] of missing.entries()) {
       const delays = [0, ...this.retryDelays()];
       let segmentBytes: Uint8Array | null = null;
       let lastError: unknown;
-      const url = this.repository.packageSegmentUrl(releaseId, segment.id);
+      const url = this.repository.packageSegmentUrl(segment.sha256);
       this.patch({
         phase: 'downloading',
         currentChunk: segment.id,
         currentChunkIndex: segmentIndex + 1,
-        currentChunkCount: pack.segments.length,
+        currentChunkCount: missing.length,
       });
       if (
         this.options.storageMode === 'cache-storage' &&
@@ -1179,7 +1237,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
               phase: 'verifying',
               currentChunk: segment.id,
               currentChunkIndex: segmentIndex + 1,
-              currentChunkCount: pack.segments.length,
+              currentChunkCount: missing.length,
               verifiedBytes: this.snapshot.verifiedBytes + segmentBytes.byteLength,
             });
           } catch {
@@ -1187,7 +1245,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
             this.patch({
               downloadedBytes: Math.max(0, this.snapshot.downloadedBytes - segment.bytes),
             });
-            const cache = await this.options.cacheStorage.open(`onlyoffice-release-staging-${releaseId}`);
+            const cache = await this.options.cacheStorage.open(RELEASE_SEGMENT_CACHE_NAME);
             await cache.delete(url);
           }
         }
@@ -1231,7 +1289,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
                 phase: 'downloading',
                 currentChunk: segment.id,
                 currentChunkIndex: segmentIndex + 1,
-                currentChunkCount: pack.segments.length,
+                currentChunkCount: missing.length,
                 downloadedBytes,
                 bytesPerSecond: Math.round(downloadedBytes / seconds),
               });
@@ -1244,7 +1302,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
           if (bytes.byteLength !== segment.bytes) throw new ResourceInstallerError('integrity', pack.path);
           if (this.options.storageMode === 'cache-storage' && this.options.cacheStorage) {
             try {
-              const cache = await this.options.cacheStorage.open(`onlyoffice-release-staging-${releaseId}`);
+              const cache = await this.options.cacheStorage.open(RELEASE_SEGMENT_CACHE_NAME);
               await cache.put(url, cacheResponse);
             } catch (error) {
               throw new ResourceInstallerError(
@@ -1257,7 +1315,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
             phase: 'verifying',
             currentChunk: segment.id,
             currentChunkIndex: segmentIndex + 1,
-            currentChunkCount: pack.segments.length,
+            currentChunkCount: missing.length,
             verifiedBytes: this.snapshot.verifiedBytes + bytes.byteLength,
           });
           segmentBytes = bytes;
@@ -1281,17 +1339,22 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
         if (lastError instanceof ResourceInstallerError) throw lastError;
         throw networkError();
       }
+      await this.options.journal.putSegment({
+        sha256: segment.sha256,
+        bytes: segment.bytes,
+        verifiedAt: Date.now(),
+      });
       completeDigest.update(segmentBytes);
     }
-    if (bytesToHex(completeDigest.digest()) !== pack.sha256) {
+    if (missing.length === pack.segments.length && bytesToHex(completeDigest.digest()) !== pack.sha256) {
       throw new ResourceInstallerError('integrity', pack.path);
     }
     this.patch({
       phase: 'verifying',
       currentChunk: null,
       currentChunkIndex: 0,
-      currentChunkCount: pack.segments.length,
-      verifiedBytes: pack.bytes,
+      currentChunkCount: missing.length,
+      verifiedBytes: transferBytes,
     });
   }
 
@@ -1394,7 +1457,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
     this.publish();
   }
 
-  private cleanupLegacyState(activeReleaseId?: string): void {
+  private cleanupLegacyState(): void {
     try {
       this.options.legacyStorage?.removeItem('onlyoffice-browser:shared-runtime-cache');
       this.options.legacyStorage?.removeItem('onlyoffice-browser:installed-fonts');
@@ -1410,9 +1473,7 @@ export class TransactionalResourceInstaller implements OfficeRuntimeResourceInst
           keys
             .filter(
               (key) =>
-                key.startsWith('onlyoffice-browser-font-packages-') ||
-                (key.startsWith('onlyoffice-release-staging-') &&
-                  key !== `onlyoffice-release-staging-${activeReleaseId || ''}`),
+                key.startsWith('onlyoffice-browser-font-packages-') || key.startsWith('onlyoffice-release-staging-'),
             )
             .map((key) => this.options.cacheStorage!.delete(key)),
         ),

@@ -5,6 +5,7 @@ import {
   isIsolatedEditorHost,
   isAssetRevision,
   isOnlyOfficeHost,
+  resolveContentSegmentRequest,
   resolveEditorAssetRoute,
   resolveObjectKey,
   resolveReleasePackageRequest,
@@ -77,7 +78,7 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
 
   it('keeps only origin-bound boot files and workers on each editor origin', () => {
     expect(shouldShareAsset('/office-host.html', 'document')).toBe(false);
-    expect(shouldShareAsset('/assets/officeHost-a.js', 'script')).toBe(false);
+    expect(shouldShareAsset('/assets/officeHost-a.js', 'script')).toBe(true);
     expect(shouldShareAsset('/wasm/x2t/worker.js', 'worker')).toBe(false);
     expect(shouldShareAsset('/wasm/x2t/conversion-worker-a.js', null)).toBe(false);
     expect(shouldShareAsset('/wasm/x2t/startup-heartbeat-worker-a.js', 'empty')).toBe(false);
@@ -88,6 +89,12 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(shouldShareAsset('/sw.js', 'script')).toBe(false);
     expect(shouldShareAsset('/sdkjs/word/sdk-all.js', 'script')).toBe(true);
     expect(shouldShareAsset('/fonts/000.ttf', 'empty')).toBe(true);
+  });
+
+  it('accepts only immutable SHA-256 segment paths', () => {
+    const sha256 = 'a'.repeat(64);
+    expect(resolveContentSegmentRequest(`/segments/sha256/${sha256}`)).toEqual({ sha256 });
+    expect(resolveContentSegmentRequest('/segments/sha256/not-a-digest')).toBeNull();
   });
 
   it('maps the public root and rejects traversal keys', () => {

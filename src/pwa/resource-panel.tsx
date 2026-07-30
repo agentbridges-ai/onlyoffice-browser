@@ -46,6 +46,10 @@ function errorLabel(snapshot: OfficeRuntimeResourceSnapshot, copy: OfficeCopy): 
   return code ? copy.resourceErrors[code] : '';
 }
 
+function runResourceAction(action: () => Promise<unknown>): void {
+  void action().catch(() => undefined);
+}
+
 export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeResourceManager; copy: OfficeCopy }) {
   const snapshot = useSyncExternalStore(
     (listener) => manager.subscribe(listener),
@@ -67,7 +71,7 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
     <div className="resource-panel">
       <div className="resource-panel__identity">
         <div>
-          <strong>OnlyOffice {snapshot.packageVersion}</strong>
+          <strong>OnlyOffice {snapshot.availablePackageVersion || snapshot.packageVersion}</strong>
           <span>{copy.resourceIntro}</span>
         </div>
         <span data-state={snapshot.readiness}>
@@ -136,11 +140,11 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
 
       <div className="resource-actions">
         {snapshot.canResume ? (
-          <Button size="sm" variant="primary" onPress={() => void manager.resume()}>
+          <Button size="sm" variant="primary" onPress={() => runResourceAction(() => manager.resume())}>
             {copy.resume}
           </Button>
         ) : snapshot.canRetry ? (
-          <Button size="sm" variant="primary" onPress={() => void manager.repair({ scope: 'all' })}>
+          <Button size="sm" variant="primary" onPress={() => runResourceAction(() => manager.repair({ scope: 'all' }))}>
             {copy.retry}
           </Button>
         ) : snapshot.readiness === 'ready' ? (
@@ -149,7 +153,7 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
             isPending={snapshot.operation === 'check-health'}
             size="sm"
             variant="secondary"
-            onPress={() => void manager.repair({ scope: 'all' })}
+            onPress={() => runResourceAction(() => manager.repair({ scope: 'all' }))}
           >
             {copy.repair}
           </Button>
@@ -159,7 +163,7 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
             isPending={snapshot.operation === 'load-all'}
             size="sm"
             variant="primary"
-            onPress={() => void manager.loadAll()}
+            onPress={() => runResourceAction(() => manager.loadAll())}
           >
             {copy.basicPreset}
           </Button>

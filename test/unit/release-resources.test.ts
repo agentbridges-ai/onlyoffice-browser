@@ -16,7 +16,7 @@ function digest(bytes: Uint8Array | string): string {
 }
 
 const body = new Uint8Array([1, 2, 3, 4]);
-const packBody = new Uint8Array(20).fill(7);
+const packBody = Uint8Array.from({ length: 20 }, (_, index) => index);
 const asset: ReleaseAsset = {
   path: 'sdkjs/word/word.js',
   bytes: body.byteLength,
@@ -81,7 +81,7 @@ function packageManifest(releaseId = 'v0.5.0-pack'): ReleaseManifestV3 {
       segmentBytes: packBody.byteLength,
       segments: [
         {
-          id: 'segment-001',
+          id: digest(packBody),
           offset: 0,
           bytes: packBody.byteLength,
           sha256: digest(packBody),
@@ -101,9 +101,11 @@ function packageFetch(release = packageManifest()) {
     if (url.pathname === `/releases/${release.releaseId}/manifest.json`) {
       return Response.json(release);
     }
-    if (url.pathname === `/p/${release.releaseId}/office-resources.oobpack`) {
+    if (url.pathname.startsWith('/segments/sha256/')) {
       expect(init?.cache).not.toBe('only-if-cached');
-      const segment = release.package?.segments.find((candidate) => candidate.id === url.searchParams.get('segment'));
+      const segment = release.package?.segments.find(
+        (candidate) => candidate.sha256 === url.pathname.split('/').at(-1),
+      );
       if (!segment) return new Response(null, { status: 404 });
       const bytes = packBody.slice(segment.offset, segment.offset + segment.bytes);
       return new Response(bytes, {
@@ -235,7 +237,7 @@ describe('Release Manifest v4 Office Pack', () => {
       downloadBytes: 0,
       reusedBytes: packBody.byteLength,
     });
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/p/'))).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/segments/sha256/'))).toHaveLength(1);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/r/'))).toHaveLength(0);
   });
 
@@ -258,7 +260,9 @@ describe('Release Manifest v4 Office Pack', () => {
     const plan = await installer.plan({ scope: 'all' });
     await installer.apply(plan);
     expect(cachePut).toHaveBeenCalledOnce();
-    expect(String(cachePut.mock.calls[0]?.[0])).toContain('segment=segment-001');
+    expect(String(cachePut.mock.calls[0]?.[0])).toBe(
+      `https://onlyoffice.example.test/segments/sha256/${digest(packBody)}`,
+    );
   });
 
   it('warms only the shared HTTP cache for cross-origin Piwork integration', async () => {
@@ -287,8 +291,18 @@ describe('Release Manifest v4 Office Pack', () => {
       ...release.package!,
       segmentBytes: 10,
       segments: [
-        { id: 'segment-001', offset: 0, bytes: 10, sha256: digest(packBody.slice(0, 10)) },
-        { id: 'segment-002', offset: 10, bytes: 10, sha256: digest(packBody.slice(10, 20)) },
+        {
+          id: digest(packBody.slice(0, 10)),
+          offset: 0,
+          bytes: 10,
+          sha256: digest(packBody.slice(0, 10)),
+        },
+        {
+          id: digest(packBody.slice(10, 20)),
+          offset: 10,
+          bytes: 10,
+          sha256: digest(packBody.slice(10, 20)),
+        },
       ],
     };
     const fetchMock = packageFetch(release);
@@ -304,9 +318,9 @@ describe('Release Manifest v4 Office Pack', () => {
     expect(
       fetchMock.mock.calls
         .map(([input]) => new URL(String(input)))
-        .filter((url) => url.pathname.startsWith('/p/'))
-        .map((url) => url.searchParams.get('segment')),
-    ).toEqual(['segment-001', 'segment-002']);
+        .filter((url) => url.pathname.startsWith('/segments/sha256/'))
+        .map((url) => url.pathname.split('/').at(-1)),
+    ).toEqual([digest(packBody.slice(0, 10)), digest(packBody.slice(10, 20))]);
     expect(installer.getInstallerSnapshot()).toMatchObject({
       readiness: 'ready',
       downloadedBytes: packBody.byteLength,
@@ -314,14 +328,109 @@ describe('Release Manifest v4 Office Pack', () => {
     });
   });
 
+  it.each(['cache-storage', 'http-cache'] as const)(
+    'reuses unchanged content-addressed segments across releases in %s mode',
+    async (storageMode) => {
+      const nextPackBody = packBody.slice();
+      nextPackBody.fill(42, 10);
+      const segmentedRelease = (releaseId: string, bytes: Uint8Array) => {
+        const release = packageManifest(releaseId);
+        release.package = {
+          ...release.package!,
+          sha256: digest(bytes),
+          segmentBytes: 10,
+          segments: [
+            {
+              id: digest(bytes.slice(0, 10)),
+              offset: 0,
+              bytes: 10,
+              sha256: digest(bytes.slice(0, 10)),
+            },
+            {
+              id: digest(bytes.slice(10, 20)),
+              offset: 10,
+              bytes: 10,
+              sha256: digest(bytes.slice(10, 20)),
+            },
+          ],
+        };
+        return release;
+      };
+      const firstRelease = segmentedRelease('v0.5.0-segmented', packBody);
+      const nextRelease = segmentedRelease('v0.5.1-segmented', nextPackBody);
+      let currentRelease = firstRelease;
+      const segmentBodies = new Map([
+        [digest(packBody.slice(0, 10)), packBody.slice(0, 10)],
+        [digest(packBody.slice(10, 20)), packBody.slice(10, 20)],
+        [digest(nextPackBody.slice(10, 20)), nextPackBody.slice(10, 20)],
+      ]);
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/channels/stable.json') {
+          return Response.json({ version: 1, releaseId: currentRelease.releaseId });
+        }
+        if (url.pathname === `/releases/${currentRelease.releaseId}/manifest.json`) {
+          return Response.json(currentRelease);
+        }
+        const segment = segmentBodies.get(url.pathname.split('/').at(-1) || '');
+        return segment
+          ? new Response(segment, { headers: { 'Content-Length': String(segment.byteLength) } })
+          : new Response(null, { status: 404 });
+      });
+      const journal = new MemoryInstallationJournal();
+      const cached = memoryCacheStorage();
+      const create = async () => {
+        const installer = new TransactionalResourceInstaller({
+          assetBaseUrl: 'https://onlyoffice.example.test',
+          fetch: fetchMock as unknown as typeof fetch,
+          cacheStorage: storageMode === 'cache-storage' ? cached.storage : undefined,
+          journal,
+          storageMode,
+          retryDelaysMs: [],
+        });
+        await installer.initialize();
+        return installer;
+      };
+
+      const first = await create();
+      await first.apply(await first.plan({ scope: 'all' }));
+      currentRelease = nextRelease;
+      const upgraded = await create();
+      const plan = await upgraded.plan({ scope: 'all' });
+      expect(plan).toMatchObject({ downloadBytes: 10, reusedBytes: 10 });
+      await upgraded.apply(plan);
+
+      const sharedDigest = digest(packBody.slice(0, 10));
+      const segmentRequests = fetchMock.mock.calls
+        .map(([input]) => new URL(String(input)))
+        .filter((url) => url.pathname.startsWith('/segments/sha256/'));
+      expect(segmentRequests.filter((url) => url.pathname.endsWith(sharedDigest))).toHaveLength(1);
+      expect(segmentRequests).toHaveLength(3);
+      expect(upgraded.getInstallerSnapshot()).toMatchObject({
+        installedRelease: nextRelease.releaseId,
+        readiness: 'ready',
+      });
+    },
+  );
+
   it('detects an evicted standalone segment and repairs only the missing segment', async () => {
     const release = packageManifest('v0.5.0-segmented');
     release.package = {
       ...release.package!,
       segmentBytes: 10,
       segments: [
-        { id: 'segment-001', offset: 0, bytes: 10, sha256: digest(packBody.slice(0, 10)) },
-        { id: 'segment-002', offset: 10, bytes: 10, sha256: digest(packBody.slice(10, 20)) },
+        {
+          id: digest(packBody.slice(0, 10)),
+          offset: 0,
+          bytes: 10,
+          sha256: digest(packBody.slice(0, 10)),
+        },
+        {
+          id: digest(packBody.slice(10, 20)),
+          offset: 10,
+          bytes: 10,
+          sha256: digest(packBody.slice(10, 20)),
+        },
       ],
     };
     const fetchMock = packageFetch(release);
@@ -343,9 +452,7 @@ describe('Release Manifest v4 Office Pack', () => {
     const first = await create();
     await first.apply(await first.plan({ scope: 'all' }));
     expect(cached.entries.size).toBe(2);
-    cached.entries.delete(
-      'https://onlyoffice.example.test/p/v0.5.0-segmented/office-resources.oobpack?segment=segment-002',
-    );
+    cached.entries.delete(`https://onlyoffice.example.test/segments/sha256/${digest(packBody.slice(10, 20))}`);
 
     const restarted = await create();
     expect(restarted.getInstallerSnapshot().readiness).toBe('repair-needed');
@@ -354,14 +461,14 @@ describe('Release Manifest v4 Office Pack', () => {
       readiness: 'repair-needed',
       failedResources: [
         {
-          path: 'office-resources.oobpack?segment=segment-002',
+          path: `office-resources.oobpack?segment=${digest(packBody.slice(10, 20))}`,
           code: 'storage',
         },
       ],
     });
     await restarted.repair({ scope: 'all' });
     expect(restarted.getInstallerSnapshot().readiness).toBe('ready');
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/p/'))).toHaveLength(3);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/segments/sha256/'))).toHaveLength(3);
   });
 
   it('fails closed when the all-in-one package digest is wrong', async () => {
@@ -396,7 +503,7 @@ describe('Release Manifest v4 Office Pack', () => {
       canRetry: true,
       failedResources: [{ path: 'office-resources.oobpack', code: 'integrity' }],
     });
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/p/'))).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/segments/sha256/'))).toHaveLength(1);
   });
 });
 

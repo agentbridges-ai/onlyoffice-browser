@@ -129,14 +129,11 @@ describe('SW fetch routing', () => {
     expect(sw).toContain('loadCurrentRelease()');
     expect(sw).toContain("pack?.format !== 'onlyoffice-pack-v1'");
     expect(sw).toContain('fetchOfficePackAsset(request, releaseAsset, release)');
-    expect(sw).toContain('`/p/${encodeURIComponent(release.releaseId)}/office-resources.oobpack`');
-    expect(sw).toContain("segmentUrl.searchParams.set('segment', segment.id)");
+    expect(sw).toContain('`/segments/sha256/${segment.sha256}`');
     expect(sw).toContain('const overlappingSegments = pack.segments.filter(');
     expect(sw).toContain('const MAX_PACKAGE_SEGMENT_BUFFERS = 4');
-    expect(sw).toContain("const PACKAGE_SEGMENT_CACHE_NAME = 'onlyoffice-browser-package-segments-v1'");
-    expect(sw).toContain('await readPersistedOfficePackSegment(cache, segmentUrl, segment)');
-    expect(sw).toContain("headers.set('x-onlyoffice-segment-sha256', segment.sha256)");
-    expect(sw).toContain('await prunePersistedOfficePackSegments(cache, release.releaseId)');
+    expect(sw).not.toContain('PACKAGE_SEGMENT_CACHE_NAME');
+    expect(sw).not.toContain('caches.open(PACKAGE_SEGMENT_CACHE_NAME)');
     expect(sw).toContain("crypto.subtle.digest('SHA-256', bytes)");
     expect(sw).toContain('new Uint8Array(await loadOfficePackSegment(release, segment))');
     expect(sw).toContain("headers.set('x-onlyoffice-pack-release', release.releaseId)");

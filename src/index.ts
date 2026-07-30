@@ -106,7 +106,7 @@ app.innerHTML = `
       <div id="editor-slot" class="editor-slot"></div>
     </section>
   </main>
-  <footer class="app-footer"><span data-i18n="product">${copy.product}</span><span><span data-i18n="version">${copy.version}</span> ${ONLYOFFICE_BROWSER_VERSION}</span></footer>
+  <footer class="app-footer"><span data-i18n="product">${copy.product}</span><span id="version-label"><span data-i18n="version">${copy.version}</span> ${ONLYOFFICE_BROWSER_VERSION}</span></footer>
   <input id="file-input" type="file" multiple accept=".docx,.xlsx,.pptx,.doc,.xls,.ppt,.csv,.rtf,.odt,.ods,.odp" />
   <dialog id="resource-dialog" class="settings-dialog">
     <form method="dialog">
@@ -137,6 +137,7 @@ const elements = {
   updateButton: document.querySelector<HTMLButtonElement>('#update-button')!,
   dirtyDialog: document.querySelector<HTMLDialogElement>('#dirty-dialog')!,
   languageSelect: document.querySelector<HTMLSelectElement>('#language-select')!,
+  versionLabel: document.querySelector<HTMLElement>('#version-label')!,
 };
 
 const tabs: DocumentTab[] = [];
@@ -146,6 +147,8 @@ let editor: OfficeEditorInstance | null = null;
 let resourceManager: OfficeRuntimeResourceManager | null = null;
 let resourcePanelRoot: Root | null = null;
 let latestResourceSnapshot: OfficeRuntimeResourceSnapshot | null = null;
+let resourceInitialization: Promise<void> | null = null;
+let pendingActivation: DocumentTab | null = null;
 let waitingWorkbox: Workbox | null = null;
 let updateActivationPending = false;
 let editorGeneration = 0;
@@ -155,7 +158,8 @@ const resolvedDemoHost = resolveDemoHostUrl(new URL(location.href));
 const officeHostUrl = (context: OfficeHostUrlContext) => {
   const base = typeof resolvedDemoHost === 'function' ? resolvedDemoHost(context) : resolvedDemoHost;
   const resolved = new URL(base, location.href);
-  const releaseId = resourceManager?.getSnapshot().targetRelease;
+  const resourceSnapshot = resourceManager?.getSnapshot();
+  const releaseId = resourceSnapshot?.installedRelease || resourceSnapshot?.targetRelease;
   if (releaseId && resolved.hostname.endsWith('.getpi.work')) {
     resolved.pathname = `/r/${encodeURIComponent(releaseId)}/office-host.html`;
   }
@@ -353,8 +357,18 @@ async function destroyEditor(): Promise<void> {
   elements.slot.replaceChildren();
 }
 
+async function ensureResourcesReady(tab?: DocumentTab): Promise<boolean> {
+  await resourceInitialization?.catch(() => undefined);
+  if (latestResourceSnapshot?.readiness === 'ready') return true;
+  if (tab) pendingActivation = tab;
+  if (!elements.resourceDialog.open) elements.resourceDialog.showModal();
+  return false;
+}
+
 async function activateTab(tab: DocumentTab): Promise<void> {
   if (tab === activeTab && editor) return;
+  if (!(await ensureResourcesReady(tab))) return;
+  pendingActivation = null;
   if (activeTab?.dirty) {
     const decision = await askDirtyDecision();
     if (decision === 'cancel') return;
@@ -470,6 +484,7 @@ async function addFile(handle: FileSystemFileHandle | undefined, file: File): Pr
 }
 
 async function openFiles(): Promise<void> {
+  if (!(await ensureResourcesReady())) return;
   if (window.showOpenFilePicker) {
     try {
       const handles = await window.showOpenFilePicker({
@@ -519,6 +534,10 @@ function createEmpty(emptyType: 'docx' | 'xlsx' | 'pptx' | 'csv'): void {
 
 function renderResources(snapshot: OfficeRuntimeResourceSnapshot): void {
   latestResourceSnapshot = snapshot;
+  elements.versionLabel.replaceChildren(
+    Object.assign(document.createElement('span'), { textContent: copy.version }),
+    ` ${snapshot.availablePackageVersion || snapshot.packageVersion}`,
+  );
   const state =
     snapshot.readiness === 'ready'
       ? 'ready'
@@ -541,6 +560,12 @@ function renderResources(snapshot: OfficeRuntimeResourceSnapshot): void {
   }
   if (resourceManager) {
     resourcePanelRoot.render(createElement(OfficeResourcePanel, { manager: resourceManager, copy }));
+  }
+  if (snapshot.readiness === 'ready' && pendingActivation) {
+    const tab = pendingActivation;
+    pendingActivation = null;
+    if (elements.resourceDialog.open) elements.resourceDialog.close();
+    queueMicrotask(() => void activateTab(tab));
   }
 }
 
@@ -676,5 +701,6 @@ window.__officeDemo = {
 
 applyLocale(locale);
 initializeServiceWorker();
-void initializeResources();
+resourceInitialization = initializeResources();
+void resourceInitialization;
 void restoreTabs();

@@ -103,9 +103,19 @@ jobs:
             --retries-sleep 2s \
             --ignore-existing \
             --stats-one-line
+          rclone copy .onlyoffice-release/segments r2:onlyoffice-getpi-work/segments \
+            --fast-list \
+            --checkers 32 \
+            --transfers 8 \
+            --retries 6 \
+            --low-level-retries 20 \
+            --retries-sleep 2s \
+            --ignore-existing \
+            --stats-one-line
           rclone check .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs --one-way --checksum
           rclone check .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases --one-way --checksum
           rclone check .onlyoffice-release/packages r2:onlyoffice-getpi-work/packages --one-way --checksum
+          rclone check .onlyoffice-release/segments r2:onlyoffice-getpi-work/segments --one-way --checksum
       - name: Update v2 compatibility files without deleting retained releases
         run: |
           rclone copy dist r2:onlyoffice-getpi-work \
@@ -187,3 +197,13 @@ jobs:
           )"
           test "${PACK_RESULT}" = "206 8 application/vnd.onlyoffice.browser-pack"
           test "$(cat "${RUNNER_TEMP}/onlyoffice-pack-magic")" = "OOBPACK1"
+          export SEGMENT_SHA256="$(
+            node -p "require('./.onlyoffice-release/releases/'+process.env.RELEASE_ID+'/manifest.json').package.segments[0].sha256"
+          )"
+          SEGMENT_RESULT="$(
+            curl --fail --silent --show-error --head \
+              --write-out "%{http_code} %{content_type}" \
+              --output /dev/null \
+              "https://onlyoffice.getpi.work/segments/sha256/${SEGMENT_SHA256}"
+          )"
+          test "${SEGMENT_RESULT}" = "200 application/vnd.onlyoffice.browser-pack-segment"
