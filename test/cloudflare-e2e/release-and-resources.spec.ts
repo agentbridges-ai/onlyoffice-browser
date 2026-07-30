@@ -4,7 +4,7 @@ const releaseId = process.env.ONLYOFFICE_CF_MATRIX_RELEASE_ID;
 const packageVersion = process.env.ONLYOFFICE_CF_MATRIX_PACKAGE_VERSION;
 const port = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_PORT || '8787', 10);
 const canonicalOrigin = `http://onlyoffice.localhost:${port}`;
-const editorOrigin = `http://office-editor-matrix.localhost:${port}`;
+const editorOrigin = `http://aries.localhost:${port}`;
 
 type ReleaseManifest = {
   version: number;

@@ -1,9 +1,15 @@
+import { isProductionOfficeEditorHostname } from '../src/lib/office-origin-pool';
+
 const CANONICAL_HOST = 'onlyoffice.getpi.work';
-const EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
+const LEGACY_EDITOR_HOST_PATTERN = /^office-editor-[a-z0-9-]+\.getpi\.work$/;
 const LOCAL_PWA_HOST = 'onlyoffice.localhost';
 const LOCAL_CANONICAL_HOST = 'assets.office.localhost';
-const LOCAL_EDITOR_HOST_PATTERN = /^office-editor-([a-z0-9-]+)\.localhost$/;
-const LOCAL_ISOLATED_EDITOR_HOST_PATTERN = /^host-office-editor-([a-z0-9-]+)\.office\.localhost$/;
+const LOCAL_LEGACY_EDITOR_HOST_PATTERN = /^office-editor-([a-z0-9-]+)\.localhost$/;
+const LOCAL_LEGACY_ISOLATED_EDITOR_HOST_PATTERN = /^host-office-editor-([a-z0-9-]+)\.office\.localhost$/;
+const LOCAL_EDITOR_HOST_PATTERN =
+  /^(aries|taurus|gemini|cancer|leo|virgo|libra|scorpio|sagittarius|capricorn|aquarius|pisces)\.localhost$/;
+const LOCAL_ISOLATED_EDITOR_HOST_PATTERN =
+  /^host-(aries|taurus|gemini|cancer|leo|virgo|libra|scorpio|sagittarius|capricorn|aquarius|pisces)\.office\.localhost$/;
 const VERSION_QUERY = '__oobv';
 const ASSET_REVISION_PATTERN = /^[a-f0-9]{16,64}$/;
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
@@ -56,11 +62,15 @@ type WorkerExecutionContext = {
 };
 
 export function isOnlyOfficeHost(hostname: string): boolean {
-  return hostname === CANONICAL_HOST || EDITOR_HOST_PATTERN.test(hostname);
+  return (
+    hostname === CANONICAL_HOST ||
+    isProductionOfficeEditorHostname(hostname) ||
+    LEGACY_EDITOR_HOST_PATTERN.test(hostname)
+  );
 }
 
 export function isIsolatedEditorHost(hostname: string): boolean {
-  return EDITOR_HOST_PATTERN.test(hostname);
+  return isProductionOfficeEditorHostname(hostname) || LEGACY_EDITOR_HOST_PATTERN.test(hostname);
 }
 
 export function resolveRuntimeHost(
@@ -76,7 +86,15 @@ export function resolveRuntimeHost(
   const editor = LOCAL_EDITOR_HOST_PATTERN.exec(hostname) || LOCAL_ISOLATED_EDITOR_HOST_PATTERN.exec(hostname);
   if (editor) {
     return {
-      logicalHostname: `office-editor-${editor[1]}.getpi.work`,
+      logicalHostname: `${editor[1]}.getpi.work`,
+      canonicalHostname: LOCAL_CANONICAL_HOST,
+    };
+  }
+  const legacyEditor =
+    LOCAL_LEGACY_EDITOR_HOST_PATTERN.exec(hostname) || LOCAL_LEGACY_ISOLATED_EDITOR_HOST_PATTERN.exec(hostname);
+  if (legacyEditor) {
+    return {
+      logicalHostname: `office-editor-${legacyEditor[1]}.getpi.work`,
       canonicalHostname: LOCAL_CANONICAL_HOST,
     };
   }

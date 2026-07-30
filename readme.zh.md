@@ -12,7 +12,7 @@
 
 - JS/TS API：`createOfficeEditor(container, options)`。
 - 一页多文档：宿主为每个文档创建一个容器和一个组件实例。
-- 独立 origin 的 `office-host.html`，支持 per-editor wildcard host，用于逐个文档销毁 iframe 和隔离内存。
+- 独立 origin 的 `office-host.html`，使用可复用的 12 个 origin 池，兼顾逐文档 iframe 销毁、内存隔离和缓存复用。
 - `public/wasm/x2t` 本地转换链路。
 - `public/web-apps`、`public/sdkjs` OnlyOffice 浏览器运行时。
 - `/` 极简 demo/test 宿主页面。
@@ -46,7 +46,7 @@ npm 主包只包含 JS/TS 组件 API。`office-host.html` 和 OnlyOffice runtime
 import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 
 const editor = await createOfficeEditor(document.querySelector('#editor') as HTMLElement, {
-  hostUrl: ({ sessionId }) => `https://${sessionId}.office-host.example.com/office-host.html`,
+  hostUrl: ({ hostSlot }) => `https://${hostSlot}.office-host.example.com/office-host.html`,
   file,
   fileName: file.name,
   mode: 'edit',
@@ -79,7 +79,7 @@ Word 和演示文稿在编辑器运行态中默认使用适合宽度缩放，让
 autosave 和 forcesave 默认关闭；面向用户的保存应走编辑器工具栏里的 OnlyOffice 原生保存按钮，`editor.save()` 仅作为程序化集成和测试 API 保留。
 OnlyOffice 界面主题只支持现代三项：`interfaceTheme: 'system' | 'light' | 'dark'`。组件会映射到 `theme-system`、`theme-white`、`theme-night`，并把历史 OnlyOffice 主题值（如 `theme-classic-light`、`theme-light`、`theme-gray`、`theme-dark`、`theme-contrast-dark`）迁移到最接近的现代主题。不要删除 `sdkjs/slide/themes`；那是演示文稿文档主题资产，不是界面皮肤。
 
-多文档同时打开时，宿主为每个文档创建一个容器和一个组件实例即可。推荐使用 wildcard DNS/TLS 给每个实例分配独立 host origin，例如 `https://<session>.office-host.example.com/office-host.html`；这样逐个关闭文档时，对应子框架任务可以独立退出。开发环境下，`.localhost` host 会自动派生为 `host-<session>.localhost`。
+多文档同时打开时，宿主为每个文档创建一个容器和一个组件实例即可。组件会为每个活动编辑器租用 12 个稳定星座槽位（`aries` 到 `pisces`）之一，并在 `destroy()` 时释放。部署时配置这 12 个 DNS/TLS 名称（或匹配的 wildcard），再根据 `hostSlot` 解析 `hostUrl`。稳定 origin 既保留逐文档 renderer 隔离，也让 editor Service Worker 复用已校验的 Office Pack 分段；同时打开第 13 个编辑器会抛出 `OfficeHostPoolExhaustedError`。开发环境下，`.localhost` URL 会自动派生为 `host-<hostSlot>.office.localhost`。
 
 ## 开发
 

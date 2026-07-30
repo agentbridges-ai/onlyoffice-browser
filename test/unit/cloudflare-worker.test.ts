@@ -14,14 +14,24 @@ import {
   shouldDisableResponseTransform,
   shouldShareAsset,
 } from '../../cloudflare/worker';
+import { isOfficeEditorOriginSlot } from '../../src/lib/office-origin-pool';
 
 describe('Cloudflare OnlyOffice runtime routing', () => {
-  it('accepts the canonical and unbounded per-editor wildcard hosts', () => {
+  it('recognizes only canonical lowercase constellation slot values', () => {
+    expect(isOfficeEditorOriginSlot('aries')).toBe(true);
+    expect(isOfficeEditorOriginSlot('ARIES')).toBe(false);
+    expect(isOfficeEditorOriginSlot('orion')).toBe(false);
+  });
+
+  it('accepts the canonical, fixed constellation, and legacy wildcard editor hosts', () => {
     expect(isOnlyOfficeHost('onlyoffice.getpi.work')).toBe(true);
+    expect(isOnlyOfficeHost('aries.getpi.work')).toBe(true);
+    expect(isOnlyOfficeHost('pisces.getpi.work')).toBe(true);
     expect(isOnlyOfficeHost('office-editor-a.getpi.work')).toBe(true);
     expect(isOnlyOfficeHost('unrelated.getpi.work')).toBe(false);
     expect(isOnlyOfficeHost('office-a.dev.getpi.work')).toBe(false);
     expect(isOnlyOfficeHost('onlyoffice.getpi.work.example.com')).toBe(false);
+    expect(isIsolatedEditorHost('gemini.getpi.work')).toBe(true);
     expect(isIsolatedEditorHost('office-editor-a.getpi.work')).toBe(true);
     expect(isIsolatedEditorHost('onlyoffice.getpi.work')).toBe(false);
   });
@@ -33,6 +43,14 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     });
     expect(resolveRuntimeHost('assets.office.localhost', true)).toEqual({
       logicalHostname: 'onlyoffice.getpi.work',
+      canonicalHostname: 'assets.office.localhost',
+    });
+    expect(resolveRuntimeHost('aries.localhost', true)).toEqual({
+      logicalHostname: 'aries.getpi.work',
+      canonicalHostname: 'assets.office.localhost',
+    });
+    expect(resolveRuntimeHost('host-gemini.office.localhost', true)).toEqual({
+      logicalHostname: 'gemini.getpi.work',
       canonicalHostname: 'assets.office.localhost',
     });
     expect(resolveRuntimeHost('office-editor-matrix.localhost', true)).toEqual({

@@ -32,7 +32,7 @@ Preview/edit mode assets are not split in this profile. Each document-type pack 
 
 Pass that host page as `hostUrl`. The component rejects same-origin `hostUrl` values because the memory-isolation cleanup relies on an independent iframe origin.
 
-If a page opens multiple large documents at the same time, prefer one host origin per editor instead of sharing a single `office-host.example.com` origin. In production, configure wildcard DNS/TLS such as `*.office-host.example.com`, then pass a `hostUrl` resolver that returns a session-specific subdomain. This lets Chrome retire each editor's subframe renderer when that document closes. In local development, `.localhost` host URLs are automatically derived into `host-<session>.localhost` to emulate the same per-instance isolation.
+If a page opens multiple large documents, configure the 12 fixed constellation hostnames (`aries` through `pisces`) or a matching wildcard. Pass a `hostUrl` resolver that uses `hostSlot`; the component leases a distinct stable origin to every active editor, releases it on `destroy()`, and rejects a thirteenth simultaneous editor with `OfficeHostPoolExhaustedError`. This lets Chrome retire an editor's subframe renderer when that document closes while its verified package segments remain reusable on the stable origin. In local development, `.localhost` URLs are automatically derived into `host-<hostSlot>.office.localhost`.
 
 No OnlyOffice DocumentServer, backend session service, or document upload endpoint is required.
 
@@ -42,8 +42,8 @@ No OnlyOffice DocumentServer, backend session service, or document upload endpoi
 import { createOfficeEditor } from '@agentbridges-ai/onlyoffice-browser';
 
 const container = document.querySelector('#editor') as HTMLElement;
-const officeHostUrl = ({ sessionId }: { sessionId: string }) =>
-  `https://${sessionId}.office-host.example.com/office-host.html`;
+const officeHostUrl = ({ hostSlot }: { hostSlot: string }) =>
+  `https://${hostSlot}.office-host.example.com/office-host.html`;
 
 const editor = await createOfficeEditor(container, {
   hostUrl: officeHostUrl,
@@ -129,7 +129,7 @@ editors[1].setReadonly(true);
 editors[2].destroy();
 ```
 
-The OnlyOffice API script and x2t WASM initialization happen inside each host iframe. Each editor owns its iframe runtime context, which is required for simultaneous editing. To make Chrome Task Manager memory drop as individual documents close, use a per-editor wildcard host origin as shown above.
+The OnlyOffice API script and x2t WASM initialization happen inside each host iframe. Each editor owns its iframe runtime context, which is required for simultaneous editing. The fixed 12-origin pool above lets Chrome release individual renderer processes without creating an unbounded stream of cache-cold origins.
 
 ## Opening Documents
 

@@ -1,4 +1,5 @@
 import { BASE_PATH } from './document-utils';
+import { isProductionOfficeEditorHostname } from './office-origin-pool';
 
 export const GENERATED_FONT_ASSETS_MANIFEST = 'onlyoffice-browser-font-assets.json';
 export const GENERATED_FONT_SOURCE_MAP = 'onlyoffice-browser-font-source-map.json';
@@ -40,6 +41,7 @@ export function resolveRuntimeAssetCacheMode(hostname: string): RequestCache {
   // reuse one browser HTTP-cache entry without revalidation.
   return hostname.endsWith('.office.localhost') ||
     hostname === 'onlyoffice.getpi.work' ||
+    isProductionOfficeEditorHostname(hostname) ||
     /^office-editor-[a-z0-9-]+\.getpi\.work$/.test(hostname)
     ? 'force-cache'
     : 'no-cache';
@@ -218,10 +220,7 @@ async function assertRuntimeAssetReachable(assetPath: string): Promise<void> {
 export async function assertGeneratedFontAssetsAvailable(): Promise<GeneratedFontAssetsManifest> {
   const manifest = await fetchGeneratedFontAssetsManifest();
   const startupFont =
-    manifest.defaultFonts?.[0] ||
-    manifest.defaultFont ||
-    manifest.builtInFonts?.[0] ||
-    manifest.fonts[0];
+    manifest.defaultFonts?.[0] || manifest.defaultFont || manifest.builtInFonts?.[0] || manifest.fonts[0];
   await Promise.all([
     assertRuntimeAssetReachable(manifest.allFonts),
     assertRuntimeAssetReachable(manifest.fontSelection),

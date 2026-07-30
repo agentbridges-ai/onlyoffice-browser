@@ -23,8 +23,10 @@ afterEach(() => {
 describe('generated font assets runtime checks', () => {
   it('reuses versioned wildcard-localhost runtime assets without revalidation', () => {
     expect(resolveRuntimeAssetCacheMode('host-office-editor-1.office.localhost')).toBe('force-cache');
+    expect(resolveRuntimeAssetCacheMode('host-aries.office.localhost')).toBe('force-cache');
     expect(resolveRuntimeAssetCacheMode('assets.office.localhost')).toBe('force-cache');
     expect(resolveRuntimeAssetCacheMode('office-editor-1.getpi.work')).toBe('force-cache');
+    expect(resolveRuntimeAssetCacheMode('aries.getpi.work')).toBe('force-cache');
     expect(resolveRuntimeAssetCacheMode('office.example.com')).toBe('no-cache');
   });
 

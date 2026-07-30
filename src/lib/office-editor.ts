@@ -15,6 +15,7 @@ import {
   type OfficeHostWindowMessage,
 } from './office-host-protocol';
 import { officeHostIdentitiesEqual } from './office-host-identity';
+import { OFFICE_EDITOR_ORIGIN_SLOTS, type OfficeEditorOriginSlot } from './office-origin-pool';
 
 const DESTROY_TIMEOUT_MS = 5_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
@@ -59,6 +60,7 @@ export type OfficeSaveAsCallbackResult = void | boolean;
 export type OfficeDownloadCallbackResult = void;
 export type OfficeHostUrlContext = {
   sessionId: string;
+  hostSlot: OfficeEditorOriginSlot;
   fileName: string;
   fileType: string;
   mode: OfficeEditorMode;
@@ -174,6 +176,15 @@ export class OfficeHostIsolationError extends Error {
     this.origin = origin;
     this.existingSessionId = existingSessionId;
     this.requestedSessionId = requestedSessionId;
+  }
+}
+
+export class OfficeHostPoolExhaustedError extends Error {
+  readonly capacity = OFFICE_EDITOR_ORIGIN_SLOTS.length;
+
+  constructor() {
+    super(`All ${OFFICE_EDITOR_ORIGIN_SLOTS.length} Office editor origins are in use`);
+    this.name = 'OfficeHostPoolExhaustedError';
   }
 }
 
@@ -334,23 +345,16 @@ function maybeHardResetPage(): void {
   }, 0);
 }
 
-function makeHostSessionLabel(sessionId: string): string {
-  return sessionId
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 48);
-}
-
-function isolateLocalhostHostUrl(resolved: URL, sessionId: string): void {
+function isolateLocalhostHostUrl(resolved: URL, hostSlot: OfficeEditorOriginSlot): void {
   if (resolved.hostname === 'localhost' || resolved.hostname.endsWith('.localhost')) {
-    resolved.hostname = `host-${makeHostSessionLabel(sessionId)}.office.localhost`;
+    resolved.hostname = `host-${hostSlot}.office.localhost`;
   }
 }
 
 function resolveHostUrl(
   options: CreateOfficeEditorOptions,
   sessionId: string,
+  hostSlot: OfficeEditorOriginSlot,
   fileName: string,
   fileType: string,
 ): URL {
@@ -359,13 +363,14 @@ function resolveHostUrl(
     typeof options.hostUrl === 'function'
       ? options.hostUrl({
           sessionId,
+          hostSlot,
           fileName,
           fileType,
           mode,
         })
       : options.hostUrl;
   const resolved = new URL(hostUrl, window.location.href);
-  isolateLocalhostHostUrl(resolved, sessionId);
+  isolateLocalhostHostUrl(resolved, hostSlot);
   if (resolved.origin === window.location.origin) {
     throw new Error('createOfficeEditor requires hostUrl to be an independent origin');
   }
@@ -394,7 +399,11 @@ async function toTransferableBuffer(input: OfficeEditorInput | Blob): Promise<Ar
   return copyArrayBuffer(input);
 }
 
-function describeHostInit(options: CreateOfficeEditorOptions, sessionId: string): InitialHostDescriptor {
+function describeHostInit(
+  options: CreateOfficeEditorOptions,
+  sessionId: string,
+  hostSlot: OfficeEditorOriginSlot,
+): InitialHostDescriptor {
   const initialMode = resolveInitialMode(options);
   const initialReadonly = initialMode !== 'edit';
   const emptyType = options.emptyType ? (normalizeExtension(options.emptyType, 'docx') as OfficeEmptyType) : undefined;
@@ -430,7 +439,7 @@ function describeHostInit(options: CreateOfficeEditorOptions, sessionId: string)
   }
 
   return {
-    hostUrl: resolveHostUrl(options, sessionId, fileName, fileType),
+    hostUrl: resolveHostUrl(options, sessionId, hostSlot, fileName, fileType),
     initialState: {
       id: sessionId,
       fileName,
@@ -647,12 +656,25 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
   static mount(container: HTMLElement, options: CreateOfficeEditorOptions): BrowserOfficeEditorProxy {
     const sessionId = makeSessionId();
-    const descriptor = describeHostInit(options, sessionId);
-    const existing = activeOrigins.get(descriptor.hostUrl.origin);
-    if (existing && existing.isActiveOriginOwner()) {
-      throw new OfficeHostIsolationError(descriptor.hostUrl.origin, existing.id, sessionId);
+    let descriptor: InitialHostDescriptor | null = null;
+    let firstConflict: { origin: string; sessionId: string } | null = null;
+    const resolvedOrigins = new Set<string>();
+    for (const hostSlot of OFFICE_EDITOR_ORIGIN_SLOTS) {
+      const candidate = describeHostInit(options, sessionId, hostSlot);
+      if (resolvedOrigins.has(candidate.hostUrl.origin)) continue;
+      resolvedOrigins.add(candidate.hostUrl.origin);
+      const existing = activeOrigins.get(candidate.hostUrl.origin);
+      if (!existing?.isActiveOriginOwner()) {
+        if (existing) activeOrigins.delete(candidate.hostUrl.origin);
+        descriptor = candidate;
+        break;
+      }
+      firstConflict ||= { origin: candidate.hostUrl.origin, sessionId: existing.id };
     }
-    if (existing) activeOrigins.delete(descriptor.hostUrl.origin);
+    if (!descriptor && firstConflict && resolvedOrigins.size === 1) {
+      throw new OfficeHostIsolationError(firstConflict.origin, firstConflict.sessionId, sessionId);
+    }
+    if (!descriptor) throw new OfficeHostPoolExhaustedError();
 
     const instance = new BrowserOfficeEditorProxy(container, options, descriptor);
     activeOrigins.set(descriptor.hostUrl.origin, instance);
