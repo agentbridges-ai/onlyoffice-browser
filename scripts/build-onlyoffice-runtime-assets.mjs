@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reproducibleBuildTimestamp } from './reproducible-build-time.mjs';
 
 const DEFAULT_TYPES = ['word', 'cell', 'slide'];
 const DEFAULT_DICTIONARIES = ['en_US'];
@@ -283,7 +284,7 @@ export function buildRuntimeAssets(options) {
   const { selected, excluded } = collectRuntimeAssets(options.input, options);
   const manifest = {
     version: 2,
-    generatedAt: new Date().toISOString(),
+    generatedAt: reproducibleBuildTimestamp(),
     types: options.types,
     dictionaries: options.dictionaries,
     keepHelp: options.keepHelp,

@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const sourceOrigin = (process.env.ONLYOFFICE_MATRIX_FONT_SOURCE || 'https://onlyoffice.getpi.work').replace(/\/+$/, '');
+const pinnedReleaseId = process.env.ONLYOFFICE_MATRIX_FONT_RELEASE_ID || '';
+const pinnedManifestSha256 = process.env.ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256 || '';
 const cacheRoot = path.resolve(process.env.ONLYOFFICE_MATRIX_FONT_CACHE || '.onlyoffice-cloudflare-matrix-cache');
 const distRoot = path.resolve(process.env.ONLYOFFICE_MATRIX_DIST || 'dist');
 const localFontRoot = process.env.ONLYOFFICE_MATRIX_FONT_ASSETS_DIR
@@ -36,16 +38,20 @@ async function fetchWithRetry(url) {
 }
 
 async function readRelease() {
-  const channel = await fetchWithRetry(`${sourceOrigin}/channels/stable.json`).then((response) => response.json());
-  if (channel.version !== 1 || typeof channel.releaseId !== 'string') {
-    throw new Error('Cloudflare matrix font source returned an invalid stable channel');
+  let releaseId = pinnedReleaseId;
+  if (!releaseId) {
+    const channel = await fetchWithRetry(`${sourceOrigin}/channels/stable.json`).then((response) => response.json());
+    if (channel.version !== 1 || typeof channel.releaseId !== 'string') {
+      throw new Error('Cloudflare matrix font source returned an invalid stable channel');
+    }
+    releaseId = channel.releaseId;
   }
-  const manifest = await fetchWithRetry(
-    `${sourceOrigin}/releases/${encodeURIComponent(channel.releaseId)}/manifest.json`,
-  ).then((response) => response.json());
+  const manifest = await fetchWithRetry(`${sourceOrigin}/releases/${encodeURIComponent(releaseId)}/manifest.json`).then(
+    (response) => response.json(),
+  );
   if (
     (manifest.version !== 3 && manifest.version !== 4) ||
-    manifest.releaseId !== channel.releaseId ||
+    manifest.releaseId !== releaseId ||
     !Array.isArray(manifest.assets)
   ) {
     throw new Error('Cloudflare matrix font source returned an invalid release manifest');
@@ -63,7 +69,13 @@ async function readRelease() {
   ) {
     throw new Error('Cloudflare matrix font release is incomplete');
   }
-  return { releaseId: channel.releaseId, assets };
+  const fontManifest = assets.find((asset) => asset.path === 'onlyoffice-browser-font-assets.json');
+  if (pinnedManifestSha256 && fontManifest.sha256 !== pinnedManifestSha256) {
+    throw new Error(
+      `Pinned Cloudflare font manifest mismatch: expected ${pinnedManifestSha256}, received ${fontManifest.sha256}`,
+    );
+  }
+  return { releaseId, assets };
 }
 
 function validCachedAsset(asset) {

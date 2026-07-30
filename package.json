@@ -1,6 +1,6 @@
 {
   "name": "@agentbridges-ai/onlyoffice-browser",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "packageManager": "pnpm@11.4.0",
   "description": "A local web-based document editor based on OnlyOffice, allowing you to edit documents directly in your browser without server-side processing, ensuring your privacy and security.",
   "type": "module",
@@ -22,6 +22,7 @@
     "dist/npm",
     "scripts/build-onlyoffice-runtime-assets.mjs",
     "scripts/generate-onlyoffice-font-assets.mjs",
+    "scripts/reproducible-build-time.mjs",
     "scripts/verify-onlyoffice-font-assets.mjs",
     "docs/fonts.md",
     "docs/fonts.zh.md",

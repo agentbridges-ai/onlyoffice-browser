@@ -8,6 +8,7 @@ describe('npm package manifest', () => {
 
     expect(pkg.files).toEqual(expect.any(Array));
     expect(pkg.files).toContain('scripts/generate-onlyoffice-font-assets.mjs');
+    expect(pkg.files).toContain('scripts/reproducible-build-time.mjs');
     expect(pkg.files).toContain('docs/fonts.md');
     expect(pkg.files).toContain('docs/fonts.zh.md');
 

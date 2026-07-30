@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { reproducibleBuildTimestamp } from './reproducible-build-time.mjs';
 import { verifyOnlyOfficeFontAssets } from './verify-onlyoffice-font-assets.mjs';
 
 export const DEFAULT_FONT_GENERATOR_IMAGE = 'onlyoffice/documentserver:9.3.0';
@@ -949,7 +950,7 @@ export function writeGeneratedManifest(output, options) {
     generator: 'documentserver-generate-allfonts.sh',
     image: options.image,
     fontSet: options.fontSet,
-    generatedAt: new Date().toISOString(),
+    generatedAt: reproducibleBuildTimestamp(),
     allFonts,
     fontSelection,
     fontSourceMap,
