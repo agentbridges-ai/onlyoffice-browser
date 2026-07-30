@@ -34,6 +34,7 @@ const snapshot: OfficeRuntimeResourceSnapshot = {
   installedRelease: 'v0.4.7-test',
   targetRelease: 'v0.4.7-test',
   availableRelease: 'v0.4.7-test',
+  availablePackageVersion: '0.5.0',
   storageMode: 'http-cache',
   phase: 'idle',
   currentChunk: null,
@@ -99,6 +100,30 @@ describe('OfficeResourcePanel', () => {
       warn.mockRestore();
     },
   );
+
+  it('shows the upstream package version when it is newer than the cached shell', async () => {
+    const upstreamSnapshot = {
+      ...snapshot,
+      packageVersion: '0.5.5',
+      availablePackageVersion: '0.5.6',
+    };
+    const manager = {
+      getSnapshot: () => upstreamSnapshot,
+      subscribe: () => () => undefined,
+      repair: vi.fn(),
+    } as unknown as OfficeRuntimeResourceManager;
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+
+    await act(async () => {
+      root.render(<OfficeResourcePanel manager={manager} copy={officeCopy['zh-CN']} />);
+    });
+
+    expect(host.textContent).toContain('OnlyOffice 0.5.6');
+    expect(host.textContent).not.toContain('OnlyOffice 0.5.5');
+    await act(async () => root.unmount());
+  });
 
   it.each(['zh-CN', 'en-US'] as const)('shows the explicit %s download stage and package segment', async (locale) => {
     const downloadingSnapshot: OfficeRuntimeResourceSnapshot = {

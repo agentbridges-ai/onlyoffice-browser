@@ -119,7 +119,7 @@ function walk(directory, prefix = '') {
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
     const absolute = path.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...walk(absolute, relative));
-    else if (entry.isFile()) files.push({ key: relative, absolute });
+    else if (entry.isFile()) files.push({ key: relative, absolute, bytes: fs.statSync(absolute).size });
   }
   return files;
 }
@@ -172,19 +172,29 @@ async function uploadObject(file) {
 }
 
 async function uploadFiles(files) {
-  let cursor = 0;
   let completed = 0;
+  const largeThreshold = 32 * 1024 * 1024;
+  const smallFiles = files.filter((file) => file.bytes <= largeThreshold);
+  const largeFiles = files.filter((file) => file.bytes > largeThreshold);
+  let cursor = 0;
+  const markCompleted = () => {
+    completed += 1;
+    if (completed % 100 === 0 || completed === files.length) {
+      process.stdout.write(`Seeded ${completed}/${files.length} local R2 objects\n`);
+    }
+  };
   const workers = Array.from({ length: 8 }, async () => {
-    while (cursor < files.length) {
-      const file = files[cursor++];
+    while (cursor < smallFiles.length) {
+      const file = smallFiles[cursor++];
       await uploadObject(file);
-      completed += 1;
-      if (completed % 100 === 0 || completed === files.length) {
-        process.stdout.write(`Seeded ${completed}/${files.length} local R2 objects\n`);
-      }
+      markCompleted();
     }
   });
   await Promise.all(workers);
+  for (const file of largeFiles) {
+    await uploadObject(file);
+    markCompleted();
+  }
 }
 
 async function main() {

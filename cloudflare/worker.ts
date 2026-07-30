@@ -15,6 +15,7 @@ const ASSET_REVISION_PATTERN = /^[a-f0-9]{16,64}$/;
 const PRINT_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
 const RELEASE_PATH_PATTERN = /^\/r\/([^/]{1,384})\/(.+)$/;
 const RELEASE_PACKAGE_PATH_PATTERN = /^\/p\/([^/]{1,384})\/office-resources\.oobpack$/;
+const RELEASE_SEGMENT_PATH_PATTERN = /^\/segments\/sha256\/([a-f0-9]{64})$/;
 const RELEASE_ID_PATTERN = /^[a-zA-Z0-9._+-]{1,128}$/;
 
 type R2ObjectLike = {
@@ -125,7 +126,6 @@ export function shouldShareAsset(pathname: string, destination: string | null): 
   ) {
     return false;
   }
-  if (pathname.startsWith('/assets/')) return false;
   if (
     pathname === '/office-host.html' ||
     pathname === '/reset.html' ||
@@ -181,6 +181,11 @@ export function resolveReleasePackageRequest(pathname: string): { releaseId: str
     return null;
   }
   return RELEASE_ID_PATTERN.test(releaseId) ? { releaseId } : null;
+}
+
+export function resolveContentSegmentRequest(pathname: string): { sha256: string } | null {
+  const match = RELEASE_SEGMENT_PATH_PATTERN.exec(pathname);
+  return match ? { sha256: match[1] } : null;
 }
 
 export function resolveEditorAssetRoute(pathname: string): { releaseId: string | null; pathname: string } {
@@ -357,13 +362,21 @@ async function serveAsset(
 ): Promise<Response> {
   const releaseRequest = resolveReleaseRequest(url.pathname);
   const packageRequest = resolveReleasePackageRequest(url.pathname);
+  const contentSegmentRequest = resolveContentSegmentRequest(url.pathname);
   const packageSegmentId = packageRequest ? url.searchParams.get('segment') : null;
   const immutableAsset = releaseRequest
     ? await resolveImmutableAsset(env, ctx, releaseRequest)
     : packageRequest
       ? await resolveImmutablePackage(env, ctx, packageRequest, packageSegmentId)
-      : null;
-  if ((releaseRequest || packageRequest) && !immutableAsset) {
+      : contentSegmentRequest
+        ? {
+            key: `segments/sha256/${contentSegmentRequest.sha256}`,
+            version: contentSegmentRequest.sha256,
+            publicPath: `segments/sha256/${contentSegmentRequest.sha256}`,
+            mime: 'application/vnd.onlyoffice.browser-pack-segment',
+          }
+        : null;
+  if ((releaseRequest || packageRequest || contentSegmentRequest) && !immutableAsset) {
     return assetError(releaseRequest ? 'Release asset not found' : 'Release package not found', 404);
   }
   const key = immutableAsset?.key || resolveObjectKey(url.pathname);

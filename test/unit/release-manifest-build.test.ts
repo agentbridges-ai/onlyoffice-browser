@@ -124,6 +124,11 @@ describe('immutable release builder', () => {
     expect(fs.existsSync(packPath)).toBe(true);
     expect(fs.readFileSync(packPath).subarray(0, 8).toString()).toBe('OOBPACK1');
     expect(fs.statSync(packPath).size).toBe(first.package.bytes);
+    for (const segment of first.package.segments as Array<{ id: string; sha256: string; bytes: number }>) {
+      expect(segment.id).toBe(segment.sha256);
+      expect(segment.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(fs.statSync(path.join(output, 'segments/sha256', segment.sha256)).size).toBe(segment.bytes);
+    }
     expect(
       first.assets.every(
         (item: { packageOffset?: number; bytes: number }) =>
@@ -139,5 +144,22 @@ describe('immutable release builder', () => {
     for (const item of first.assets as Array<{ sha256: string }>) {
       expect(fs.existsSync(path.join(output, 'blobs/sha256', item.sha256))).toBe(true);
     }
+
+    fs.writeFileSync(path.join(root, 'sdkjs/word/word.js'), 'word changed');
+    const changed = buildRelease({
+      root,
+      output: temp(),
+      packageVersion: '0.4.1',
+      x2tVersion: '9.3.0+1',
+      x2tCommit: 'abc123',
+    });
+    const originalSegments = new Set(
+      (first.package.segments as Array<{ sha256: string; bytes: number }>).slice(1).map((segment) => segment.sha256),
+    );
+    const reusedSegments = (changed.package.segments as Array<{ sha256: string; bytes: number }>).filter((segment) =>
+      originalSegments.has(segment.sha256),
+    );
+    expect(reusedSegments.length).toBeGreaterThan(0);
+    expect(reusedSegments.reduce((sum, segment: { bytes: number }) => sum + segment.bytes, 0)).toBeGreaterThan(0);
   });
 });

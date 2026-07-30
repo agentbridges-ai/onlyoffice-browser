@@ -27,7 +27,6 @@ const ORIGIN_BOUND_DESTINATIONS = new Set(['document', 'iframe', 'worker', 'shar
 
 const MAX_CACHE_ITEMS = 100;
 const MAX_PACKAGE_SEGMENT_BUFFERS = 4;
-const PACKAGE_SEGMENT_CACHE_NAME = 'onlyoffice-browser-package-segments-v1';
 const RUNTIME_CACHE_NAME = 'onlyoffice-browser-runtime-v1';
 const STATIC_CACHE_NAME = 'onlyoffice-browser-static-v1';
 
@@ -44,7 +43,6 @@ const canonicalOfficeOrigin = isLocalEditorHost
   : `https://${CANONICAL_OFFICE_HOST}`;
 let sharedAssetManifestPromise;
 const packageSegmentBuffers = new Map();
-const packageSegmentCachePrunes = new Map();
 setCacheNameDetails({
   prefix: 'onlyoffice-browser',
   precache: 'shell-v1',
@@ -60,7 +58,7 @@ if (isIsolatedEditorHost) {
 
 const shouldProxySharedAsset = (request, url) => {
   if (!isIsolatedEditorHost || ORIGIN_BOUND_DESTINATIONS.has(request.destination)) return false;
-  if (url.pathname.startsWith('/assets/') || url.pathname.startsWith(PRINT_PDF_ROUTE_PREFIX)) return false;
+  if (url.pathname.startsWith(PRINT_PDF_ROUTE_PREFIX)) return false;
   return (
     !ONLYOFFICE_NAVIGATION_PATHS.has(url.pathname) &&
     url.pathname !== '/document_editor_service_worker.js' &&
@@ -177,66 +175,12 @@ const digestHex = async (bytes) =>
     byte.toString(16).padStart(2, '0'),
   ).join('');
 
-const readPersistedOfficePackSegment = async (cache, segmentUrl, segment) => {
-  const response = await cache.match(segmentUrl.href);
-  if (!response) return null;
-  const expectedDigest = response.headers.get('x-onlyoffice-segment-sha256');
-  const expectedBytes = Number(response.headers.get('content-length'));
-  if (
-    !response.ok ||
-    expectedDigest !== segment.sha256 ||
-    !Number.isSafeInteger(expectedBytes) ||
-    expectedBytes !== segment.bytes
-  ) {
-    await cache.delete(segmentUrl.href);
-    return null;
-  }
-  const bytes = await response.arrayBuffer();
-  if (bytes.byteLength === segment.bytes && (await digestHex(bytes)) === segment.sha256) return bytes;
-  await cache.delete(segmentUrl.href);
-  return null;
-};
-
-const prunePersistedOfficePackSegments = (cache, releaseId) => {
-  const existing = packageSegmentCachePrunes.get(releaseId);
-  if (existing) return existing;
-  const currentReleasePrefix = `/p/${encodeURIComponent(releaseId)}/`;
-  const prune = cache
-    .keys()
-    .then((requests) =>
-      Promise.all(
-        requests
-          .filter(({ url }) => {
-            const pathname = new URL(url).pathname;
-            return pathname.startsWith('/p/') && !pathname.startsWith(currentReleasePrefix);
-          })
-          .map((request) => cache.delete(request)),
-      ),
-    )
-    .catch((error) => {
-      console.warn('[onlyoffice-browser] Unable to prune stale Office Pack segments', {
-        releaseId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  packageSegmentCachePrunes.set(releaseId, prune);
-  return prune;
-};
-
 const loadOfficePackSegment = (release, segment) => {
-  const key = `${release.releaseId}/${segment.id}`;
+  const key = segment.sha256;
   const existing = packageSegmentBuffers.get(key);
   if (existing) return existing;
   const promise = (async () => {
-    const segmentUrl = new URL(
-      `/p/${encodeURIComponent(release.releaseId)}/office-resources.oobpack`,
-      canonicalOfficeOrigin,
-    );
-    segmentUrl.searchParams.set('segment', segment.id);
-    const cache = await caches.open(PACKAGE_SEGMENT_CACHE_NAME);
-    await prunePersistedOfficePackSegments(cache, release.releaseId);
-    const persisted = await readPersistedOfficePackSegment(cache, segmentUrl, segment);
-    if (persisted) return persisted;
+    const segmentUrl = new URL(`/segments/sha256/${segment.sha256}`, canonicalOfficeOrigin);
     const response = await fetch(segmentUrl.href, {
       mode: 'cors',
       credentials: 'omit',
@@ -249,27 +193,6 @@ const loadOfficePackSegment = (release, segment) => {
     const bytes = await response.arrayBuffer();
     if (bytes.byteLength !== segment.bytes || (await digestHex(bytes)) !== segment.sha256) {
       throw new Error(`Office Pack segment integrity mismatch: ${segment.id}`);
-    }
-    const headers = new Headers(response.headers);
-    headers.delete('content-encoding');
-    headers.delete('content-range');
-    headers.delete('transfer-encoding');
-    headers.set('content-length', String(segment.bytes));
-    headers.set('x-onlyoffice-segment-sha256', segment.sha256);
-    try {
-      await cache.put(
-        segmentUrl.href,
-        new Response(bytes.slice(0), {
-          status: 200,
-          headers,
-        }),
-      );
-    } catch (error) {
-      console.warn('[onlyoffice-browser] Unable to persist verified Office Pack segment', {
-        releaseId: release.releaseId,
-        segmentId: segment.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
     return bytes;
   })().catch((error) => {

@@ -51,9 +51,12 @@ function mimeFor(file) {
 }
 
 export function buildOfficePack(root, output, assets, segmentBytes = OFFICE_PACK_SEGMENT_BYTES) {
+  const packedAssets = [...assets].sort(
+    (left, right) => left.chunk.localeCompare(right.chunk) || left.path.localeCompare(right.path),
+  );
   const entries = [];
   let relativeOffset = 0;
-  for (const asset of assets) {
+  for (const asset of packedAssets) {
     entries.push({
       path: asset.path,
       offset: relativeOffset,
@@ -69,59 +72,66 @@ export function buildOfficePack(root, output, assets, segmentBytes = OFFICE_PACK
   OFFICE_PACK_MAGIC.copy(header, 0);
   header.writeUInt32BE(indexBytes.byteLength, OFFICE_PACK_MAGIC.byteLength);
   const headerBytes = header.byteLength + indexBytes.byteLength;
-  for (let index = 0; index < assets.length; index += 1) {
-    assets[index].packageOffset = headerBytes + entries[index].offset;
+  for (let index = 0; index < packedAssets.length; index += 1) {
+    packedAssets[index].packageOffset = headerBytes + entries[index].offset;
   }
 
   fs.mkdirSync(output, { recursive: true });
   const temporaryPath = path.join(output, '.office-resources.oobpack.tmp');
   const file = fs.openSync(temporaryPath, 'w');
   const completeDigest = crypto.createHash('sha256');
-  let segmentDigest = crypto.createHash('sha256');
-  let segmentOffset = 0;
-  let segmentLength = 0;
   let totalBytes = 0;
   const segments = [];
 
-  const write = (bytes) => {
-    fs.writeSync(file, bytes);
-    completeDigest.update(bytes);
-    let cursor = 0;
-    while (cursor < bytes.byteLength) {
-      const available = segmentBytes - segmentLength;
-      const length = Math.min(available, bytes.byteLength - cursor);
-      segmentDigest.update(bytes.subarray(cursor, cursor + length));
-      segmentLength += length;
-      cursor += length;
-      totalBytes += length;
-      if (segmentLength === segmentBytes) {
-        segments.push({
-          id: `segment-${String(segments.length + 1).padStart(3, '0')}`,
-          offset: segmentOffset,
-          bytes: segmentLength,
-          sha256: segmentDigest.digest('hex'),
-        });
-        segmentOffset += segmentLength;
-        segmentLength = 0;
-        segmentDigest = crypto.createHash('sha256');
+  const writeSegment = (parts) => {
+    const offset = totalBytes;
+    const digest = crypto.createHash('sha256');
+    const temporarySegment = path.join(output, `.office-segment-${segments.length + 1}.tmp`);
+    const segmentFile = fs.openSync(temporarySegment, 'w');
+    let bytes = 0;
+    try {
+      for (const part of parts) {
+        const value = Buffer.isBuffer(part) ? part : fs.readFileSync(path.join(root, part.path));
+        fs.writeSync(file, value);
+        fs.writeSync(segmentFile, value);
+        completeDigest.update(value);
+        digest.update(value);
+        bytes += value.byteLength;
+        totalBytes += value.byteLength;
       }
+    } finally {
+      fs.closeSync(segmentFile);
     }
+    const segmentSha256 = digest.digest('hex');
+    const segmentPath = path.join(output, 'segments', 'sha256', segmentSha256);
+    fs.mkdirSync(path.dirname(segmentPath), { recursive: true });
+    if (fs.existsSync(segmentPath)) fs.rmSync(temporarySegment);
+    else fs.renameSync(temporarySegment, segmentPath);
+    segments.push({
+      id: segmentSha256,
+      offset,
+      bytes,
+      sha256: segmentSha256,
+    });
   };
 
   try {
-    write(header);
-    write(indexBytes);
-    for (const asset of assets) write(fs.readFileSync(path.join(root, asset.path)));
+    writeSegment([header, indexBytes]);
+    let currentChunk = '';
+    let currentAssets = [];
+    const flushChunk = () => {
+      if (!currentAssets.length) return;
+      writeSegment(currentAssets);
+      currentAssets = [];
+    };
+    for (const asset of packedAssets) {
+      if (currentChunk && asset.chunk !== currentChunk) flushChunk();
+      currentChunk = asset.chunk;
+      currentAssets.push(asset);
+    }
+    flushChunk();
   } finally {
     fs.closeSync(file);
-  }
-  if (segmentLength > 0) {
-    segments.push({
-      id: `segment-${String(segments.length + 1).padStart(3, '0')}`,
-      offset: segmentOffset,
-      bytes: segmentLength,
-      sha256: segmentDigest.digest('hex'),
-    });
   }
 
   return {

@@ -48,6 +48,7 @@ export type OfficeRuntimeResourceSnapshot = {
   installedRelease: string | null;
   targetRelease: string | null;
   availableRelease: string | null;
+  availablePackageVersion: string | null;
   storageMode: 'cache-storage' | 'http-cache';
   phase: ResourceInstallerSnapshot['phase'];
   currentChunk: string | null;
@@ -343,6 +344,7 @@ export class OfficeRuntimeResourceManager {
       installedRelease: installer?.installedRelease || null,
       targetRelease: installer?.targetRelease || this.controller.version,
       availableRelease: installer?.availableRelease || null,
+      availablePackageVersion: installer?.availablePackageVersion || null,
       storageMode: installer?.storageMode || 'http-cache',
       phase: installer?.phase || (operation ? 'downloading' : 'idle'),
       currentChunk: installer?.currentChunk || null,
