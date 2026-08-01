@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { applyFontPickerPolicy } from './apply-font-picker-policy.mjs';
 
 const sourceOrigin = (process.env.ONLYOFFICE_MATRIX_FONT_SOURCE || 'https://onlyoffice.getpi.work').replace(/\/+$/, '');
 const pinnedReleaseId = process.env.ONLYOFFICE_MATRIX_FONT_RELEASE_ID || '';
@@ -153,8 +154,8 @@ export async function main() {
   if (localFontRoot) {
     const manifestPath = path.join(localFontRoot, 'onlyoffice-browser-font-assets.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    if (manifest.fontSet !== 'full' || !Array.isArray(manifest.fontFamilies) || manifest.fontFamilies.length < 70) {
-      throw new Error('Local Cloudflare matrix requires a verified full font set with at least 70 families');
+    if (manifest.fontSet !== 'full' || !Array.isArray(manifest.fontFamilies) || manifest.fontFamilies.length < 45) {
+      throw new Error('Local Cloudflare matrix requires the verified curated full font set with at least 45 families');
     }
     const paths = ['onlyoffice-browser-font-assets.json', ...(manifest.assets || []).map((asset) => asset.path)];
     const assets = [...new Set(paths)].map((assetPath) => {
@@ -173,16 +174,18 @@ export async function main() {
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.copyFileSync(path.join(localFontRoot, asset.path), destination);
     }
+    const policy = applyFontPickerPolicy(distRoot);
     process.stdout.write(
-      `Hydrated ${assets.length} verified local full-font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes, ${manifest.fontFamilies.length} families)\n`,
+      `Hydrated ${assets.length} verified local full-font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes, ${policy.visibleNames.length} visible families)\n`,
     );
   } else {
     const { releaseId, assets } = await readRelease();
     fs.mkdirSync(cacheRoot, { recursive: true });
     await hydrateCache(releaseId, assets);
     copyToDist(assets);
+    const policy = applyFontPickerPolicy(distRoot);
     process.stdout.write(
-      `Hydrated ${assets.length} verified font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes) from ${releaseId}\n`,
+      `Hydrated ${assets.length} verified font objects (${assets.reduce((sum, asset) => sum + asset.bytes, 0)} bytes, ${policy.visibleNames.length} visible families) from ${releaseId}\n`,
     );
   }
 }

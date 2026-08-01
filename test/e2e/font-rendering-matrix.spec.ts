@@ -90,11 +90,25 @@ test.describe('OnlyOffice native font behavior', () => {
     });
     expect(
       familyNames.length,
-      'the complete Office package must expose at least 170 font families',
-    ).toBeGreaterThanOrEqual(170);
+      'the curated Chinese and Western picker must expose its common font families',
+    ).toBeGreaterThanOrEqual(45);
     expect(familyNames).toContain('Aptos');
     expect(familyNames).toContain('Calibri');
     expect(familyNames).toContain('DengXian');
+    expect(familyNames).not.toEqual(
+      expect.arrayContaining([
+        'ASCW3',
+        'Bookshelf Symbol 7',
+        'Cambria Math',
+        'Noto Emoji',
+        'OpenSymbol',
+        'Symbol',
+        'Webdings',
+        'Wingdings',
+        'Wingdings 2',
+        'Wingdings 3',
+      ]),
+    );
 
     await page.locator('.new-menu > summary').click();
     await page.getByRole('button', { name: 'Word document' }).click();

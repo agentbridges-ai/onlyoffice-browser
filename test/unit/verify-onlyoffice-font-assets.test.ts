@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -44,11 +45,13 @@ function writeAllFonts(
 ): void {
   const files = options.files ?? ['000.ttf'];
   const infos = options.infos ?? [
+    ['Aptos', 0, 0, -1, -1, -1, -1, -1, -1],
     ['Arial', 0, 0, -1, -1, -1, -1, -1, -1],
+    ['DengXian', 0, 0, -1, -1, -1, -1, -1, -1],
     ['Droid Sans Fallback', 0, 0, -1, -1, -1, -1, -1, -1],
   ];
-  const ranges = options.ranges ?? [32, 126, 0, 19968, 40869, 1];
-  const visibleNames = options.visibleNames ?? ['Arial', 'Droid Sans Fallback'];
+  const ranges = options.ranges ?? [32, 126, 0, 19968, 40869, 2];
+  const visibleNames = options.visibleNames ?? ['Aptos', 'Arial', 'DengXian'];
   fs.writeFileSync(
     path.join(root, 'sdkjs/common/AllFonts.js'),
     [
@@ -65,18 +68,59 @@ function writeFixture(root: string): void {
   fs.mkdirSync(path.join(root, 'server/FileConverter/bin'), { recursive: true });
   fs.mkdirSync(path.join(root, 'fonts'), { recursive: true });
   writeAllFonts(root);
-  fs.writeFileSync(path.join(root, 'sdkjs/common/Images/fonts_thumbnail.png'), makePngHeader(300, 56));
+  fs.writeFileSync(path.join(root, 'sdkjs/common/Images/fonts_thumbnail.png'), makePngHeader(300, 112));
   fs.writeFileSync(path.join(root, 'server/FileConverter/bin/font_selection.bin'), '');
   fs.writeFileSync(path.join(root, 'fonts/000.ttf'), '');
   fs.writeFileSync(
+    path.join(root, 'onlyoffice-browser-font-source-map.json'),
+    JSON.stringify({
+      fontSet: 'full',
+      keptFamilies: ['Aptos', 'Arial', 'DengXian', 'Droid Sans Fallback'],
+      visibleFamilies: ['Aptos', 'Arial', 'DengXian'],
+      listedFamilies: ['Aptos', 'Arial', 'DengXian', 'Droid Sans Fallback'],
+      fonts: [{ file: 'fonts/000.ttf', source: '/fonts/000.ttf' }],
+    }),
+  );
+  writeManifest(root, {
+    version: 1,
+    fontSet: 'full',
+    allFonts: 'sdkjs/common/AllFonts.js',
+    fontSelection: 'server/FileConverter/bin/font_selection.bin',
+    fontSourceMap: 'onlyoffice-browser-font-source-map.json',
+    fontThumbnails: ['sdkjs/common/Images/fonts_thumbnail.png'],
+    fonts: ['fonts/000.ttf'],
+    defaultFonts: ['fonts/000.ttf'],
+    fallbackFonts: { default: ['fonts/000.ttf'], cjk: ['fonts/000.ttf'] },
+    fontFamilies: [
+      { name: 'Aptos', paths: ['fonts/000.ttf'] },
+      { name: 'Arial', paths: ['fonts/000.ttf'] },
+      { name: 'DengXian', paths: ['fonts/000.ttf'] },
+    ],
+  });
+}
+
+function writeManifest(root: string, manifest: Record<string, unknown>): void {
+  const assetPaths = [
+    String(manifest.allFonts),
+    String(manifest.fontSelection),
+    ...(manifest.fontSourceMap ? [String(manifest.fontSourceMap)] : []),
+    ...((manifest.fontThumbnails as string[]) || []),
+    ...((manifest.fonts as string[]) || []),
+  ];
+  const assets = assetPaths.map((assetPath) => {
+    const bytes = fs.readFileSync(path.join(root, assetPath));
+    return {
+      path: assetPath,
+      bytes: bytes.byteLength,
+      revision: crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16),
+    };
+  });
+  fs.writeFileSync(
     path.join(root, 'onlyoffice-browser-font-assets.json'),
     JSON.stringify({
-      version: 1,
-      fontSet: 'full',
-      allFonts: 'sdkjs/common/AllFonts.js',
-      fontSelection: 'server/FileConverter/bin/font_selection.bin',
-      fontThumbnails: ['sdkjs/common/Images/fonts_thumbnail.png'],
-      fonts: ['fonts/000.ttf'],
+      ...manifest,
+      totalBytes: assets.reduce((total, asset) => total + asset.bytes, 0),
+      assets,
     }),
   );
 }
@@ -112,18 +156,15 @@ function writeZhCoreFallbackFixture(root: string): void {
       ],
     }),
   );
-  fs.writeFileSync(
-    path.join(root, 'onlyoffice-browser-font-assets.json'),
-    JSON.stringify({
-      version: 1,
-      fontSet: 'zh-core',
-      allFonts: 'sdkjs/common/AllFonts.js',
-      fontSelection: 'server/FileConverter/bin/font_selection.bin',
-      fontSourceMap: 'onlyoffice-browser-font-source-map.json',
-      fontThumbnails: ['sdkjs/common/Images/fonts_thumbnail.png'],
-      fonts: files.map((file) => `fonts/${file}`),
-    }),
-  );
+  writeManifest(root, {
+    version: 1,
+    fontSet: 'zh-core',
+    allFonts: 'sdkjs/common/AllFonts.js',
+    fontSelection: 'server/FileConverter/bin/font_selection.bin',
+    fontSourceMap: 'onlyoffice-browser-font-source-map.json',
+    fontThumbnails: ['sdkjs/common/Images/fonts_thumbnail.png'],
+    fonts: files.map((file) => `fonts/${file}`),
+  });
 }
 
 afterEach(() => {
@@ -150,6 +191,44 @@ describe('verify-onlyoffice-font-assets', () => {
     });
   });
 
+  it('rejects auxiliary compatibility faces exposed in the user font picker', () => {
+    const root = makeTempDir();
+    writeFixture(root);
+    writeAllFonts(root, {
+      infos: [
+        ['Aptos', 0, 0, -1, -1, -1, -1, -1, -1],
+        ['Arial', 0, 0, -1, -1, -1, -1, -1, -1],
+        ['DengXian', 0, 0, -1, -1, -1, -1, -1, -1],
+        ['Droid Sans Fallback', 0, 0, -1, -1, -1, -1, -1, -1],
+        ['Wingdings', 0, 0, -1, -1, -1, -1, -1, -1],
+      ],
+      visibleNames: ['Aptos', 'Arial', 'DengXian', 'Wingdings'],
+    });
+    fs.writeFileSync(path.join(root, 'sdkjs/common/Images/fonts_thumbnail.png'), makePngHeader(300, 140));
+
+    expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
+      'Generated AllFonts.js exposes a non-common font in the picker: Wingdings',
+    );
+  });
+
+  it('requires Aptos and DengXian in the full product font picker', () => {
+    const root = makeTempDir();
+    writeFixture(root);
+    writeAllFonts(root, {
+      infos: [
+        ['Arial', 0, 0, -1, -1, -1, -1, -1, -1],
+        ['Droid Sans Fallback', 0, 0, -1, -1, -1, -1, -1, -1],
+      ],
+      ranges: [32, 126, 0, 19968, 40869, 1],
+      visibleNames: ['Arial'],
+    });
+    fs.writeFileSync(path.join(root, 'sdkjs/common/Images/fonts_thumbnail.png'), makePngHeader(300, 56));
+
+    expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
+      'Generated AllFonts.js font picker is missing required default family: Aptos',
+    );
+  });
+
   it('rejects missing generated font files referenced by the manifest', () => {
     const root = makeTempDir();
     writeFixture(root);
@@ -174,7 +253,7 @@ describe('verify-onlyoffice-font-assets', () => {
     writeAllFonts(root, { ranges: [32, 126, 0, 19968, 40869, 0] });
 
     expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
-      'Generated AllFonts.js maps CJK range 19968-40869 to non-CJK font Arial',
+      'Generated AllFonts.js maps CJK range 19968-40869 to non-CJK font Aptos',
     );
   });
 
@@ -226,6 +305,46 @@ describe('verify-onlyoffice-font-assets', () => {
 
     expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
       'Generated zh-core Office glyph U+21BB maps to Arial instead of DejaVu Sans',
+    );
+  });
+
+  it('rejects stale bytes and revisions after picker metadata changes', () => {
+    const root = makeTempDir();
+    writeFixture(root);
+    const manifestPath = path.join(root, 'onlyoffice-browser-font-assets.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.assets.find((asset: { path: string }) => asset.path === 'sdkjs/common/AllFonts.js').revision =
+      '0000000000000000';
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
+      'Generated font asset manifest revision does not match: sdkjs/common/AllFonts.js',
+    );
+  });
+
+  it('rejects picker catalogs that drift between AllFonts, the manifest and source map', () => {
+    const root = makeTempDir();
+    writeFixture(root);
+    const sourceMapPath = path.join(root, 'onlyoffice-browser-font-source-map.json');
+    const sourceMap = JSON.parse(fs.readFileSync(sourceMapPath, 'utf8'));
+    sourceMap.visibleFamilies = ['Arial'];
+    fs.writeFileSync(sourceMapPath, JSON.stringify(sourceMap));
+
+    expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
+      'Generated font source map visibleFamilies does not match AllFonts.js',
+    );
+  });
+
+  it('requires Aptos and DengXian files to remain the manifest defaults', () => {
+    const root = makeTempDir();
+    writeFixture(root);
+    const manifestPath = path.join(root, 'onlyoffice-browser-font-assets.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.fallbackFonts.default = [];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    expect(() => verifyOnlyOfficeFontAssets(root)).toThrow(
+      'Generated full font asset manifest has invalid default fallback files for Aptos',
     );
   });
 });

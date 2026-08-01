@@ -20,7 +20,8 @@ function waitForMessage(): Promise<void> {
 }
 
 function getSessionId(iframe: HTMLIFrameElement): string {
-  return new URL(iframe.src).searchParams.get('sessionId') || '';
+  const url = new URL(iframe.src);
+  return new URLSearchParams(url.hash.slice(1)).get('sessionId') || url.searchParams.get('sessionId') || '';
 }
 
 async function waitForIframe(container: HTMLElement): Promise<HTMLIFrameElement> {
@@ -136,9 +137,30 @@ describe('office-editor parent proxy', () => {
     await expect(activation).resolves.toMatchObject({ id: mount.id });
     expect(connection.messages[0]).toMatchObject({ type: 'INIT' });
     expect(mount.getState()).toMatchObject({ phase: 'ready' });
+    const debug = (
+      window as typeof window & {
+        __officeHostDebug?: {
+          activeHostPortCount: number;
+          peakActiveHostPortCount: number;
+          activeInstanceCount: number;
+          activeOriginLeaseCount: number;
+        };
+      }
+    ).__officeHostDebug;
+    expect(debug).toMatchObject({
+      activeHostPortCount: 1,
+      activeInstanceCount: 1,
+      activeOriginLeaseCount: 1,
+    });
+    expect(debug!.peakActiveHostPortCount).toBeGreaterThanOrEqual(1);
 
     await mount.destroy();
     expect(mount.getState()).toMatchObject({ phase: 'destroyed' });
+    expect(debug).toMatchObject({
+      activeHostPortCount: 0,
+      activeInstanceCount: 0,
+      activeOriginLeaseCount: 0,
+    });
   });
 
   it('routes out-of-order READY messages and destruction to independent mounts', async () => {
@@ -241,6 +263,123 @@ describe('office-editor parent proxy', () => {
     expect(new URL(reusedContainer.querySelector<HTMLIFrameElement>('iframe')!.src).hostname).toBe('aries.getpi.work');
 
     await Promise.all([...mounts.slice(1).map((mount) => mount.destroy()), reused.destroy()]);
+  });
+
+  it('keeps a closing origin retired until host teardown completes, then reuses it safely', async () => {
+    const firstContainer = document.createElement('div');
+    const secondContainer = document.createElement('div');
+    document.body.append(firstContainer, secondContainer);
+    const options = (fileName: string) => ({
+      hostUrl: ({ hostSlot }: { hostSlot: string }) => `https://${hostSlot}.getpi.work/office-host.html`,
+      file: new File([fileName], fileName),
+      fileName,
+      destroyTimeoutMs: 5_000,
+    });
+
+    const first = mountOfficeEditor(firstContainer, options('first.docx'));
+    const second = mountOfficeEditor(secondContainer, options('second.docx'));
+    const { iframe: firstFrame } = await connectHost(firstContainer);
+    const firstOrigin = new URL(firstFrame.src).origin;
+    const firstCompletion = first.destroy();
+
+    const whileRetiringContainer = document.createElement('div');
+    document.body.appendChild(whileRetiringContainer);
+    const whileRetiring = mountOfficeEditor(whileRetiringContainer, options('while-retiring.docx'));
+    expect(new URL(whileRetiringContainer.querySelector<HTMLIFrameElement>('iframe')!.src).hostname).toBe(
+      'gemini.getpi.work',
+    );
+
+    const parentWindow = firstContainer.ownerDocument.defaultView || window;
+    parentWindow.dispatchEvent(
+      new parentWindow.MessageEvent('message', {
+        origin: firstOrigin,
+        source: firstFrame.contentWindow,
+        data: {
+          protocol: OFFICE_HOST_PROTOCOL,
+          type: 'HOST_RESET_DONE',
+          sessionId: first.id,
+        },
+      }),
+    );
+    await flush();
+    firstFrame.dispatchEvent(new Event('load'));
+    await firstCompletion;
+
+    const reusedContainer = document.createElement('div');
+    document.body.appendChild(reusedContainer);
+    const reused = mountOfficeEditor(reusedContainer, options('reused.docx'));
+    expect(new URL(reusedContainer.querySelector<HTMLIFrameElement>('iframe')!.src).hostname).toBe('aries.getpi.work');
+
+    await Promise.all([second.destroy(), whileRetiring.destroy(), reused.destroy()]);
+  });
+
+  it('does not leak an origin when retiring teardown reaches its bounded timeout', async () => {
+    const firstContainer = document.createElement('div');
+    const blockedContainer = document.createElement('div');
+    document.body.append(firstContainer, blockedContainer);
+    const options = {
+      hostUrl: 'https://shared.office-host.example.com/office-host.html',
+      file: new File(['timeout'], 'timeout.docx'),
+      fileName: 'timeout.docx',
+      destroyTimeoutMs: 1,
+    };
+
+    const first = mountOfficeEditor(firstContainer, options);
+    await connectHost(firstContainer);
+    vi.useFakeTimers();
+    const completion = first.destroy();
+
+    expect(() => mountOfficeEditor(blockedContainer, options)).toThrowError(
+      expect.objectContaining({
+        name: 'OfficeHostIsolationError',
+        origin: 'https://shared.office-host.example.com',
+        existingSessionId: first.id,
+      }),
+    );
+
+    await vi.runAllTimersAsync();
+    await completion;
+    vi.useRealTimers();
+
+    const reused = mountOfficeEditor(blockedContainer, options);
+    expect(blockedContainer.querySelector('iframe')).not.toBeNull();
+    await reused.destroy();
+  });
+
+  it('force-detaches and releases an origin when cooperative teardown messaging fails', async () => {
+    const firstContainer = document.createElement('div');
+    const blockedContainer = document.createElement('div');
+    document.body.append(firstContainer, blockedContainer);
+    const options = {
+      hostUrl: 'https://failed-teardown.office-host.example.com/office-host.html',
+      file: new File(['failure'], 'failure.docx'),
+      fileName: 'failure.docx',
+      destroyTimeoutMs: 1,
+    };
+
+    const first = mountOfficeEditor(firstContainer, options);
+    await connectHost(firstContainer);
+    vi.useFakeTimers();
+    vi.spyOn(MessagePort.prototype, 'postMessage').mockImplementationOnce(() => {
+      throw new Error('closed teardown port');
+    });
+    const completion = first.destroy();
+
+    expect(() => mountOfficeEditor(blockedContainer, options)).toThrowError(
+      expect.objectContaining({
+        name: 'OfficeHostIsolationError',
+        existingSessionId: first.id,
+      }),
+    );
+
+    await vi.runAllTimersAsync();
+    await expect(completion).resolves.toBeUndefined();
+    expect(firstContainer.querySelector('iframe')).toBeNull();
+    vi.useRealTimers();
+
+    const reused = mountOfficeEditor(blockedContainer, options);
+    expect(blockedContainer.querySelector('iframe')).not.toBeNull();
+    await reused.destroy();
   });
 
   it('accepts an HTMLElement container from another window', async () => {
@@ -401,6 +540,23 @@ describe('office-editor parent proxy', () => {
     await instance.destroy();
   });
 
+  it('preserves an explicitly selected local constellation slot', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    const promise = createOfficeEditor(container, {
+      hostUrl: 'http://host-taurus.office.localhost/office-host.html',
+      file: new File(['a'], 'alpha.xlsx'),
+      fileName: 'alpha.xlsx',
+      destroyTimeoutMs: 1,
+    });
+    const { iframe } = await connectHost(container);
+    const instance = await promise;
+
+    expect(new URL(iframe.src).hostname).toBe('host-taurus.office.localhost');
+    await instance.destroy();
+  });
+
   it('supports a hostUrl resolver for production wildcard host origins', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -430,7 +586,8 @@ describe('office-editor parent proxy', () => {
       }),
     );
     expect(iframeUrl.hostname).toMatch(/^office-editor-.*\.office-host\.example\.com$/);
-    expect(iframeUrl.searchParams.get('sessionId')).toBe(instance.id);
+    expect(iframeUrl.searchParams.get('sessionId')).toBeNull();
+    expect(new URLSearchParams(iframeUrl.hash.slice(1)).get('sessionId')).toBe(instance.id);
     await instance.destroy();
   });
 

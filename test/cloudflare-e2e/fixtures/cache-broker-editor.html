@@ -1,0 +1,327 @@
+<!doctype html>
+<meta charset="utf-8" />
+<link rel="icon" href="data:," />
+<iframe id="broker" hidden></iframe>
+<iframe id="relay-broker" hidden></iframe>
+<script>
+  const brokerOrigin = `${location.protocol}//onlyoffice.localhost:${location.port}`;
+  const hex = (bytes) => Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+  const brokerFrame = document.querySelector('#broker');
+  const relayBrokerFrame = document.querySelector('#relay-broker');
+  const sessionId = `${location.hostname}-${crypto.randomUUID()}`;
+  let relayGeneration = 0;
+  let releaseId = '';
+  let challengeMessage;
+  let brokerPort;
+  let controlConnected = false;
+  let relayBound = false;
+  let relayConnecting = false;
+  let nextRequestId = 0;
+  const pending = new Map();
+  let readyResolve;
+  let readyReject;
+  globalThis.__BROKER_CONNECTED__ = false;
+  globalThis.__BROKER_READY__ = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+
+  const maybeReady = () => {
+    if (!controlConnected || !relayBound) return;
+    globalThis.__BROKER_CONNECTED__ = true;
+    readyResolve();
+  };
+
+  const finishPending = (id, callback) => {
+    const request = pending.get(id);
+    if (!request) return;
+    pending.delete(id);
+    callback(request);
+  };
+
+  const handlePortMessage = (event) => {
+    const message = event.data;
+    if (message?.type === 'CONNECTED') {
+      controlConnected = true;
+      maybeReady();
+      return;
+    }
+    const request = pending.get(message?.id);
+    if (!request) return;
+    if (message.type === 'RESULT') {
+      finishPending(message.id, ({ resolve }) => resolve(message.value));
+      return;
+    }
+    if (message.type === 'ERROR') {
+      finishPending(message.id, ({ reject }) => reject(new Error(message.error)));
+      return;
+    }
+    if (message.type === 'HEADERS') {
+      request.headers = message;
+      if (message.status !== 416) brokerPort.postMessage({ type: 'PULL', id: message.id });
+      return;
+    }
+    if (message.type === 'CHUNK') {
+      request.chunks.push(new Uint8Array(message.bytes));
+      request.bytesReceived += message.bytes.byteLength;
+      request.maxChunkBytes = Math.max(request.maxChunkBytes, message.bytes.byteLength);
+      if (request.cancelAfterFirst && request.chunks.length === 1) {
+        brokerPort.postMessage({ type: 'CANCEL', id: message.id });
+      } else {
+        brokerPort.postMessage({ type: 'PULL', id: message.id });
+      }
+      return;
+    }
+    if (message.type === 'END' || message.type === 'CANCELLED') {
+      finishPending(message.id, ({ resolve, chunks, bytesReceived, headers, maxChunkBytes }) => {
+        const bytes = new Uint8Array(bytesReceived);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        resolve({
+          bytes: bytes.buffer,
+          byteLength: bytes.byteLength,
+          bytesSent: message.bytesSent,
+          cancelled: message.type === 'CANCELLED',
+          headers,
+          maxChunkBytes,
+        });
+      });
+    }
+  };
+
+  const bindRelayPort = async (port, identity) => {
+    const reply = new MessageChannel();
+    const result = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('relay-bind-timeout')), 5_000);
+      reply.port1.onmessage = (event) => {
+        clearTimeout(timeout);
+        event.data?.ok ? resolve(event.data) : reject(new Error(event.data?.error || 'relay-bind'));
+      };
+      reply.port1.start();
+    });
+    navigator.serviceWorker.controller.postMessage(
+      {
+        type: 'ONLYOFFICE_BIND_BROKER',
+        protocol: identity.protocol,
+        releaseId: identity.releaseId,
+        sessionId: identity.sessionId,
+      },
+      [port, reply.port2],
+    );
+    await result;
+    relayBound = true;
+    relayConnecting = false;
+    maybeReady();
+  };
+
+  const startRelayBroker = () => {
+    if (!releaseId || relayConnecting) return;
+    relayConnecting = true;
+    relayBound = false;
+    const relayUrl = new URL(`${brokerOrigin}/__matrix__/cache-broker.html`);
+    relayUrl.searchParams.set('releaseId', releaseId);
+    relayUrl.searchParams.set('sessionId', `${sessionId}-relay-${++relayGeneration}`);
+    relayBrokerFrame.src = relayUrl.href;
+  };
+
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'ONLYOFFICE_BROKER_NEEDED') startRelayBroker();
+  });
+
+  addEventListener('message', (event) => {
+    if (
+      event.source === relayBrokerFrame.contentWindow &&
+      event.origin === brokerOrigin &&
+      event.data?.type === 'ONLYOFFICE_BROKER_CHALLENGE'
+    ) {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = (connectedEvent) => {
+        if (connectedEvent.data?.type !== 'CONNECTED') return;
+        channel.port1.onmessage = null;
+        bindRelayPort(channel.port1, connectedEvent.data).catch(readyReject);
+      };
+      channel.port1.start();
+      relayBrokerFrame.contentWindow.postMessage(
+        {
+          type: 'CONNECT',
+          protocol: event.data.protocol,
+          releaseId: event.data.releaseId,
+          sessionId: event.data.sessionId,
+          challenge: event.data.challenge,
+        },
+        brokerOrigin,
+        [channel.port2],
+      );
+      return;
+    }
+    if (
+      event.source !== brokerFrame.contentWindow ||
+      event.origin !== brokerOrigin ||
+      event.data?.type !== 'ONLYOFFICE_BROKER_CHALLENGE'
+    ) {
+      return;
+    }
+    challengeMessage = event.data;
+    const channel = new MessageChannel();
+    brokerPort = channel.port1;
+    brokerPort.onmessage = handlePortMessage;
+    brokerPort.start();
+    brokerFrame.contentWindow.postMessage(
+      {
+        type: 'CONNECT',
+        protocol: event.data.protocol,
+        releaseId: event.data.releaseId,
+        sessionId: event.data.sessionId,
+        challenge: event.data.challenge,
+      },
+      brokerOrigin,
+      [channel.port2],
+    );
+  });
+
+  const initialize = async () => {
+    const registration = navigator.onLine
+      ? await navigator.serviceWorker.register('/__matrix__/cache-broker-editor-sw.js', {
+          scope: '/__matrix__/',
+          updateViaCache: 'none',
+        })
+      : await navigator.serviceWorker.getRegistration('/__matrix__/');
+    if (!registration) throw new Error('editor-worker-offline');
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((resolve) =>
+        navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }),
+      );
+    }
+    const requestedRelease = new URLSearchParams(location.search).get('releaseId');
+    let release = requestedRelease;
+    if (!release) {
+      try {
+        if (!navigator.onLine) throw new Error('offline');
+        const channel = await fetch(`${brokerOrigin}/channels/stable.json`, {
+          cache: 'no-store',
+          credentials: 'omit',
+        }).then((response) => response.json());
+        release = channel.releaseId;
+        localStorage.setItem('onlyoffice-broker-experiment-release', release);
+      } catch {
+        release = localStorage.getItem('onlyoffice-broker-experiment-release');
+      }
+    }
+    if (!release) throw new Error('release-offline');
+    releaseId = release;
+    const url = new URL(`${brokerOrigin}/__matrix__/cache-broker.html`);
+    url.searchParams.set('releaseId', release);
+    url.searchParams.set('sessionId', sessionId);
+    brokerFrame.src = url.href;
+    startRelayBroker();
+  };
+  initialize().catch(readyReject);
+
+  globalThis.__BROKER_REQUEST__ = async (message) => {
+    await globalThis.__BROKER_READY__;
+    const id = `request-${++nextRequestId}`;
+    const result = new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+    });
+    brokerPort.postMessage({ ...message, id });
+    return result;
+  };
+
+  globalThis.__BROKER_READ__ = async (sha256, range, cancelAfterFirst = false) => {
+    await globalThis.__BROKER_READY__;
+    const id = `read-${++nextRequestId}`;
+    const result = new Promise((resolve, reject) => {
+      pending.set(id, {
+        resolve,
+        reject,
+        bytesReceived: 0,
+        cancelAfterFirst,
+        chunks: [],
+        headers: null,
+        maxChunkBytes: 0,
+      });
+    });
+    brokerPort.postMessage({ type: 'READ', id, sha256, ...(range ? { range } : {}) });
+    return result;
+  };
+
+  globalThis.__BROKER_VERIFY__ = async (sha256, range) => {
+    const result = await globalThis.__BROKER_READ__(sha256, range);
+    const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', result.bytes)), (value) =>
+      value.toString(16).padStart(2, '0'),
+    ).join('');
+    return {
+      bytes: result.bytes.byteLength,
+      bytesSent: result.bytesSent,
+      headers: result.headers,
+      maxChunkBytes: result.maxChunkBytes,
+      sha256: digest,
+      matches: !range && digest === sha256,
+    };
+  };
+
+  globalThis.__BROKER_SW_VERIFY__ = async (sha256, range, method = 'GET') => {
+    await globalThis.__BROKER_READY__;
+    const headers = new Headers();
+    if (range) headers.set('range', `bytes=${range.start}-${range.end}`);
+    const response = await fetch(`/__matrix__/broker-segments/${sha256}`, {
+      method,
+      headers,
+      cache: 'no-store',
+    });
+    const bytes = method === 'HEAD' ? new ArrayBuffer(0) : await response.arrayBuffer();
+    const digest = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+    return {
+      broker: response.headers.get('x-onlyoffice-broker'),
+      bytes: bytes.byteLength,
+      contentLength: Number(response.headers.get('content-length')),
+      contentRange: response.headers.get('content-range'),
+      contentType: response.headers.get('content-type'),
+      releaseId: response.headers.get('x-onlyoffice-release-id'),
+      sha256: digest,
+      status: response.status,
+    };
+  };
+
+  globalThis.__BROKER_SW_CANCEL__ = async (sha256) => {
+    await globalThis.__BROKER_READY__;
+    const response = await fetch(`/__matrix__/broker-segments/${sha256}`, { cache: 'no-store' });
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    await reader.cancel();
+    return {
+      broker: response.headers.get('x-onlyoffice-broker'),
+      firstChunkBytes: first.value?.byteLength || 0,
+      status: response.status,
+    };
+  };
+
+  globalThis.__BROKER_REPLAY_CONNECT__ = async () => {
+    await globalThis.__BROKER_READY__;
+    const channel = new MessageChannel();
+    const result = new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve({ type: 'TIMEOUT' }), 1_000);
+      channel.port1.onmessage = (event) => {
+        clearTimeout(timeout);
+        resolve(event.data);
+      };
+      channel.port1.start();
+    });
+    brokerFrame.contentWindow.postMessage(
+      {
+        type: 'CONNECT',
+        protocol: challengeMessage.protocol,
+        releaseId: challengeMessage.releaseId,
+        sessionId: challengeMessage.sessionId,
+        challenge: challengeMessage.challenge,
+      },
+      brokerOrigin,
+      [channel.port2],
+    );
+    return result;
+  };
+</script>

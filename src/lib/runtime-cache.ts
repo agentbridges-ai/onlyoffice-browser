@@ -559,6 +559,36 @@ export class RuntimeCacheController {
     return controller;
   }
 
+  /**
+   * Canonical v5 stores installation metadata in its IndexedDB journal and
+   * serves bytes from the single-copy Cache Storage. The legacy runtime
+   * controller remains only as a compatibility view for the public snapshot;
+   * constructing that view must never fetch the old runtime/font manifests.
+   */
+  static createCanonicalFacade(
+    version: string,
+    storage: Storage,
+    fetchImpl: typeof fetch = window.fetch.bind(window),
+    cacheStorage: CacheStorage | undefined = window.caches,
+    assetBaseUrl: string | URL = window.location.origin,
+  ): RuntimeCacheController {
+    return new RuntimeCacheController(
+      [],
+      version,
+      storage,
+      fetchImpl,
+      new Set(),
+      0,
+      [],
+      [],
+      new Set(),
+      new Set(),
+      [],
+      cacheStorage,
+      assetBaseUrl,
+    );
+  }
+
   getProgress(
     phase: RuntimeCacheProgress['phase'] = 'ready',
     failures: RuntimeCacheFailure[] = [],

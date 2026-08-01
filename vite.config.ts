@@ -195,7 +195,10 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'pages/index.html'),
         burstE2E: resolve(__dirname, 'pages/burst-e2e.html'),
+        editorShellPrime: resolve(__dirname, 'pages/editor-shell-prime.html'),
         officeHost: resolve(__dirname, 'pages/office-host.html'),
+        resourceBroker: resolve(__dirname, 'pages/resource-broker.html'),
+        resourceInstaller: resolve(__dirname, 'pages/resource-installer.html'),
         saveE2E: resolve(__dirname, 'pages/save-e2e.html'),
       },
       output: {

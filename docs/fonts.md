@@ -26,9 +26,9 @@ npx onlyoffice-browser-generate-font-assets \
   --output .onlyoffice-font-assets
 ```
 
-By default the script exports the complete `full` set for the All-in-One Office package. This preserves DocumentServer's generated font dictionary and its native missing-font selection based on name, PANOSE, Unicode/code-page ranges, weight, width, and font metrics. Use `--font-set zh-core` only for an explicitly compact deployment. New Word documents use Aptos for Western font slots and DengXian for the East Asia slot; these defaults do not override fallback behavior in existing documents.
+By default the script exports the complete `full` set for the All-in-One Office package. This preserves DocumentServer's generated font dictionary and its native missing-font selection based on name, PANOSE, Unicode/code-page ranges, weight, width, and font metrics. The files and runtime mappings remain complete, while the picker exposes only the curated common Chinese and Western families from `scripts/font-picker-policy.mjs`; symbol, math, emoji, historic-script, and compatibility faces stay installed but hidden. Use `--font-set zh-core` only for an explicitly compact deployment. New Word documents use Aptos for Western font slots and DengXian for the East Asia slot; these defaults do not override fallback behavior in existing documents.
 
-The optional `zh-core` set focuses on Simplified Chinese Office documents and classic English fonts. Its visible registry is limited to Microsoft YaHei, Microsoft YaHei UI, SimSun, NSimSun, SimSun-ExtB, SimHei, KaiTi, FangSong, DengXian, Aptos, Calibri, Arial, Times New Roman, Consolas, Cambria, and Cambria Math. It retains the corresponding source files and Office symbol fonts while omitting other language-specific families.
+The optional `zh-core` set focuses on Simplified Chinese Office documents and classic English fonts. Its visible registry is limited to common text families such as Microsoft YaHei, SimSun, NSimSun, SimSun-ExtB, SimHei, KaiTi, FangSong, DengXian, Aptos, Calibri, Arial, Times New Roman, Consolas, and Cambria. It retains the corresponding source files and Office symbol fonts while omitting other language-specific families.
 
 ## Fixed `zh-core` Configuration
 
@@ -47,7 +47,7 @@ The default visible font list is fixed to:
 - `SimHei`
 - `KaiTi`
 
-Hosts that need an even narrower font picker may filter the generated `__fonts_visible_names` at the application layer. Do not remove hidden symbol font registrations.
+The same curated picker policy is applied to generated and hydrated release assets. Do not remove hidden symbol font registrations.
 
 These hidden fonts remain registered but stay out of the font picker. Registration
 does not imply startup download: ordinary text compatibility fonts can remain
@@ -90,7 +90,7 @@ npm run fonts:generate -- \
   --font-set full
 ```
 
-Add an exact family to the `zh-core` set when a document requires it:
+Add an exact family to the `zh-core` runtime set when a document requires it. Families outside the common picker policy remain hidden but available to documents and native fallback:
 
 ```bash
 npm run fonts:generate -- \

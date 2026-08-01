@@ -197,4 +197,39 @@ describe('OfficeResourcePanel', () => {
 
     await act(async () => root.unmount());
   });
+
+  it.each(['zh-CN', 'en-US'] as const)(
+    'offers a targeted %s repair when durable resources exist but the editor HTTP cache is cold',
+    async (locale) => {
+      const repair = vi.fn(async () => undefined);
+      const repairSnapshot: OfficeRuntimeResourceSnapshot = {
+        ...snapshot,
+        readiness: 'repair-needed',
+        error: { code: 'storage', path: 'office-resources.oobpack?segment=cold' },
+      };
+      const manager = {
+        getSnapshot: () => repairSnapshot,
+        subscribe: () => () => undefined,
+        repair,
+      } as unknown as OfficeRuntimeResourceManager;
+      const host = document.createElement('div');
+      document.body.append(host);
+      const root = createRoot(host);
+
+      await act(async () => {
+        root.render(<OfficeResourcePanel manager={manager} copy={officeCopy[locale]} />);
+      });
+
+      const button = [...host.querySelectorAll('button')].find(
+        (candidate) => candidate.textContent === officeCopy[locale].repair,
+      );
+      expect(button).toBeTruthy();
+      await act(async () => {
+        button?.click();
+      });
+      expect(repair).toHaveBeenCalledWith({ scope: 'all' });
+
+      await act(async () => root.unmount());
+    },
+  );
 });

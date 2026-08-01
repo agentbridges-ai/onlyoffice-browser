@@ -39,6 +39,17 @@ jobs:
       RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
       ONLYOFFICE_MATRIX_FONT_RELEASE_ID: v0.5.0-648c486d1c558acd
       ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256: 09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
+      # Assets >= 8 MiB are deterministically FastCDC-chunked so Chrome never
+      # has to persist one large network stream as a Cache Storage response.
+      ONLYOFFICE_FASTCDC_EVIDENCE_MODE: automatic
+      ONLYOFFICE_FASTCDC_EVIDENCE_PATH: ""
+      # The production gate must execute the real full-v5 build and every
+      # Cloudflare/Broker matrix case. These values are asserted again in the
+      # gate so repository or environment defaults cannot narrow the run.
+      ONLYOFFICE_CF_MATRIX_FORCE_FULL: "1"
+      ONLYOFFICE_CF_MATRIX_GREP: ""
+      ONLYOFFICE_CF_MATRIX_REUSE_BUILD: "0"
+      ONLYOFFICE_CF_MATRIX_KEEP_STATE: "0"
     steps:
       - uses: actions/checkout@v6
       - name: Initialize reproducible build metadata
@@ -70,63 +81,268 @@ jobs:
         run: |
           node scripts/hydrate-cloudflare-matrix-fonts.mjs
           pnpm fonts:verify --input dist
-          pnpm release:build
-          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); if(manifest.version !== 4 || manifest.x2t.version !== process.env.ONLYOFFICE_X2T_VERSION || manifest.x2t.commit !== process.env.ONLYOFFICE_X2T_COMMIT) throw new Error('Office Pack/x2t release identity mismatch')"
-          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); const misplaced=manifest.assets.filter(({path,profile})=>(path.startsWith('fonts/')&&!profile.startsWith('fonts-'))||path.endsWith('.br')); if(!manifest.profiles['fonts-basic']?.length||!manifest.profiles['fonts-office-compat']?.length||misplaced.length) throw new Error('release contains incomplete font profiles or duplicate compressed assets: '+misplaced.map(({path})=>path).join(','))"
-          node -e "const fonts=require('./dist/onlyoffice-browser-font-assets.json'); const names=new Set((fonts.fontFamilies||[]).map(({name})=>name)); if(fonts.fontSet!=='full'||names.size<170||!names.has('Aptos')||!names.has('DengXian')||!names.has('Calibri')) throw new Error('complete Aptos/DengXian/Calibri font matrix is missing')"
-      - name: Upload missing immutable objects and verify the complete release
+          if [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "required" ]; then
+            test -n "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}"
+            test -f "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}"
+            git ls-files --error-unmatch "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}"
+            node scripts/build-release-manifest.mjs \
+              --root dist \
+              --output .onlyoffice-release \
+              --package-version "$(node -p "require('./package.json').version")" \
+              --fastcdc-evidence "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}"
+          elif [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "automatic" ] || [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "forbid" ]; then
+            test -z "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}"
+            pnpm release:build
+          else
+            echo "Unknown FastCDC evidence mode: ${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" >&2
+            exit 1
+          fi
+          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable-v5.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); if(manifest.version !== 5 || manifest.releaseId !== pointer.releaseId || manifest.x2t.version !== process.env.ONLYOFFICE_X2T_VERSION || manifest.x2t.commit !== process.env.ONLYOFFICE_X2T_COMMIT) throw new Error('v5 CAS/x2t release identity mismatch')"
+          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release'+pointer.manifestUrl)); if(manifest.version !== 4 || manifest.releaseId !== pointer.releaseId) throw new Error('stable.json must retain the v4 compatibility manifest')"
+          node -e "const fs=require('node:fs'); const pointer=JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable-v5.json')); const manifest=JSON.parse(fs.readFileSync('.onlyoffice-release/releases/'+pointer.releaseId+'/manifest.json')); const misplaced=manifest.assets.filter(({path,profile})=>(path.startsWith('fonts/')&&!profile.startsWith('fonts-'))||path.endsWith('.br')); if(!manifest.profiles['fonts-basic']?.length||!manifest.profiles['fonts-office-compat']?.length||misplaced.length) throw new Error('release contains incomplete font profiles or duplicate compressed assets: '+misplaced.map(({path})=>path).join(','))"
+          node -e "const fonts=require('./dist/onlyoffice-browser-font-assets.json'); const names=new Set((fonts.fontFamilies||[]).map(({name})=>name)); const hidden=['Wingdings','Wingdings 2','Wingdings 3','Webdings','Symbol','OpenSymbol','Noto Emoji']; if(fonts.fontSet!=='full'||names.size<45||!names.has('Aptos')||!names.has('DengXian')||!names.has('Calibri')||hidden.some(name=>names.has(name))) throw new Error('curated Aptos/DengXian/Calibri font picker matrix is invalid')"
+          VERIFY_ARGS=(
+            --release-root .onlyoffice-release
+            --expected-package-version 0.5.7
+            --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
+          )
+          if [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "required" ]; then
+            VERIFY_ARGS+=(--fastcdc-evidence "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}")
+          fi
+          node scripts/verify-release-publication.mjs "${VERIFY_ARGS[@]}"
+      - name: Bind release build to source identity
         run: |
-          rclone copy .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs \
-            --fast-list \
-            --checkers 32 \
-            --transfers 8 \
-            --retries 6 \
-            --low-level-retries 20 \
-            --retries-sleep 2s \
-            --ignore-existing \
-            --stats-one-line
-          rclone copy .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases \
-            --fast-list \
-            --checkers 16 \
-            --transfers 8 \
-            --retries 6 \
-            --low-level-retries 20 \
-            --retries-sleep 2s \
-            --ignore-existing \
-            --stats-one-line
-          rclone copy .onlyoffice-release/packages r2:onlyoffice-getpi-work/packages \
-            --fast-list \
-            --checkers 16 \
-            --transfers 4 \
-            --retries 6 \
-            --low-level-retries 20 \
-            --retries-sleep 2s \
-            --ignore-existing \
-            --stats-one-line
-          rclone copy .onlyoffice-release/segments r2:onlyoffice-getpi-work/segments \
-            --fast-list \
-            --checkers 32 \
-            --transfers 8 \
-            --retries 6 \
-            --low-level-retries 20 \
-            --retries-sleep 2s \
-            --ignore-existing \
-            --stats-one-line
-          rclone check .onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs --one-way --checksum
-          rclone check .onlyoffice-release/releases r2:onlyoffice-getpi-work/releases --one-way --checksum
-          rclone check .onlyoffice-release/packages r2:onlyoffice-getpi-work/packages --one-way --checksum
-          rclone check .onlyoffice-release/segments r2:onlyoffice-getpi-work/segments --one-way --checksum
-      - name: Update v2 compatibility files without deleting retained releases
+          set -euo pipefail
+          git diff --exit-code -- package.json pnpm-lock.yaml
+          mkdir -p release-evidence
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+
+          const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          const gitCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          if (gitCommit !== process.env.GITHUB_SHA) {
+            throw new Error(`Checked-out commit ${gitCommit} does not match GITHUB_SHA ${process.env.GITHUB_SHA}`);
+          }
+          const lockfileBytes = fs.readFileSync('pnpm-lock.yaml');
+          const runtimeManifestBytes = fs.readFileSync('dist/onlyoffice-runtime-assets.json');
+          const pointer = JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable-v5.json', 'utf8'));
+          const releaseManifestPath = `.onlyoffice-release/releases/${pointer.releaseId}/manifest.json`;
+          const releaseManifestBytes = fs.readFileSync(releaseManifestPath);
+          const releaseManifest = JSON.parse(releaseManifestBytes);
+          const runtimeManifestSha256 = sha256(runtimeManifestBytes);
+          const runtimeAsset = releaseManifest.assets.find(
+            (asset) => asset.path === 'onlyoffice-runtime-assets.json',
+          );
+          if (
+            releaseManifest.version !== 5 ||
+            releaseManifest.releaseId !== pointer.releaseId ||
+            releaseManifest.runtimeManifestSha256 !== runtimeManifestSha256 ||
+            runtimeAsset?.sha256 !== runtimeManifestSha256
+          ) {
+            throw new Error('Release Manifest v5 is not bound to the built runtime manifest');
+          }
+          const identity = {
+            version: 1,
+            gitCommit,
+            lockfile: {
+              path: 'pnpm-lock.yaml',
+              sha256: sha256(lockfileBytes),
+            },
+            runtimeManifest: {
+              path: 'dist/onlyoffice-runtime-assets.json',
+              sha256: runtimeManifestSha256,
+            },
+            release: {
+              releaseId: pointer.releaseId,
+              manifestPath: releaseManifestPath,
+              manifestSha256: sha256(releaseManifestBytes),
+              packageVersion: releaseManifest.packageVersion,
+              hostBuildId: releaseManifest.hostBuildId,
+            },
+          };
+          const sourceIdentitySha256 = sha256(JSON.stringify(identity));
+          fs.writeFileSync(
+            'release-evidence/source-identity.json',
+            `${JSON.stringify({ ...identity, sourceIdentitySha256 }, null, 2)}\n`,
+          );
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            [
+              `ONLYOFFICE_SOURCE_GIT_COMMIT=${gitCommit}`,
+              `ONLYOFFICE_SOURCE_LOCKFILE_SHA256=${identity.lockfile.sha256}`,
+              `ONLYOFFICE_SOURCE_RUNTIME_MANIFEST_SHA256=${runtimeManifestSha256}`,
+              `ONLYOFFICE_SOURCE_RELEASE_ID=${pointer.releaseId}`,
+              `ONLYOFFICE_SOURCE_RELEASE_MANIFEST_SHA256=${identity.release.manifestSha256}`,
+              `ONLYOFFICE_SOURCE_IDENTITY_SHA256=${sourceIdentitySha256}`,
+              '',
+            ].join('\n'),
+          );
+          NODE
+      - name: Run mandatory full-v5 local Cloudflare/Broker matrix
+        timeout-minutes: 30
         run: |
-          rclone copy dist r2:onlyoffice-getpi-work \
-            --fast-list \
-            --checkers 32 \
-            --transfers 8 \
-            --retries 6 \
-            --low-level-retries 20 \
-            --retries-sleep 2s \
-            --exclude "/onlyoffice-plugin/**" \
-            --stats-one-line
+          set -euo pipefail
+          test "${ONLYOFFICE_CF_MATRIX_FORCE_FULL}" = "1"
+          test -z "${ONLYOFFICE_CF_MATRIX_GREP}"
+          test "${ONLYOFFICE_CF_MATRIX_REUSE_BUILD}" = "0"
+          test "${ONLYOFFICE_CF_MATRIX_KEEP_STATE}" = "0"
+          node scripts/run-cloudflare-local-matrix.mjs
+      - name: Record successful full-v5 matrix evidence
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+
+          const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          const sourceIdentityBytes = fs.readFileSync('release-evidence/source-identity.json');
+          const sourceIdentity = JSON.parse(sourceIdentityBytes);
+          const { sourceIdentitySha256: recordedSourceIdentitySha256, ...sourceIdentityBody } = sourceIdentity;
+          if (
+            sha256(JSON.stringify(sourceIdentityBody)) !== recordedSourceIdentitySha256 ||
+            recordedSourceIdentitySha256 !== process.env.ONLYOFFICE_SOURCE_IDENTITY_SHA256
+          ) {
+            throw new Error('Stored source identity digest does not match its canonical fields');
+          }
+          const gitCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          const lockfileSha256 = sha256(fs.readFileSync('pnpm-lock.yaml'));
+          const runtimeManifestSha256 = sha256(fs.readFileSync('dist/onlyoffice-runtime-assets.json'));
+          const pointer = JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable-v5.json', 'utf8'));
+          const releaseManifestBytes = fs.readFileSync(
+            `.onlyoffice-release/releases/${pointer.releaseId}/manifest.json`,
+          );
+          const releaseManifestSha256 = sha256(releaseManifestBytes);
+          const actual = {
+            gitCommit,
+            lockfileSha256,
+            runtimeManifestSha256,
+            releaseId: pointer.releaseId,
+            releaseManifestSha256,
+            sourceIdentitySha256: recordedSourceIdentitySha256,
+          };
+          const expected = {
+            gitCommit: process.env.ONLYOFFICE_SOURCE_GIT_COMMIT,
+            lockfileSha256: process.env.ONLYOFFICE_SOURCE_LOCKFILE_SHA256,
+            runtimeManifestSha256: process.env.ONLYOFFICE_SOURCE_RUNTIME_MANIFEST_SHA256,
+            releaseId: process.env.ONLYOFFICE_SOURCE_RELEASE_ID,
+            releaseManifestSha256: process.env.ONLYOFFICE_SOURCE_RELEASE_MANIFEST_SHA256,
+            sourceIdentitySha256: process.env.ONLYOFFICE_SOURCE_IDENTITY_SHA256,
+          };
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+            throw new Error(`Full-v5 matrix changed the bound source identity: ${JSON.stringify({ actual, expected })}`);
+          }
+          const evidence = {
+            version: 1,
+            result: 'passed',
+            matrix: {
+              mode: 'full-v5',
+              command: 'node scripts/run-cloudflare-local-matrix.mjs',
+              forceFull: process.env.ONLYOFFICE_CF_MATRIX_FORCE_FULL === '1',
+              grep: process.env.ONLYOFFICE_CF_MATRIX_GREP || null,
+              reuseBuild: process.env.ONLYOFFICE_CF_MATRIX_REUSE_BUILD === '1',
+              keepState: process.env.ONLYOFFICE_CF_MATRIX_KEEP_STATE === '1',
+            },
+            sourceIdentity: actual,
+            workflow: {
+              repository: process.env.GITHUB_REPOSITORY,
+              runId: process.env.GITHUB_RUN_ID,
+              runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+              ref: process.env.GITHUB_REF,
+            },
+          };
+          if (
+            evidence.matrix.mode !== 'full-v5' ||
+            !evidence.matrix.forceFull ||
+            evidence.matrix.grep !== null ||
+            evidence.matrix.reuseBuild ||
+            evidence.matrix.keepState
+          ) {
+            throw new Error('Full-v5 matrix evidence contains a downgraded policy');
+          }
+          fs.writeFileSync(
+            'release-evidence/full-v5-cloudflare-broker-matrix.json',
+            `${JSON.stringify(evidence, null, 2)}\n`,
+          );
+          NODE
+      - name: Retain successful full-v5 matrix evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: full-v5-cloudflare-broker-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release-evidence/source-identity.json
+            release-evidence/full-v5-cloudflare-broker-matrix.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload additive release and compatibility objects (not verification)
+        run: |
+          rclone_copy_with_outer_retry() {
+            local source="$1"
+            local destination="$2"
+            local checkers="$3"
+            local transfers="$4"
+            local immutable="$5"
+            local extra_args=()
+            if [ "${immutable}" = "true" ]; then
+              extra_args+=(--ignore-existing)
+            fi
+            if [ "${source}" = "dist" ]; then
+              extra_args+=(--exclude "/onlyoffice-plugin/**")
+            fi
+            for attempt in 1 2 3; do
+              if rclone copy "${source}" "${destination}" \
+                --fast-list \
+                --checkers "${checkers}" \
+                --transfers "${transfers}" \
+                --retries 3 \
+                --low-level-retries 20 \
+                --retries-sleep 2s \
+                --stats-one-line \
+                "${extra_args[@]}"; then
+                return 0
+              fi
+              echo "::warning::rclone copy attempt ${attempt} failed; partial success is not verification"
+              if [ "${attempt}" = "3" ]; then
+                return 1
+              fi
+              sleep "$((attempt * 5))"
+            done
+          }
+          rclone_copy_with_outer_retry \
+            .onlyoffice-release/blobs \
+            r2:onlyoffice-getpi-work/blobs \
+            32 8 true
+          rclone_copy_with_outer_retry \
+            .onlyoffice-release/releases \
+            r2:onlyoffice-getpi-work/releases \
+            16 8 true
+          rclone_copy_with_outer_retry \
+            .onlyoffice-release/packages \
+            r2:onlyoffice-getpi-work/packages \
+            16 4 true
+          rclone_copy_with_outer_retry \
+            .onlyoffice-release/segments \
+            r2:onlyoffice-getpi-work/segments \
+            32 8 true
+          rclone_copy_with_outer_retry \
+            dist \
+            r2:onlyoffice-getpi-work \
+            32 8 false
+      - name: Verify every v5 immutable object directly from R2
+        run: |
+          VERIFY_ARGS=(
+            --release-root .onlyoffice-release
+            --expected-package-version 0.5.7
+            --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
+            --remote r2:onlyoffice-getpi-work
+            --concurrency 4
+          )
+          if [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "required" ]; then
+            VERIFY_ARGS+=(--fastcdc-evidence "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}")
+          fi
+          node scripts/verify-release-publication.mjs "${VERIFY_ARGS[@]}"
       - name: Deploy wildcard runtime Worker
         run: |
           curl --fail --silent --show-error \
@@ -139,55 +355,163 @@ jobs:
               --root dist \
               --font-manifest "${RUNNER_TEMP}/onlyoffice-browser-font-assets.json"
           )"
+          echo "ONLYOFFICE_EXPECTED_ASSET_VERSION=${ASSET_VERSION}" >> "${GITHUB_ENV}"
           npx --yes wrangler@4.114.0 deploy --var "ASSET_VERSION:${ASSET_VERSION}"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Switch stable release pointer
+      - name: Verify release-specific Worker routes before activation
         run: |
-          rclone copyto \
-            .onlyoffice-release/channels/stable.json \
-            r2:onlyoffice-getpi-work/channels/stable.json \
-            --retries 6 \
-            --low-level-retries 20 \
-            --retries-sleep 2s
-      - name: Verify production deployment
-        run: |
-          EXPECTED_VERSION="$(
-            node scripts/runtime-asset-version.mjs \
-              --root dist \
-              --font-manifest "${RUNNER_TEMP}/onlyoffice-browser-font-assets.json"
-          )"
           for attempt in $(seq 1 12); do
             ACTUAL_VERSION="$(
-              curl --fail --silent --show-error --head https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json |
+              curl --fail --silent --show-error --head \
+                "https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json?ci=${GITHUB_SHA}" |
                 tr -d '\r' |
                 awk -F ': ' 'tolower($1) == "x-onlyoffice-asset-version" { print $2 }'
             )"
-            if [ "${ACTUAL_VERSION}" = "${EXPECTED_VERSION}" ]; then
+            if [ "${ACTUAL_VERSION}" = "${ONLYOFFICE_EXPECTED_ASSET_VERSION}" ]; then
               break
             fi
             if [ "${attempt}" = "12" ]; then
-              echo "Expected asset version ${EXPECTED_VERSION}, received ${ACTUAL_VERSION:-missing}" >&2
+              echo "Expected asset version ${ONLYOFFICE_EXPECTED_ASSET_VERSION}, received ${ACTUAL_VERSION:-missing}" >&2
               exit 1
             fi
             sleep 5
           done
+          VERIFY_ARGS=(
+            --release-root .onlyoffice-release
+            --expected-package-version 0.5.7
+            --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
+            --cache-bust "${GITHUB_SHA}"
+          )
+          if [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "required" ]; then
+            VERIFY_ARGS+=(--fastcdc-evidence "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}")
+          fi
+          node scripts/verify-release-http.mjs "${VERIFY_ARGS[@]}"
+      - name: Validate and freeze the legacy v4 compatibility pointer
+        run: |
+          set -euo pipefail
+          rclone cat r2:onlyoffice-getpi-work/channels/stable.json \
+            > "${RUNNER_TEMP}/onlyoffice-legacy-stable.json"
+          export ONLYOFFICE_LEGACY_MANIFEST_KEY="$(
+            node -e "
+              const fs=require('node:fs');
+              const pointer=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/onlyoffice-legacy-stable.json'));
+              if (
+                pointer.version !== 1 ||
+                !/^[a-zA-Z0-9._+-]{1,128}$/.test(pointer.releaseId || '') ||
+                pointer.manifestUrl !== '/releases/'+pointer.releaseId+'/manifest-v4.json' ||
+                !/^[a-f0-9]{64}$/.test(pointer.manifestSha256 || '')
+              ) throw new Error('Existing stable.json is not a valid v4 compatibility pointer');
+              process.stdout.write(pointer.manifestUrl.slice(1));
+            "
+          )"
+          rclone cat "r2:onlyoffice-getpi-work/${ONLYOFFICE_LEGACY_MANIFEST_KEY}" \
+            > "${RUNNER_TEMP}/onlyoffice-legacy-manifest-v4.json"
+          node -e "
+            const crypto=require('node:crypto');
+            const fs=require('node:fs');
+            const pointer=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/onlyoffice-legacy-stable.json'));
+            const bytes=fs.readFileSync(process.env.RUNNER_TEMP+'/onlyoffice-legacy-manifest-v4.json');
+            const manifest=JSON.parse(bytes);
+            const sha256=crypto.createHash('sha256').update(bytes).digest('hex');
+            if (sha256 !== pointer.manifestSha256 || manifest.version !== 4 || manifest.releaseId !== pointer.releaseId) {
+              throw new Error('Existing stable.json compatibility manifest is unavailable or invalid');
+            }
+          "
+          curl --fail --silent --show-error \
+            "https://onlyoffice.getpi.work/channels/stable.json?ci=legacy-${GITHUB_SHA}" \
+            --output "${RUNNER_TEMP}/onlyoffice-legacy-stable-http.json"
+          cmp --silent \
+            "${RUNNER_TEMP}/onlyoffice-legacy-stable.json" \
+            "${RUNNER_TEMP}/onlyoffice-legacy-stable-http.json"
+      - name: Activate the authoritative v5 stable pointer
+        run: |
+          set -euo pipefail
+          rclone_copyto_with_outer_retry() {
+            local source="$1"
+            local destination="$2"
+            for attempt in 1 2 3; do
+              if rclone copyto "${source}" "${destination}" \
+                --retries 3 \
+                --low-level-retries 20 \
+                --retries-sleep 2s; then
+                return 0
+              fi
+              echo "::warning::rclone pointer upload attempt ${attempt} failed; checking is still mandatory"
+              if [ "${attempt}" = "3" ]; then
+                return 1
+              fi
+              sleep "$((attempt * 5))"
+            done
+          }
+          rclone_copyto_with_outer_retry \
+            .onlyoffice-release/channels/stable-v5.json \
+            r2:onlyoffice-getpi-work/channels/stable-v5.json
+          rclone cat r2:onlyoffice-getpi-work/channels/stable-v5.json |
+            cmp --silent .onlyoffice-release/channels/stable-v5.json -
+      - name: Verify production deployment
+        run: |
           curl --fail --silent --show-error https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json |
             node -e "let body=''; process.stdin.on('data', chunk => body += chunk).on('end', () => { const manifest = JSON.parse(body); if (manifest.version !== 2 || manifest.assets.length !== manifest.selected) process.exit(1) })"
           node scripts/verify-deployed-font-assets.mjs \
             --manifest-url "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}"
-          export RELEASE_ID="$(node -p "require('./.onlyoffice-release/channels/stable.json').releaseId")"
-          curl --fail --silent --show-error \
-            https://onlyoffice.getpi.work/channels/stable.json |
-            node -e "let body=''; process.stdin.on('data', chunk => body += chunk).on('end', () => { const pointer = JSON.parse(body); if (pointer.releaseId !== process.env.RELEASE_ID) process.exit(1) })"
-          SMOKE_RESULT="$(
-            curl --fail --silent --show-error --location --max-redirs 2 \
-              --output /dev/null \
-              --write-out "%{http_code} %{num_redirects} %{content_type}" \
-              "https://office-editor-github-actions-smoke.getpi.work/r/${RELEASE_ID}/office-host.html"
-          )"
-          test "${SMOKE_RESULT}" = "200 0 text/html; charset=utf-8"
+          VERIFY_ARGS=(
+            --release-root .onlyoffice-release
+            --expected-package-version 0.5.7
+            --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
+            --cache-bust "${GITHUB_SHA}"
+          )
+          if [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "required" ]; then
+            VERIFY_ARGS+=(--fastcdc-evidence "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}")
+          fi
+          node scripts/verify-release-http.mjs "${VERIFY_ARGS[@]}"
+          rclone cat r2:onlyoffice-getpi-work/channels/stable.json |
+            cmp --silent "${RUNNER_TEMP}/onlyoffice-legacy-stable.json" -
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+
+          const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          const expectedV5 = fs.readFileSync('.onlyoffice-release/channels/stable-v5.json');
+          const expectedLegacy = fs.readFileSync(`${process.env.RUNNER_TEMP}/onlyoffice-legacy-stable.json`);
+          async function verify(name, expectedBytes, expectedVersion, attempt) {
+            const response = await fetch(
+              `https://onlyoffice.getpi.work/channels/${name}?ci=${process.env.GITHUB_SHA}-${attempt}`,
+              { cache: 'no-store', redirect: 'manual' },
+            );
+            if (response.status !== 200 || !/^no-store(?:$|,)/.test(response.headers.get('cache-control') || '')) {
+              throw new Error(`${name} returned invalid status or cache policy`);
+            }
+            const actualBytes = Buffer.from(await response.arrayBuffer());
+            if (!actualBytes.equals(expectedBytes)) throw new Error(`${name} does not match its expected bytes`);
+            const pointer = JSON.parse(actualBytes);
+            const manifestResponse = await fetch(
+              `https://onlyoffice.getpi.work${pointer.manifestUrl}?ci=${process.env.GITHUB_SHA}-${attempt}`,
+              { cache: 'no-store', redirect: 'manual' },
+            );
+            if (manifestResponse.status !== 200) throw new Error(`${name} manifest returned ${manifestResponse.status}`);
+            const manifestBytes = Buffer.from(await manifestResponse.arrayBuffer());
+            const manifest = JSON.parse(manifestBytes);
+            if (
+              sha256(manifestBytes) !== pointer.manifestSha256 ||
+              manifest.version !== expectedVersion ||
+              manifest.releaseId !== pointer.releaseId
+            ) {
+              throw new Error(`${name} manifest identity mismatch`);
+            }
+          }
+          (async () => {
+            for (let attempt = 1; attempt <= 2; attempt += 1) {
+              await verify('stable-v5.json', expectedV5, 5, attempt);
+              await verify('stable.json', expectedLegacy, 4, attempt);
+            }
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+          export RELEASE_ID="$(node -p "require('./.onlyoffice-release/channels/stable-v5.json').releaseId")"
           PACK_RESULT="$(
             curl --fail --silent --show-error \
               --range 0-7 \

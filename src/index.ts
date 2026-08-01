@@ -160,7 +160,12 @@ const officeHostUrl = (context: OfficeHostUrlContext) => {
   const resolved = new URL(base, location.href);
   const resourceSnapshot = resourceManager?.getSnapshot();
   const releaseId = resourceSnapshot?.installedRelease || resourceSnapshot?.targetRelease;
-  if (releaseId && resolved.hostname.endsWith('.getpi.work')) {
+  if (
+    releaseId &&
+    (resolved.hostname.endsWith('.getpi.work') ||
+      resolved.hostname.endsWith('.office.localhost') ||
+      resolved.hostname === 'host.localhost')
+  ) {
     resolved.pathname = `/r/${encodeURIComponent(releaseId)}/office-host.html`;
   }
   return resolved.href;
@@ -571,13 +576,33 @@ function renderResources(snapshot: OfficeRuntimeResourceSnapshot): void {
 
 async function initializeResources(): Promise<void> {
   try {
-    resourceManager = await createOfficeRuntimeResourceManager();
+    const localMatrix =
+      location.hostname === 'onlyoffice.localhost' && (location.protocol === 'http:' || location.protocol === 'https:');
+    resourceManager = await createOfficeRuntimeResourceManager(
+      localMatrix
+        ? {
+            canonicalOrigin: location.origin,
+            allowLocalTestMode: true,
+          }
+        : undefined,
+    );
     resourceManager.subscribe(renderResources);
-    renderResources(resourceManager.getSnapshot());
-    await resourceManager.plan({ scope: 'all' });
+    const snapshot = resourceManager.getSnapshot();
+    renderResources(snapshot);
+    if (
+      navigator.onLine !== false &&
+      (snapshot.readiness === 'needs-download' || snapshot.readiness === 'update-available')
+    ) {
+      await resourceManager.plan({ scope: 'all' });
+    }
   } catch {
-    elements.resourceButton.lastElementChild!.textContent = copy.resourcesError;
-    elements.resourceButton.dataset.state = 'error';
+    const snapshot = resourceManager?.getSnapshot();
+    if (snapshot) {
+      renderResources(snapshot);
+    } else {
+      elements.resourceButton.lastElementChild!.textContent = copy.resourcesError;
+      elements.resourceButton.dataset.state = 'error';
+    }
   }
 }
 
@@ -692,6 +717,15 @@ window.__officeDemo = {
   },
   get editor() {
     return editor;
+  },
+  get resourceManager() {
+    return resourceManager;
+  },
+  get resourceSnapshot() {
+    return resourceManager?.getSnapshot() ?? latestResourceSnapshot;
+  },
+  get resourceReady() {
+    return latestResourceSnapshot?.readiness === 'ready';
   },
   openEmpty: createEmpty,
   closeAll: async () => {

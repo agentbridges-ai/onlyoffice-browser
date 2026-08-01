@@ -18,19 +18,18 @@ const DEFAULT_MODES = ['edit'];
 const DEFAULT_SEED = 930_140_100;
 const OFFICE_EDITOR_MODES = ['edit', 'readonly', 'preview'];
 const FORMAT_SELECTORS = {
-  docx: '#new-word-button',
-  xlsx: '#new-excel-button',
-  pptx: '#new-pptx-button',
+  docx: '#new-word-button, [data-new="docx"]',
+  xlsx: '#new-excel-button, [data-new="xlsx"]',
+  pptx: '#new-pptx-button, [data-new="pptx"]',
 };
 const FORMAT_LABELS = {
   docx: 'Word',
   xlsx: 'Excel',
   pptx: 'PowerPoint',
 };
-const EDITOR_IFRAME_COUNT_EXPRESSION =
-  `document.querySelectorAll('iframe.office-editor-host-frame, iframe[name="frameEditor"]').length`;
+const EDITOR_IFRAME_COUNT_EXPRESSION = `document.querySelectorAll('iframe.office-editor-host-frame, iframe[name="frameEditor"]').length`;
 
-class CdpClient {
+export class CdpClient {
   constructor(wsUrl) {
     this.wsUrl = wsUrl;
     this.nextId = 1;
@@ -121,6 +120,8 @@ function parseArgs(argv) {
     hardResetOnClose: false,
     requireRealFiles: false,
     filePaths: [],
+    jsonOutput: null,
+    csvOutput: null,
   };
 
   for (const arg of argv) {
@@ -134,8 +135,10 @@ function parseArgs(argv) {
     else if (arg.startsWith('--seed=')) options.seed = Number(arg.slice('--seed='.length));
     else if (arg.startsWith('--batch-size=')) options.batchSize = Number(arg.slice('--batch-size='.length));
     else if (arg.startsWith('--gc-passes=')) options.gcPasses = Number(arg.slice('--gc-passes='.length));
-    else if (arg.startsWith('--final-gc-passes=')) options.finalGcPasses = Number(arg.slice('--final-gc-passes='.length));
-    else if (arg.startsWith('--final-settle-ms=')) options.finalSettleMs = Number(arg.slice('--final-settle-ms='.length));
+    else if (arg.startsWith('--final-gc-passes='))
+      options.finalGcPasses = Number(arg.slice('--final-gc-passes='.length));
+    else if (arg.startsWith('--final-settle-ms='))
+      options.finalSettleMs = Number(arg.slice('--final-settle-ms='.length));
     else if (arg.startsWith('--opened-sample-interval='))
       options.openedSampleInterval = Number(arg.slice('--opened-sample-interval='.length));
     else if (arg.startsWith('--chrome-pid=')) options.chromePid = Number(arg.slice('--chrome-pid='.length));
@@ -143,6 +146,8 @@ function parseArgs(argv) {
     else if (arg === '--hard-reset-on-close') options.hardResetOnClose = true;
     else if (arg === '--require-real-files') options.requireRealFiles = true;
     else if (arg.startsWith('--file=')) options.filePaths.push(arg.slice('--file='.length));
+    else if (arg.startsWith('--json-output=')) options.jsonOutput = resolve(arg.slice('--json-output='.length));
+    else if (arg.startsWith('--csv-output=')) options.csvOutput = resolve(arg.slice('--csv-output='.length));
     else if (arg === '--require-existing-tab') options.createTargetIfMissing = false;
     else if (arg === '--keep-target') options.keepTarget = true;
     else if (arg.startsWith('--formats='))
@@ -226,7 +231,10 @@ function withHostUrl(appUrl, hostUrl) {
 function inferDemoHostUrl(appUrl) {
   const parsed = new URL(appUrl);
   const hostUrl = new URL('/office-host.html', parsed.href);
-  if (hostUrl.hostname === 'localhost' || (hostUrl.hostname.endsWith('.localhost') && hostUrl.hostname !== 'host.localhost')) {
+  if (
+    hostUrl.hostname === 'localhost' ||
+    (hostUrl.hostname.endsWith('.localhost') && hostUrl.hostname !== 'host.localhost')
+  ) {
     hostUrl.hostname = 'host.localhost';
   } else if (hostUrl.hostname === 'host.localhost') {
     hostUrl.hostname = 'app.localhost';
@@ -271,6 +279,8 @@ Options:
   --hard-reset-on-close               Pass hardResetOnLastDestroy=true to the demo.
   --require-real-files                Fail unless at least one --file argument is provided.
   --file=/path/to/document.docx        Add a real local Office file workload. Repeatable.
+  --json-output=/path/to/report.json    Write the auditable JSON report to an exact path.
+  --csv-output=/path/to/report.csv      Write samples to an exact CSV path.
   --require-existing-tab              Fail if no matching app tab already exists.
   --keep-target                        Keep a Chrome target created by this script open after exit.
 `);
@@ -368,7 +378,12 @@ function pickWorkloadBatch(random, workloads, batchSize, modes) {
   const shuffledModes = shuffleWithRandom(random, modes);
   const items = [];
   while (items.length < batchSize) {
-    items.push(assignModeToWorkload(shuffled[items.length % shuffled.length], shuffledModes[items.length % shuffledModes.length]));
+    items.push(
+      assignModeToWorkload(
+        shuffled[items.length % shuffled.length],
+        shuffledModes[items.length % shuffledModes.length],
+      ),
+    );
   }
   return { items, format: `batch${items.length}` };
 }
@@ -398,11 +413,7 @@ function findChromeRootPid(debugPort) {
 
   try {
     const output = execFileSync('lsof', ['-nP', `-iTCP:${debugPort}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
-    const firstPid = output
-      .trim()
-      .split(/\s+/)
-      .map(Number)
-      .find(Number.isFinite);
+    const firstPid = output.trim().split(/\s+/).map(Number).find(Number.isFinite);
     return firstPid ?? null;
   } catch {
     return null;
@@ -514,7 +525,7 @@ function collectBrowserRssMb(rootPid) {
   };
 }
 
-async function evaluate(cdp, sessionId, expression, options = {}) {
+export async function evaluate(cdp, sessionId, expression, options = {}) {
   let result;
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
@@ -546,7 +557,7 @@ async function evaluate(cdp, sessionId, expression, options = {}) {
   return result.result?.value;
 }
 
-async function waitForExpression(cdp, sessionId, expression, timeoutMs, label) {
+export async function waitForExpression(cdp, sessionId, expression, timeoutMs, label) {
   const started = Date.now();
   let lastError = null;
   while (Date.now() - started < timeoutMs) {
@@ -570,7 +581,7 @@ async function forceGarbageCollection(cdp, sessionId, passes) {
   }
 }
 
-async function findOrCreateTarget(cdp, url, createTargetIfMissing) {
+export async function findOrCreateTarget(cdp, url, createTargetIfMissing) {
   const urlPrefix = normalizeUrlPrefix(url);
   const { targetInfos } = await cdp.send('Target.getTargets');
   const candidates = targetInfos.filter((target) => {
@@ -588,7 +599,7 @@ async function findOrCreateTarget(cdp, url, createTargetIfMissing) {
   return { targetId: created.targetId, type: 'page', url, createdByScript: true };
 }
 
-async function attachToTarget(cdp, targetId) {
+export async function attachToTarget(cdp, targetId) {
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   await cdp.send('Runtime.enable', {}, sessionId);
   await cdp.send('Page.enable', {}, sessionId);
@@ -692,6 +703,9 @@ async function setOpenMode(cdp, sessionId, mode) {
         window.__officeDemo.setMode(mode);
         return { ok: true, via: 'demo-api' };
       }
+      if (mode === 'edit' && window.__officeDemo?.editor !== undefined) {
+        return { ok: true, via: 'standalone-default' };
+      }
       const input = document.querySelector('input[name="open-mode"][value="' + mode + '"]');
       if (!input) return { ok: false, reason: 'missing mode input' };
       input.checked = true;
@@ -723,6 +737,9 @@ async function waitForOfficeEditorsReady(cdp, sessionId, expectedRecordCount, ti
     sessionId,
     `(() => {
       const records = Array.from(window.__officeDemo?.records ?? []);
+      if (records.length === 0 && window.__officeDemo?.editor) {
+        records.push({ instance: window.__officeDemo.editor });
+      }
       if (records.length < ${expectedRecordCount}) return false;
       return records.every((record) => record.instance?.getState?.().status === 'ready');
     })()`,
@@ -735,12 +752,17 @@ async function waitForOfficeEditorsReady(cdp, sessionId, expectedRecordCount, ti
 function emptyDemoExpression(previousBootId, requireBootChange) {
   const previousBootIdLiteral = JSON.stringify(previousBootId);
   return `(() => {
-    const button = document.querySelector('#new-word-button');
+    const button = document.querySelector(${JSON.stringify(FORMAT_SELECTORS.docx)});
+    const menu = document.querySelector('.new-menu');
+    if (menu && 'open' in menu) menu.open = true;
     const rect = button?.getBoundingClientRect();
-    const bootId = window.__officeDemo?.bootId ?? null;
+      const bootId = window.__officeDemo?.bootId ?? null;
+      const recordCount = window.__officeDemo?.records
+        ? window.__officeDemo.records.length
+        : (window.__officeDemo?.editor ? 1 : 0);
       const bootReady = ${requireBootChange ? `Boolean(bootId && bootId !== ${previousBootIdLiteral})` : 'true'};
       return bootReady &&
-        (window.__officeDemo?.records?.length ?? 0) === 0 &&
+        recordCount === 0 &&
         document.querySelectorAll('iframe').length === 0 &&
         ${EDITOR_IFRAME_COUNT_EXPRESSION} === 0 &&
         Boolean(button && rect && rect.width > 0 && rect.height > 0);
@@ -769,11 +791,7 @@ async function waitForEmptyDemo(cdp, sessionId, timeoutMs, previousBootId = null
 }
 
 async function openOfficeDocuments(cdp, sessionId, items, timeoutMs) {
-  const beforeFrameCount = await evaluate(
-    cdp,
-    sessionId,
-    EDITOR_IFRAME_COUNT_EXPRESSION,
-  );
+  const beforeFrameCount = await evaluate(cdp, sessionId, EDITOR_IFRAME_COUNT_EXPRESSION);
   let expectedFrameCount = beforeFrameCount;
 
   for (const item of items) {
@@ -784,6 +802,8 @@ async function openOfficeDocuments(cdp, sessionId, items, timeoutMs) {
       cdp,
       sessionId,
       `(() => {
+        const menu = document.querySelector('.new-menu');
+        if (menu && 'open' in menu) menu.open = true;
         const button = document.querySelector(${JSON.stringify(selector)});
         if (!button) return false;
         const rect = button.getBoundingClientRect();
@@ -797,6 +817,8 @@ async function openOfficeDocuments(cdp, sessionId, items, timeoutMs) {
       cdp,
       sessionId,
       `(() => {
+        const menu = document.querySelector('.new-menu');
+        if (menu && 'open' in menu) menu.open = true;
         const button = document.querySelector(${JSON.stringify(selector)});
         if (!button) return { ok: false, reason: 'missing button' };
         button.click();
@@ -861,7 +883,11 @@ async function openLocalFileGroup(cdp, sessionId, filePaths, expectedFrameCount,
   }
 
   const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
-  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input[type="file"]' }, sessionId);
+  const { nodeId } = await cdp.send(
+    'DOM.querySelector',
+    { nodeId: root.nodeId, selector: 'input[type="file"]' },
+    sessionId,
+  );
   if (!nodeId) {
     throw new Error('Failed to find file input node');
   }
@@ -890,11 +916,7 @@ async function openLocalFileGroup(cdp, sessionId, filePaths, expectedFrameCount,
 }
 
 async function openLocalFiles(cdp, sessionId, items, timeoutMs) {
-  const beforeFrameCount = await evaluate(
-    cdp,
-    sessionId,
-    EDITOR_IFRAME_COUNT_EXPRESSION,
-  );
+  const beforeFrameCount = await evaluate(cdp, sessionId, EDITOR_IFRAME_COUNT_EXPRESSION);
   let expectedFrameCount = beforeFrameCount;
 
   for (const [mode, modeItems] of groupWorkloadItemsByMode(items)) {
@@ -907,7 +929,17 @@ async function openLocalFiles(cdp, sessionId, items, timeoutMs) {
 
 async function openWorkload(cdp, sessionId, workload, timeoutMs) {
   const items = workload.items ?? [workload];
-  const beforeRecordCount = await evaluate(cdp, sessionId, `window.__officeDemo?.records?.length ?? 0`);
+  const beforeRecordCount = await evaluate(
+    cdp,
+    sessionId,
+    `window.__officeDemo?.records?.length ?? (window.__officeDemo?.editor ? 1 : 0)`,
+  );
+  const supportsMultipleEditors = await evaluate(cdp, sessionId, `Array.isArray(window.__officeDemo?.records)`);
+  if (items.length > 1 && !supportsMultipleEditors) {
+    throw new Error(
+      'The standalone shell exposes one active editor. Use the canonical Broker acceptance runner for the three-origin test.',
+    );
+  }
   const fileItems = items.filter((item) => item.filePath);
   const formatItems = items.filter((item) => !item.filePath);
 
@@ -925,11 +957,7 @@ async function openWorkload(cdp, sessionId, workload, timeoutMs) {
 }
 
 async function closeOfficeDocument(cdp, sessionId, timeoutMs, closeMode, waitForHardReset) {
-  const beforeFrameCount = await evaluate(
-    cdp,
-    sessionId,
-    EDITOR_IFRAME_COUNT_EXPRESSION,
-  );
+  const beforeFrameCount = await evaluate(cdp, sessionId, EDITOR_IFRAME_COUNT_EXPRESSION);
   const previousBootId = waitForHardReset
     ? await evaluate(cdp, sessionId, `window.__officeDemo?.bootId ?? null`)
     : null;
@@ -949,7 +977,7 @@ async function closeOfficeDocument(cdp, sessionId, timeoutMs, closeMode, waitFor
       sessionId,
       `(() => {
         const buttons = Array.from(document.querySelectorAll('[data-action="close"]'));
-        const button = buttons.at(-1);
+        const button = buttons.at(-1) || document.querySelector('#close-button');
         if (!button) return { ok: false, reason: 'missing app close button' };
         button.click();
         return { ok: true };
@@ -980,7 +1008,9 @@ async function closeOfficeDocument(cdp, sessionId, timeoutMs, closeMode, waitFor
       cdp,
       sessionId,
       `(() => {
-        const button = document.querySelector('#new-word-button');
+        const menu = document.querySelector('.new-menu');
+        if (menu && 'open' in menu) menu.open = true;
+        const button = document.querySelector(${JSON.stringify(FORMAT_SELECTORS.docx)});
         const rect = button?.getBoundingClientRect();
         return ${EDITOR_IFRAME_COUNT_EXPRESSION} < ${beforeFrameCount} &&
           Boolean(button && rect && rect.width > 0 && rect.height > 0);
@@ -992,11 +1022,7 @@ async function closeOfficeDocument(cdp, sessionId, timeoutMs, closeMode, waitFor
 }
 
 async function closeOfficeDocuments(cdp, sessionId, timeoutMs, closeMode, waitForHardReset) {
-  const beforeFrameCount = await evaluate(
-    cdp,
-    sessionId,
-    EDITOR_IFRAME_COUNT_EXPRESSION,
-  );
+  const beforeFrameCount = await evaluate(cdp, sessionId, EDITOR_IFRAME_COUNT_EXPRESSION);
   if (beforeFrameCount === 0) return;
   const previousBootId = waitForHardReset
     ? await evaluate(cdp, sessionId, `window.__officeDemo?.bootId ?? null`)
@@ -1018,8 +1044,9 @@ async function closeOfficeDocuments(cdp, sessionId, timeoutMs, closeMode, waitFo
       sessionId,
       `(() => {
         const button = document.querySelector('#close-all-button');
-        if (!button) return { ok: false, reason: 'missing close all button' };
-        button.click();
+        if (button) button.click();
+        else if (window.__officeDemo?.closeAll) void window.__officeDemo.closeAll();
+        else return { ok: false, reason: 'missing close all control' };
         return { ok: true };
       })()`,
       { userGesture: true },
@@ -1061,10 +1088,18 @@ async function measurePage(cdp, sessionId, browserRootPid, iteration, phase, wor
         hash: window.location.hash,
         bootId: window.__officeDemo?.bootId ?? null,
         hasEditor: (window.__officeDemo?.records?.length ?? 0) > 0,
-        activeOfficeEditors: window.__officeDemo?.records?.length ?? 0,
-        activeOfficeEditorModes: Array.from(window.__officeDemo?.records ?? []).map((record) => record.instance?.getState?.().mode),
+        activeOfficeEditors: window.__officeDemo?.records?.length ?? (window.__officeDemo?.editor ? 1 : 0),
+        activeOfficeEditorModes: window.__officeDemo?.records
+          ? Array.from(window.__officeDemo.records).map((record) => record.instance?.getState?.().mode)
+          : (window.__officeDemo?.editor ? [window.__officeDemo.editor.getState?.().mode] : []),
         hostResetDoneCount: window.__officeHostDebug?.hostResetDoneCount ?? null,
         hostResetTimeoutCount: window.__officeHostDebug?.hostResetTimeoutCount ?? null,
+        activeHostPortCount: window.__officeHostDebug?.activeHostPortCount ?? null,
+        peakActiveHostPortCount: window.__officeHostDebug?.peakActiveHostPortCount ?? null,
+        activeStartupHeartbeatPortCount: window.__officeHostDebug?.activeStartupHeartbeatPortCount ?? null,
+        peakActiveStartupHeartbeatPortCount: window.__officeHostDebug?.peakActiveStartupHeartbeatPortCount ?? null,
+        activeInstanceCount: window.__officeHostDebug?.activeInstanceCount ?? null,
+        activeOriginLeaseCount: window.__officeHostDebug?.activeOriginLeaseCount ?? null,
         iframeCount: document.querySelectorAll('iframe').length,
         frameEditorCount: ${EDITOR_IFRAME_COUNT_EXPRESSION},
         elementCount: document.querySelectorAll('*').length,
@@ -1261,11 +1296,25 @@ function analyze(samples, networkSummary, options) {
     finalClosed.pageState.frameEditorCount === 0 &&
     finalClosed.pageState.iframeCount === 0 &&
     finalClosed.pageState.elementCount <= 100;
+  const messagePortMetricsAvailable =
+    Number.isFinite(finalClosed.pageState?.activeHostPortCount) &&
+    Number.isFinite(finalClosed.pageState?.activeStartupHeartbeatPortCount) &&
+    Number.isFinite(finalClosed.pageState?.activeInstanceCount) &&
+    Number.isFinite(finalClosed.pageState?.activeOriginLeaseCount);
+  const finalMessagePortsClean =
+    !messagePortMetricsAvailable ||
+    (finalClosed.pageState?.activeHostPortCount === 0 &&
+      finalClosed.pageState?.activeStartupHeartbeatPortCount === 0 &&
+      finalClosed.pageState?.activeInstanceCount === 0 &&
+      finalClosed.pageState?.activeOriginLeaseCount === 0);
   const baselineBootId = baseline.pageState?.bootId ?? null;
   const unexpectedPageRefreshes =
     baselineBootId && !options.hardResetOnClose
       ? samples
-          .filter((sample) => sample.phase !== 'baseline' && sample.pageState?.bootId && sample.pageState.bootId !== baselineBootId)
+          .filter(
+            (sample) =>
+              sample.phase !== 'baseline' && sample.pageState?.bootId && sample.pageState.bootId !== baselineBootId,
+          )
           .map((sample) => ({ iteration: sample.iteration, phase: sample.phase, bootId: sample.pageState.bootId }))
       : [];
 
@@ -1273,6 +1322,7 @@ function analyze(samples, networkSummary, options) {
   const suspiciousHeapGrowth = closedHeapDeltaMb > 30 && heapGrowthPerCycleMb > 3;
   if (
     (!finalPageClean && (finalDocumentDelta > 4 || finalNodeDelta > 2_000)) ||
+    !finalMessagePortsClean ||
     finalNodeDelta > 5_000 ||
     finalListenerDelta > 500 ||
     suspiciousHeapGrowth
@@ -1316,13 +1366,23 @@ function analyze(samples, networkSummary, options) {
     finalListenerDelta,
     finalRssBreakdown: finalClosed.browserRssBreakdown,
     finalTopProcesses: finalClosed.browserTopProcesses,
+    messagePortMetricsAvailable,
+    finalMessagePortsClean,
+    finalPortState: {
+      activeHostPortCount: finalClosed.pageState?.activeHostPortCount ?? null,
+      activeStartupHeartbeatPortCount: finalClosed.pageState?.activeStartupHeartbeatPortCount ?? null,
+      activeInstanceCount: finalClosed.pageState?.activeInstanceCount ?? null,
+      activeOriginLeaseCount: finalClosed.pageState?.activeOriginLeaseCount ?? null,
+      peakActiveHostPortCount: finalClosed.pageState?.peakActiveHostPortCount ?? null,
+      peakActiveStartupHeartbeatPortCount: finalClosed.pageState?.peakActiveStartupHeartbeatPortCount ?? null,
+    },
     baselineBootId,
     unexpectedPageRefreshes,
     networkSummary,
   };
 }
 
-async function main() {
+export async function main() {
   const options = parseArgs(process.argv.slice(2));
   const effectiveHostUrl = options.hostUrl ?? inferDemoHostUrl(options.url);
   const appUrl = withDemoOptions(options.url, options);
@@ -1348,7 +1408,7 @@ async function main() {
     await waitForExpression(
       cdp,
       sessionId,
-      `Boolean(document.querySelector('#new-word-button'))`,
+      `Boolean(document.querySelector(${JSON.stringify(FORMAT_SELECTORS.docx)}))`,
       options.timeoutMs,
       'app home screen',
     );
@@ -1390,7 +1450,9 @@ async function main() {
       if (!options.hardResetOnClose && baselineBootId) {
         const currentBootId = await evaluate(cdp, sessionId, `window.__officeDemo?.bootId ?? null`).catch(() => null);
         if (currentBootId !== baselineBootId) {
-          throw new Error(`Parent page refreshed unexpectedly after cycle ${iteration}: ${baselineBootId} -> ${currentBootId}`);
+          throw new Error(
+            `Parent page refreshed unexpectedly after cycle ${iteration}: ${baselineBootId} -> ${currentBootId}`,
+          );
         }
       }
 
@@ -1431,9 +1493,11 @@ async function main() {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const outputDir = resolve(ROOT, 'test-results', 'memory');
     mkdirSync(outputDir, { recursive: true });
-    const jsonPath = resolve(outputDir, `chrome-cdp-memory-${timestamp}.json`);
-    const csvPath = resolve(outputDir, `chrome-cdp-memory-${timestamp}.csv`);
+    const jsonPath = options.jsonOutput ?? resolve(outputDir, `chrome-cdp-memory-${timestamp}.json`);
+    const csvPath = options.csvOutput ?? resolve(outputDir, `chrome-cdp-memory-${timestamp}.csv`);
 
+    mkdirSync(dirname(jsonPath), { recursive: true });
+    mkdirSync(dirname(csvPath), { recursive: true });
     writeFileSync(jsonPath, JSON.stringify({ options, browserVersion: version, analysis, samples }, null, 2));
     writeFileSync(csvPath, `${toCsv(samples)}\n`);
 
@@ -1449,6 +1513,7 @@ async function main() {
     console.log(`  final DOM node delta: ${analysis.finalNodeDelta ?? 'n/a'}`);
     console.log(`  final listener delta: ${analysis.finalListenerDelta ?? 'n/a'}`);
     console.log(`  parent page refreshes detected: ${analysis.unexpectedPageRefreshes?.length ?? 0}`);
+    console.log(`  final MessagePort/instance state clean: ${analysis.finalMessagePortsClean}`);
     console.log(`  suspicious network requests: ${networkSummary.suspiciousCount}/${networkSummary.requestCount}`);
     if (analysis.finalRssBreakdown) {
       console.log('  final RSS breakdown:');
@@ -1467,7 +1532,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack || error.message : error);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : error);
+    process.exit(1);
+  });
+}

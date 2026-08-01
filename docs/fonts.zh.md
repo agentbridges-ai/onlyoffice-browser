@@ -26,9 +26,9 @@ npx onlyoffice-browser-generate-font-assets \
   --output .onlyoffice-font-assets
 ```
 
-脚本默认导出 All-in-One Office 包使用的完整 `full` 字体集，保留 DocumentServer 生成的字体字典，以及按字体名、PANOSE、Unicode/代码页范围、字重、字宽和字体度量选择替代字体的原生机制。只有明确需要精简部署时才传入 `--font-set zh-core`。新建 Word 文档的西文字体槽固定为 Aptos，东亚字体槽固定为等线；这两个默认值不会覆盖旧文档的缺失字体替代行为。
+脚本默认导出 All-in-One Office 包使用的完整 `full` 字体集，保留 DocumentServer 生成的字体字典，以及按字体名、PANOSE、Unicode/代码页范围、字重、字宽和字体度量选择替代字体的原生机制。字体文件和运行时映射保持完整，但字体下拉只展示 `scripts/font-picker-policy.mjs` 中整理过的常用中西文字体；符号、数学、Emoji、古文字及兼容字体仍安装但隐藏。只有明确需要精简部署时才传入 `--font-set zh-core`。新建 Word 文档的西文字体槽固定为 Aptos，东亚字体槽固定为等线；这两个默认值不会覆盖旧文档的缺失字体替代行为。
 
-可选的 `zh-core` 字体集集中在简体中文 Office 文档和经典英文字体。其可见字体注册表只保留微软雅黑、Microsoft YaHei UI、宋体、新宋体、SimSun-ExtB、黑体、楷体、仿宋、等线、Aptos、Calibri、Arial、Times New Roman、Consolas、Cambria 和 Cambria Math，并保留相应字体源文件及常见 Office 符号字体。
+可选的 `zh-core` 字体集集中在简体中文 Office 文档和经典英文字体。其可见字体注册表只保留微软雅黑、宋体、新宋体、SimSun-ExtB、黑体、楷体、仿宋、等线、Aptos、Calibri、Arial、Times New Roman、Consolas、Cambria 等常规文本字体，并保留相应字体源文件及常见 Office 符号字体。
 
 ## `zh-core` 固化配置
 
@@ -47,7 +47,7 @@ npx onlyoffice-browser-generate-font-assets \
 - `SimHei`
 - `KaiTi`
 
-如果上层产品希望字体下拉只展示更窄的主字体集合，可以在 host 侧基于生成出的 `__fonts_visible_names` 再过滤；不要删除隐藏符号字体的注册项。
+生成和从旧 release 注入的字体资产都会应用同一套字体下拉策略；不要删除隐藏符号字体的注册项。
 
 这些隐藏字体会保留注册，但不出现在字体下拉中。注册不等于首屏下载：普通文本兼容字体可以按需下载，文档结构符号和文字系统兜底字体则直接内置。
 
@@ -84,7 +84,7 @@ npm run fonts:generate -- \
   --font-set full
 ```
 
-如果某个文档需要 `zh-core` 集之外的具体字体族，可以追加精确字体名：
+如果某个文档需要 `zh-core` 集之外的具体字体族，可以追加精确字体名。若该字体不在常用字体下拉策略中，它仍会供文档和原生 fallback 使用，但不会显示在下拉列表：
 
 ```bash
 npm run fonts:generate -- \

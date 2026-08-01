@@ -4,15 +4,66 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  FASTCDC_RELEASE_POLICY,
+  buildFastCdcRepresentation,
+  buildFastCdcRepresentationFromEvidence,
+  parseFastCdcEvidence,
+  readFastCdcEvidence,
+} from './fastcdc-release-policy.mjs';
 
 const TARGET_CHUNK_BYTES = 24 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 32 * 1024 * 1024;
 const OFFICE_PACK_MAGIC = Buffer.from('OOBPACK1');
 const OFFICE_PACK_SEGMENT_BYTES = 24 * 1024 * 1024;
 const PROFILES = ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'];
+const FASTCDC_POLICY_ID = 'fastcdc-v2020-min64k-avg256k-max1m-norm1-seed0';
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+function storageSetDescription(pack, assets) {
+  return {
+    version: 1,
+    packageSegments: pack.segments.map((segment) => ({
+      offset: segment.offset,
+      bytes: segment.bytes,
+      sha256: segment.sha256,
+    })),
+    assets: [...assets]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((asset) => ({
+        path: asset.path,
+        bytes: asset.bytes,
+        sha256: asset.sha256,
+        whole: {
+          bytes: asset.representations.whole.bytes,
+          sha256: asset.representations.whole.sha256,
+        },
+        ...(asset.representations.fastcdc
+          ? {
+              fastcdc: {
+                algorithm: asset.representations.fastcdc.algorithm,
+                minBytes: asset.representations.fastcdc.minBytes,
+                averageBytes: asset.representations.fastcdc.averageBytes,
+                maxBytes: asset.representations.fastcdc.maxBytes,
+                normalization: asset.representations.fastcdc.normalization,
+                seed: asset.representations.fastcdc.seed,
+                chunks: asset.representations.fastcdc.chunks.map((chunk) => ({
+                  offset: chunk.offset,
+                  bytes: chunk.bytes,
+                  sha256: chunk.sha256,
+                })),
+              },
+            }
+          : {}),
+      })),
+  };
+}
+
+export function computeStorageSetSha256(pack, assets) {
+  return sha256(JSON.stringify(storageSetDescription(pack, assets)));
 }
 
 function walkFiles(root, directory = root) {
@@ -222,7 +273,16 @@ function linkOrCopy(source, destination) {
   }
 }
 
-export function buildRelease({ root, output, packageVersion, x2tVersion, x2tCommit }) {
+export function buildRelease({
+  root,
+  output,
+  packageVersion,
+  x2tVersion,
+  x2tCommit,
+  fastCdcEvidence,
+  fastCdcEvidencePath,
+  fastCdcIndexer,
+}) {
   const runtimePath = path.join(root, 'onlyoffice-runtime-assets.json');
   const fontPath = path.join(root, 'onlyoffice-browser-font-assets.json');
   const runtimeBytes = fs.readFileSync(runtimePath);
@@ -293,6 +353,56 @@ export function buildRelease({ root, output, packageVersion, x2tVersion, x2tComm
       assets.filter((asset) => asset.profile === profile).map((asset) => asset.path),
     ]),
   );
+  const v5Assets = assets.map((asset) => ({
+    ...asset,
+    representations: {
+      whole: {
+        sha256: asset.sha256,
+        bytes: asset.bytes,
+      },
+    },
+  }));
+  if (fastCdcEvidence && fastCdcEvidencePath) {
+    throw new Error('Pass FastCDC evidence as an object or a path, not both');
+  }
+  const parsedFastCdcEvidence = fastCdcEvidence
+    ? parseFastCdcEvidence(fastCdcEvidence)
+    : fastCdcEvidencePath
+      ? readFastCdcEvidence(fastCdcEvidencePath)
+      : null;
+  for (const asset of v5Assets) {
+    if (asset.bytes < FASTCDC_RELEASE_POLICY.minimumAssetBytes) continue;
+    if (parsedFastCdcEvidence) {
+      const result = buildFastCdcRepresentationFromEvidence({
+        assetPath: asset.path,
+        inputPath: path.join(root, asset.path),
+        output,
+        expectedBytes: asset.bytes,
+        expectedSha256: asset.sha256,
+        evidence: parsedFastCdcEvidence,
+        ...(fastCdcIndexer ? { indexer: fastCdcIndexer } : {}),
+      });
+      if (!result.selected) {
+        throw new Error(`FastCDC policy unexpectedly rejected bounded cache object ${asset.path}`);
+      }
+      asset.representations.fastcdc = result.representation;
+    } else {
+      asset.representations.fastcdc = buildFastCdcRepresentation({
+        inputPath: path.join(root, asset.path),
+        output,
+        expectedBytes: asset.bytes,
+        expectedSha256: asset.sha256,
+        ...(fastCdcIndexer ? { indexer: fastCdcIndexer } : {}),
+      });
+    }
+  }
+  const contentProtocol = {
+    version: 1,
+    digest: 'sha256',
+    cacheKeyFormat: 'canonical-sha256-v1',
+    storageSetSha256: computeStorageSetSha256(officePack.descriptor, v5Assets),
+    fastcdcPolicyId: FASTCDC_POLICY_ID,
+  };
   const identity = {
     packageVersion,
     hostBuildId: sha256(hostAssets.map((asset) => `${asset.path}\0${asset.sha256}\n`).join('')),
@@ -307,11 +417,27 @@ export function buildRelease({ root, output, packageVersion, x2tVersion, x2tComm
     profiles,
     chunks,
     package: officePack.descriptor,
-    assets,
+    contentProtocol,
+    assets: v5Assets,
     fontFamilies: fonts.fontFamilies || [],
   };
   const releaseId = `v${packageVersion}-${sha256(JSON.stringify(identity)).slice(0, 16)}`;
-  const manifest = { version: 4, releaseId, ...identity };
+  const manifest = { version: 5, releaseId, ...identity };
+  const compatibilityManifest = {
+    version: 4,
+    releaseId,
+    packageVersion,
+    hostBuildId: identity.hostBuildId,
+    shellRevision: identity.shellRevision,
+    runtimeManifestSha256: identity.runtimeManifestSha256,
+    fontManifestSha256: identity.fontManifestSha256,
+    x2t: identity.x2t,
+    profiles,
+    chunks,
+    package: officePack.descriptor,
+    assets: assets.map((asset) => ({ ...asset })),
+    fontFamilies: identity.fontFamilies,
+  };
   for (const asset of assets) {
     linkOrCopy(path.join(root, asset.path), path.join(output, 'blobs', 'sha256', asset.sha256));
   }
@@ -320,11 +446,36 @@ export function buildRelease({ root, output, packageVersion, x2tVersion, x2tComm
   fs.renameSync(officePack.temporaryPath, packagePath);
   const releaseDir = path.join(output, 'releases', releaseId);
   fs.mkdirSync(releaseDir, { recursive: true });
-  fs.writeFileSync(path.join(releaseDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+  const compatibilityManifestText = `${JSON.stringify(compatibilityManifest, null, 2)}\n`;
+  fs.writeFileSync(path.join(releaseDir, 'manifest.json'), manifestText);
+  fs.writeFileSync(path.join(releaseDir, 'manifest-v4.json'), compatibilityManifestText);
   fs.mkdirSync(path.join(output, 'channels'), { recursive: true });
   fs.writeFileSync(
     path.join(output, 'channels', 'stable.json'),
-    `${JSON.stringify({ version: 1, releaseId }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        version: 1,
+        releaseId,
+        manifestUrl: `/releases/${releaseId}/manifest-v4.json`,
+        manifestSha256: sha256(compatibilityManifestText),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  fs.writeFileSync(
+    path.join(output, 'channels', 'stable-v5.json'),
+    `${JSON.stringify(
+      {
+        version: 1,
+        releaseId,
+        manifestUrl: `/releases/${releaseId}/manifest.json`,
+        manifestSha256: sha256(manifestText),
+      },
+      null,
+      2,
+    )}\n`,
   );
   return manifest;
 }
@@ -342,6 +493,7 @@ if (isMain) {
     packageVersion: option('--package-version', process.env.npm_package_version || '0.0.0'),
     x2tVersion: option('--x2t-version', process.env.ONLYOFFICE_X2T_VERSION || '9.3.0+2'),
     x2tCommit: option('--x2t-commit', process.env.ONLYOFFICE_X2T_COMMIT || '1bb9b45a399f87ca162eea0c86abd4660f295469'),
+    fastCdcEvidencePath: option('--fastcdc-evidence', process.env.ONLYOFFICE_FASTCDC_EVIDENCE),
   });
   console.log(
     `Built immutable OnlyOffice release ${manifest.releaseId} with one ${manifest.package.bytes}-byte Office Pack`,

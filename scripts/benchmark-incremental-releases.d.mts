@@ -3,8 +3,28 @@ export interface ContentAddressedItem {
   bytes: number;
 }
 
-export interface AssetItem extends ContentAddressedItem {
+export interface BenchmarkFastCdcChunk extends ContentAddressedItem {
+  offset: number;
+}
+
+export interface BenchmarkAsset extends ContentAddressedItem {
   path: string;
+  representations?: {
+    whole: ContentAddressedItem;
+    fastcdc?: {
+      chunks: BenchmarkFastCdcChunk[];
+    };
+  };
+}
+
+export interface BenchmarkManifest {
+  version: 4 | 5;
+  releaseId: string;
+  package?: {
+    bytes: number;
+    segments: ContentAddressedItem[];
+  };
+  assets: BenchmarkAsset[];
 }
 
 export interface ContentComparison {
@@ -16,49 +36,57 @@ export interface ContentComparison {
   reusedObjects: number;
 }
 
-export interface FastCdcConfiguration {
-  minimumBytes: number;
-  averageBytes: number;
-  maximumBytes: number;
-  elapsedMs: number;
-  chunks: ContentAddressedItem[];
+export interface AssetPathComparison {
+  unchanged: number;
+  changed: number;
+  added: number;
+  removed: number;
 }
 
-export interface FastCdcIndex {
-  configurations: FastCdcConfiguration[];
+export type HybridPlannerChange = 'unchanged' | 'changed' | 'added' | 'removed';
+export type HybridPlannerStrategy = 'unchanged' | 'whole' | 'fastcdc' | 'removed';
+
+export interface HybridPlannerDecision {
+  path: string;
+  change: HybridPlannerChange;
+  strategy: HybridPlannerStrategy;
+  targetBytes: number;
+  downloadBytes: number;
+  downloadObjects: number;
 }
 
-export interface BenchmarkManifest {
-  releaseId: string;
-  package: {
-    bytes: number;
-    segments: ContentAddressedItem[];
+export interface HybridPlannerComparison extends ContentComparison {
+  paths: {
+    unchanged: number;
+    whole: number;
+    fastCdc: number;
+    removed: number;
   };
-  assets: AssetItem[];
+  decisions: HybridPlannerDecision[];
 }
 
 export interface ReleaseComparison {
   fromReleaseId: string;
   toReleaseId: string;
+  fromManifestVersion: 4 | 5;
+  toManifestVersion: 4 | 5;
   logicalTargetBytes: number;
-  assetPaths: {
-    unchanged: number;
-    changed: number;
-    added: number;
-    removed: number;
-  };
+  assetPaths: AssetPathComparison;
   currentReleaseBoundSegments: ContentComparison;
   fixedDigestSegments: ContentComparison;
   fileCas: ContentComparison;
-  fastCdc: Array<
-    ContentComparison & {
-      minimumBytes: number;
-      averageBytes: number;
-      maximumBytes: number;
-      fromElapsedMs: number;
-      toElapsedMs: number;
-    }
-  >;
+  hybridPlanner: HybridPlannerComparison;
+  /** Compatibility-only report-v1 field. Whole-package FastCDC is no longer planned. */
+  fastCdc: [];
+}
+
+export interface IncrementalBenchmarkReportV2 {
+  version: 2;
+  generatedAt: string;
+  origin: string;
+  releases: string[];
+  manifestVersion: 4 | 5;
+  pairs: ReleaseComparison[];
 }
 
 export function compareContentAddressedItems(
@@ -66,12 +94,15 @@ export function compareContentAddressedItems(
   toItems: ContentAddressedItem[],
 ): ContentComparison;
 
-export function compareAssetPaths(fromAssets: AssetItem[], toAssets: AssetItem[]): ReleaseComparison['assetPaths'];
+export function compareAssetPaths(fromAssets: BenchmarkAsset[], toAssets: BenchmarkAsset[]): AssetPathComparison;
 
-export function compareReleasePair(
+export function compareHybridPlanner(
   fromManifest: BenchmarkManifest,
   toManifest: BenchmarkManifest,
-  fastCdcIndexes?: { from: FastCdcIndex; to: FastCdcIndex },
-): ReleaseComparison;
+): HybridPlannerComparison;
 
-export function formatBenchmarkMarkdown(report: { generatedAt: string; pairs: ReleaseComparison[] }): string;
+export function compareReleasePair(fromManifest: BenchmarkManifest, toManifest: BenchmarkManifest): ReleaseComparison;
+
+export function formatBenchmarkMarkdown(report: Pick<IncrementalBenchmarkReportV2, 'generatedAt' | 'pairs'>): string;
+
+export function releaseManifestPath(releaseId: string, version?: 4 | 5): string;
