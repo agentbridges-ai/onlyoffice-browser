@@ -5,10 +5,9 @@
  * so we replicate the routing conditions here as a living specification.
  * If sw.js changes, update both files together.
  *
- * The rules guard against two classes of bug found in this project:
- *   - Font files intercepted by SW → added latency → Chrome "Slow Network"
- *     intervention → OnlyOffice fallback font crash (units_per_EM)
- *   - Document URLs cached by SW → stale content served to editor
+ * The rules guard against Office resources leaking into generic Workbox caches
+ * and document URLs being cached as stale editor input. Isolated editor origins
+ * use the earlier streaming canonical-broker route instead.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -18,6 +17,9 @@ import path from 'node:path';
 const FONT_REGEX = /\.(ttf|tte|ttc|otf|otc|woff2?|eot)(\?.*)?$/;
 const ONLYOFFICE_RUNTIME_ASSET_REGEX = /(^|\/)(web-apps|sdkjs|wasm\/x2t)\//;
 const PRINT_PDF_ROUTE_PREFIX = '/__onlyoffice-browser-print__/';
+const CONTENT_SEGMENT_PATH_REGEX = /^\/segments\/sha256\/[a-f0-9]{64}$/;
+const CONTENT_OBJECT_PATH_REGEX = /^\/objects\/[^/]+\/sha256\/[a-f0-9]{64}$/;
+const CONTENT_BLOB_PATH_REGEX = /^\/blobs\/sha256\/[a-f0-9]{64}$/;
 const ONLYOFFICE_NAVIGATION_PATHS = new Set(['/office-host.html', '/reset.html']);
 
 const ORIGIN = 'http://localhost:5173';
@@ -43,11 +45,19 @@ function swShouldHandle(method: string, urlStr: string, mode = 'same-origin'): b
   }
   if (url.searchParams.has('file') || url.searchParams.has('src')) return false;
   if (url.pathname.startsWith('/fonts/') || FONT_REGEX.test(url.pathname)) return false;
+  if (CONTENT_SEGMENT_PATH_REGEX.test(url.pathname)) return false;
+  if (CONTENT_OBJECT_PATH_REGEX.test(url.pathname)) return false;
+  if (CONTENT_BLOB_PATH_REGEX.test(url.pathname)) return false;
+  if (url.pathname.startsWith('/channels/') || url.pathname.startsWith('/releases/')) return false;
+  if (/^\/r\/[^/]+\/.+/.test(url.pathname)) return false;
+  if (ONLYOFFICE_RUNTIME_ASSET_REGEX.test(url.pathname)) return false;
+  if (url.pathname === '/onlyoffice-runtime-assets.json') return false;
   return true;
 }
 
-function swStaticStrategy(urlStr: string): 'network-first' | 'stale-while-revalidate' {
+function swStaticStrategy(urlStr: string): 'none' | 'network-first' | 'stale-while-revalidate' {
   const url = new URL(urlStr);
+  if (ONLYOFFICE_RUNTIME_ASSET_REGEX.test(url.pathname)) return 'none';
   const isHtml = url.pathname.endsWith('.html') || url.pathname === '/' || url.pathname.endsWith('/');
   return isHtml || ONLYOFFICE_RUNTIME_ASSET_REGEX.test(url.pathname) ? 'network-first' : 'stale-while-revalidate';
 }
@@ -80,6 +90,14 @@ function parseRangeHeader(rangeHeader: string, byteLength: number): { start: num
 }
 
 describe('SW fetch routing', () => {
+  it('does not await a navigation resultingClientId before returning its Broker response', () => {
+    const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
+    expect(sw).toContain('const sourceClient = event.clientId ? await self.clients.get(event.clientId) : null;');
+    expect(sw).not.toContain('await self.clients.get(clientId)');
+    expect(sw).toContain("event.request.mode === 'navigate'");
+    expect(sw).toContain("event.request.destination === 'iframe'");
+  });
+
   it('exposes the OnlyOffice service worker at the root path expected by editor frames', () => {
     const bridgePath = path.join(process.cwd(), 'public/document_editor_service_worker.js');
     const bridge = fs.readFileSync(bridgePath, 'utf8');
@@ -90,9 +108,15 @@ describe('SW fetch routing', () => {
   it('precaches the canonical PWA shell without fixed offline editor slots', () => {
     const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
 
-    expect(sw).toContain("const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html'])");
-    expect(sw).toContain('precacheAndRoute(self.__WB_MANIFEST || [])');
+    expect(sw).toContain("const PWA_APP_NAVIGATION_PATHS = new Set(['/', '/index.html', '/resource-broker.html'])");
+    expect(sw).toContain('const pwaShellManifest = self.__WB_MANIFEST || []');
+    expect(sw).toContain('precacheAndRoute(pwaShellManifest)');
     expect(sw).toContain("matchPrecache('/index.html')");
+    expect(sw).toContain("url.pathname === '/resource-broker.html'");
+    expect(sw).toContain("matchPrecache('/resource-broker.html')");
+    expect(sw).toContain("url.pathname === '/channels/stable-v5.json'");
+    expect(sw).toContain("JSON.stringify({ code: 'offline' })");
+    expect(sw).toContain("'cache-control': 'no-store'");
     expect(sw).toContain('isCanonicalPwaHost');
     expect(sw).not.toContain('FIXED_OFFLINE_SLOT');
     expect(sw).not.toContain('onlyoffice-slot-prewarm-v1');
@@ -116,29 +140,56 @@ describe('SW fetch routing', () => {
     expect(source).toContain('10 * 60 * 1000');
   });
 
-  it('serves isolated-host shared assets from the immutable all-in-one Office Pack', () => {
+  it('serves isolated-host Office resources only through the canonical broker', () => {
     const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
 
     expect(sw).toContain("const CANONICAL_OFFICE_HOST = 'onlyoffice.getpi.work'");
     expect(sw).toContain("const LOCAL_CANONICAL_OFFICE_HOST = 'onlyoffice.localhost'");
-    expect(sw).toContain('if (isLocalEditorHost) return null;');
     expect(sw).toContain('isProductionOfficeEditorHostname(self.location.hostname)');
     expect(sw).toContain('LEGACY_EDITOR_HOST_PATTERN.test(self.location.hostname)');
-    expect(sw).toContain('const shouldProxySharedAsset = (request, url)');
-    expect(sw).toContain('revisions.get(path) || version');
-    expect(sw).toContain('loadCurrentRelease()');
-    expect(sw).toContain("pack?.format !== 'onlyoffice-pack-v1'");
-    expect(sw).toContain('fetchOfficePackAsset(request, releaseAsset, release)');
-    expect(sw).toContain('`/segments/sha256/${segment.sha256}`');
-    expect(sw).toContain('const overlappingSegments = pack.segments.filter(');
-    expect(sw).toContain('const MAX_PACKAGE_SEGMENT_BUFFERS = 4');
-    expect(sw).not.toContain('PACKAGE_SEGMENT_CACHE_NAME');
-    expect(sw).not.toContain('caches.open(PACKAGE_SEGMENT_CACHE_NAME)');
-    expect(sw).toContain("crypto.subtle.digest('SHA-256', bytes)");
-    expect(sw).toContain('new Uint8Array(await loadOfficePackSegment(release, segment))');
-    expect(sw).toContain("headers.set('x-onlyoffice-pack-release', release.releaseId)");
-    expect(sw).toContain("response.headers.get('last-modified')");
-    expect(sw).toContain('({ request, url }) => fetchSharedAsset(request, url)');
+    expect(sw).toContain('new EditorResourceBrokerClient({');
+    expect(sw).toContain('parseEditorOfficeHostClientIdentity');
+    expect(sw).toContain('new EditorClientIdentityRegistry()');
+    expect(sw).toContain('editorClientIdentities.resolve({');
+    expect(sw).toContain('resultingClientId: event.resultingClientId || undefined');
+    expect(sw).toContain('includeUncontrolled: true');
+    expect(sw).toContain('editorClientIdentities?.canBindHost(sourceClientId, bind, liveHosts)');
+    expect(sw).toContain('editorClientIdentities?.canBindPrime(bind, liveHosts)');
+    expect(sw).toContain('editorClientIdentities.bindHost(sourceClientId, bind)');
+    expect(sw).toContain('const bindTask = editorBrokerBindQueue.then(async () => {');
+    expect(sw).toContain('editorBrokerBindQueue = bindTask.catch(() => {');
+    expect(sw).toContain('releaseIdFromOfficeHostUrl(url)');
+    expect(sw).toContain('sourceIdentity.releaseId === bind.releaseId');
+    expect(sw).toContain('sourceIdentity.sessionId === bind.sessionId');
+    expect(sw).toContain('editorResourceBroker.handleBindMessage(bind, ports, commitHostIdentity)');
+    expect(sw).toContain('if (hostAuthorized) editorClientIdentities.bindHost(sourceClientId, bind)');
+    expect(sw).toContain("type: 'ONLYOFFICE_BROKER_NEEDED'");
+    expect(sw).toContain('candidate?.releaseId === identity.releaseId');
+    expect(sw).toContain('candidate.sessionId === identity.sessionId');
+    expect(sw).toContain('isEditorOfficeRuntimeClientUrl');
+    expect(sw).not.toContain('AbortSignal.timeout(EDITOR_RESOURCE_BROKER_REQUEST_TIMEOUT_MS)');
+    expect(sw).not.toContain('EDITOR_RESOURCE_BROKER_REQUEST_TIMEOUT_MS - (Date.now() - startedAt)');
+    expect(sw).toContain('editorResourceBroker.fetchAsset(request, path, {');
+    expect(sw).toContain("Object.defineProperty(self, '__ONLYOFFICE_BROKER_ACCEPTANCE_METRICS__'");
+    expect(sw).toContain('canonical: canonicalResourceBroker?.metrics ?? null');
+    expect(sw).toContain('editor: editorResourceBroker?.metrics ?? null');
+    expect(sw).toContain('connectionTimeoutMs: EDITOR_RESOURCE_BROKER_REQUEST_TIMEOUT_MS');
+    expect(sw).toContain("error.stage === 'connection'");
+    expect(sw).toContain("error.code === 'connection' || error.code === 'replaced'");
+    expect(sw).toContain('for (let attempt = 0; attempt < 2; attempt += 1)');
+    expect(sw).toContain("registerRoute(editorBrokerRouteMatcher, editorBrokerRouteHandler, 'GET')");
+    expect(sw).toContain("registerRoute(editorBrokerRouteMatcher, editorBrokerRouteHandler, 'HEAD')");
+    expect(sw).toContain('matchEditorShell(request, releaseAsset.releaseId, caches)');
+    expect(sw).toContain('editorBootstrapAssetPaths.has(`/${releaseAsset.path}`)');
+    expect(sw).toContain('return fetchEditorBrokerAsset(event, request, url)');
+    expect(sw).toContain('status: 503');
+    expect(sw).toContain('!isIsolatedEditorHost &&');
+    expect(sw).not.toContain('loadCurrentRelease');
+    expect(sw).not.toContain('fetchOfficePackAsset');
+    expect(sw).not.toContain('loadOfficePackSegment');
+    expect(sw).not.toContain('fetchSharedAsset');
+    expect(sw).not.toContain("cache: 'force-cache'");
+    expect(sw).not.toContain('return fetch(request)');
     expect(sw).toContain('if (isCanonicalPwaHost)');
     expect(sw).toContain('new NetworkFirst');
     expect(sw).toContain('new StaleWhileRevalidate');
@@ -146,14 +197,32 @@ describe('SW fetch routing', () => {
     expect(sw).toContain("event.data?.type === 'SET_FONT_ALLOWLIST'");
     expect(sw).toContain('Retain the v2 message contract for older clients');
     expect(sw).not.toContain('downloadedFontPaths = new Set(');
-    expect(sw).toContain("request.headers.has('range')");
     expect(sw).not.toContain('buildAllFontsMetadataFallbackBootstrap');
-    expect(sw).toContain('PANOSE, Unicode-range');
+    expect(sw).toContain('isContentSegmentRequest(url)');
+    expect(sw).toContain("event.data?.type === 'ONLYOFFICE_VERIFY_EDITOR_SHELL'");
+    expect(sw).toContain('verifyEditorShell({');
     expect(sw).not.toContain("responseHeaders.set('cache-control', 'no-store')");
     expect(sw).not.toContain("return new Response('Font is not installed'");
     expect(sw).not.toContain('selectFallbackFont');
-    expect(sw).toContain("if (url.pathname.startsWith('/fonts/'))");
-    expect(sw).toContain("'Font Metadata Unavailable'");
+  });
+
+  it('keeps immutable content endpoints outside the generic Workbox caches', () => {
+    const digest = 'a'.repeat(64);
+    expect(swShouldHandle('GET', `${ORIGIN}/segments/sha256/${digest}`)).toBe(false);
+    expect(swShouldHandle('GET', `${ORIGIN}/objects/release-a/sha256/${digest}`)).toBe(false);
+    expect(swShouldHandle('GET', `${ORIGIN}/blobs/sha256/${digest}`)).toBe(false);
+    expect(swShouldHandle('GET', `${ORIGIN}/channels/stable-v5.json`)).toBe(false);
+    expect(swShouldHandle('GET', `${ORIGIN}/releases/release-a/manifest.json`)).toBe(false);
+    expect(swShouldHandle('GET', `${ORIGIN}/r/release-a/sdkjs/word/word.js`)).toBe(false);
+    expect(swShouldHandle('GET', `${ORIGIN}/sdkjs/word/word.js`)).toBe(false);
+    expect(swShouldHandle('GET', `${ORIGIN}/wasm/x2t/x2t.wasm`)).toBe(false);
+    expect(swShouldHandle('GET', `${ORIGIN}/segments/sha256/not-a-digest`)).toBe(true);
+
+    const sw = fs.readFileSync(path.join(process.cwd(), 'src/service-worker.js'), 'utf8');
+    expect(sw).toContain('isCanonicalManagedResourceRequest(url)');
+    expect(sw).toContain('CONTENT_OBJECT_PATH_REGEX.test(url.pathname)');
+    expect(sw).toContain("url.pathname.startsWith('/channels/')");
+    expect(sw).toContain("url.pathname.startsWith('/releases/')");
   });
 
   it('provides root OnlyOffice desktop-mode discovery manifests', () => {
@@ -254,11 +323,9 @@ describe('SW fetch routing', () => {
     });
   });
 
-  describe('font files are not intercepted (crash prevention)', () => {
-    // Intercepting font files adds SW latency which triggers Chrome's
-    // "Slow Network" font-loading intervention. OnlyOffice can then crash with
-    // "Cannot read properties of undefined (reading 'units_per_EM')"
-    // in the fallback font code path of slide/word/cell sdk-all.js.
+  describe('font files stay outside the generic Workbox caches', () => {
+    // Isolated editor origins use the earlier canonical-broker route. The
+    // generic runtime/static caches must never create a second font copy.
     it.each([
       ['/web-apps/apps/common/main/resources/font/ASC.ttf', '.ttf (OnlyOffice internal font)'],
       ['/fonts/NotoSansTC-VF.ttf', '.ttf (CJK fallback font)'],
@@ -299,24 +366,29 @@ describe('SW fetch routing', () => {
     it.each([
       `${ORIGIN}/office-host.html`,
       `${ORIGIN}/reset.html`,
-      `${ORIGIN}/web-apps/apps/api/documents/api.js`,
-      `${ORIGIN}/public/sdkjs/slide/sdk-all.js`,
       `${ORIGIN}/styles/base.css`,
       `${ORIGIN}/plugins.json`,
       `${ORIGIN}/themes.json`,
     ])('%s', (url) => {
       expect(swShouldHandle('GET', url)).toBe(true);
     });
+
+    it.each([`${ORIGIN}/web-apps/apps/api/documents/api.js`, `${ORIGIN}/public/sdkjs/slide/sdk-all.js`])(
+      'keeps Office runtime outside Workbox: %s',
+      (url) => {
+        expect(swShouldHandle('GET', url)).toBe(false);
+      },
+    );
   });
 
-  describe('OnlyOffice runtime assets use network-first freshness', () => {
+  describe('OnlyOffice runtime assets stay outside generic Workbox strategies', () => {
     it.each([
       `${ORIGIN}/web-apps/apps/api/documents/api.js`,
       `${ORIGIN}/sdkjs/word/sdk-all.js`,
       `${ORIGIN}/wasm/x2t/x2t.wasm`,
       `${ORIGIN}/document/web-apps/apps/documenteditor/main/app.js`,
     ])('%s', (url) => {
-      expect(swStaticStrategy(url)).toBe('network-first');
+      expect(swStaticStrategy(url)).toBe('none');
     });
 
     it('keeps ordinary static assets on stale-while-revalidate', () => {

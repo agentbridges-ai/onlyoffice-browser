@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { COMMON_FONT_PICKER_FAMILIES } from './font-picker-policy.mjs';
 import { reproducibleBuildTimestamp } from './reproducible-build-time.mjs';
 import { verifyOnlyOfficeFontAssets } from './verify-onlyoffice-font-assets.mjs';
 
@@ -401,6 +402,7 @@ function hostUserEnv() {
 export function dockerGenerationScript(options) {
   const zhCoreFontFamilies = Array.from(new Set(ZH_CORE_FONT_FAMILIES)).sort();
   const zhCoreHiddenFontFamilies = Array.from(new Set(ZH_CORE_HIDDEN_FONT_FAMILIES)).sort();
+  const commonFontPickerFamilies = Array.from(new Set(COMMON_FONT_PICKER_FAMILIES)).sort();
   const zhCoreSourceFileNames = Array.from(
     new Set(ZH_CORE_SOURCE_FILE_NAMES.map((fileName) => fileName.toLowerCase())),
   ).sort();
@@ -439,7 +441,7 @@ if [ -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" ]; then
   cp -f "$DS_DIR/server/FileConverter/bin/AllFonts.js" "$OUT/server/FileConverter/bin/AllFonts.js"
 fi
 
-  OUT_DIR="$OUT" EXTRA_DIR="$EXTRA" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_HIDDEN_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreHiddenFontFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY=${JSON.stringify(JSON.stringify(ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} JAPANESE_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(japaneseFallbackFontFamilies))} KOREAN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(koreanFallbackFontFamilies))} ARABIC_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(arabicFallbackFontFamilies))} EMOJI_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(emojiFallbackFontFamilies))} MATH_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(mathFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
+  OUT_DIR="$OUT" EXTRA_DIR="$EXTRA" FONT_SET=${JSON.stringify(options.fontSet)} ZH_CORE_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreFontFamilies))} ZH_CORE_HIDDEN_FONT_FAMILIES=${JSON.stringify(JSON.stringify(zhCoreHiddenFontFamilies))} COMMON_FONT_PICKER_FAMILIES=${JSON.stringify(JSON.stringify(commonFontPickerFamilies))} ZH_CORE_SOURCE_FILE_NAMES=${JSON.stringify(JSON.stringify(zhCoreSourceFileNames))} ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY=${JSON.stringify(JSON.stringify(ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY))} LATIN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(latinFallbackFontFamilies))} CJK_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(cjkFallbackFontFamilies))} JAPANESE_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(japaneseFallbackFontFamilies))} KOREAN_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(koreanFallbackFontFamilies))} ARABIC_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(arabicFallbackFontFamilies))} EMOJI_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(emojiFallbackFontFamilies))} MATH_FALLBACK_FONT_FAMILIES=${JSON.stringify(JSON.stringify(mathFallbackFontFamilies))} KEEP_FONT_FAMILIES=${JSON.stringify(JSON.stringify(keepFontFamilies))} python3 - <<'PY'
 import json
 import os
 import re
@@ -450,6 +452,7 @@ extra_dir = os.environ["EXTRA_DIR"]
 font_set = os.environ["FONT_SET"]
 zh_core_font_families = set(json.loads(os.environ["ZH_CORE_FONT_FAMILIES"]))
 zh_core_hidden_font_families = set(json.loads(os.environ["ZH_CORE_HIDDEN_FONT_FAMILIES"]))
+common_font_picker_families = set(json.loads(os.environ["COMMON_FONT_PICKER_FAMILIES"]))
 zh_core_source_file_names = set(json.loads(os.environ["ZH_CORE_SOURCE_FILE_NAMES"]))
 zh_core_exact_source_file_names_by_family = json.loads(os.environ["ZH_CORE_EXACT_SOURCE_FILE_NAMES_BY_FAMILY"])
 latin_fallback_font_families = json.loads(os.environ["LATIN_FALLBACK_FONT_FAMILIES"])
@@ -652,14 +655,24 @@ if latin_fallback_source_index < 0 or cjk_fallback_source_index < 0:
 
 if font_set == "zh-core":
     kept_family_names = {info[0] for info in web_infos if info and (info[0] in zh_core_font_families or info[0] in zh_core_hidden_font_families or info[0] in keep_font_families)}
-    visible_family_names = {info[0] for info in web_infos if info and (info[0] in zh_core_font_families or info[0] in keep_font_families)}
+    visible_family_names = {
+        info[0] for info in web_infos
+        if info and (info[0] in zh_core_font_families or info[0] in keep_font_families)
+        and info[0] in common_font_picker_families
+    }
     kept_family_names.update(name for name in [latin_fallback_family_name, cjk_fallback_family_name] if name)
-    visible_family_names.update(name for name in [latin_fallback_family_name, cjk_fallback_family_name] if name)
+    visible_family_names.update(
+        name for name in [latin_fallback_family_name, cjk_fallback_family_name]
+        if name and name in common_font_picker_families
+    )
     if not kept_family_names:
         raise SystemExit("zh-core font set did not match any generated font families")
 else:
     kept_family_names = {info[0] for info in web_infos if info}
-    visible_family_names = kept_family_names
+    visible_family_names = {
+        name for name in kept_family_names
+        if name in common_font_picker_families
+    }
 
 used_source_indexes = []
 used_source_index_set = set()

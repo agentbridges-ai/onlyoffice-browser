@@ -34,7 +34,39 @@ export interface ReleaseAsset {
   profile: ResourceProfile;
   chunk: string;
   packageOffset?: number;
+  representations?: ReleaseAssetRepresentations;
 }
+
+export interface ReleaseWholeRepresentation {
+  sha256: string;
+  bytes: number;
+}
+
+export interface ReleaseFastCdcChunk {
+  offset: number;
+  bytes: number;
+  sha256: string;
+}
+
+export interface ReleaseFastCdcRepresentation {
+  algorithm: 'fastcdc-v2020';
+  minBytes: 65_536;
+  averageBytes: 262_144;
+  maxBytes: 1_048_576;
+  normalization: 1;
+  seed: 0;
+  chunks: ReleaseFastCdcChunk[];
+}
+
+export interface ReleaseAssetRepresentations {
+  whole: ReleaseWholeRepresentation;
+  fastcdc?: ReleaseFastCdcRepresentation;
+}
+
+export type ReleaseAssetV5 = ReleaseAsset & {
+  packageOffset: number;
+  representations: ReleaseAssetRepresentations;
+};
 
 export interface ReleaseChunk {
   id: string;
@@ -61,7 +93,7 @@ export interface ReleasePackage {
 }
 
 export interface ReleaseManifestV3 {
-  version: 3 | 4;
+  version: 3 | 4 | 5;
   releaseId: string;
   packageVersion: string;
   hostBuildId: string;
@@ -80,15 +112,38 @@ export interface ReleaseManifestV3 {
   fontFamilies?: Array<{ name: string; paths: string[] }>;
 }
 
-export type ReleaseManifestV4 = ReleaseManifestV3 & {
+export type ReleaseManifestV4 = Omit<ReleaseManifestV3, 'version' | 'package'> & {
   version: 4;
   package: ReleasePackage;
+};
+
+export interface ReleaseContentProtocolV1 {
+  version: 1;
+  digest: 'sha256';
+  cacheKeyFormat: 'canonical-sha256-v1';
+  storageSetSha256: string;
+  fastcdcPolicyId: 'fastcdc-v2020-min64k-avg256k-max1m-norm1-seed0';
+}
+
+export type ReleaseManifestV5 = Omit<ReleaseManifestV3, 'version' | 'package' | 'assets'> & {
+  version: 5;
+  package: ReleasePackage;
+  contentProtocol: ReleaseContentProtocolV1;
+  assets: ReleaseAssetV5[];
 };
 
 export interface ReleaseChannel {
   version: 1;
   releaseId: string;
   manifestUrl?: string;
+  manifestSha256?: string;
+}
+
+export interface RequiredReleaseIdentity {
+  releaseId: string;
+  manifestSha256: string;
+  packageVersion: string;
+  hostBuildId: string;
 }
 
 export interface ResourcePlan {
@@ -315,27 +370,149 @@ export class MemoryInstallationJournal implements InstallationJournal {
 }
 
 function isSafePath(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    value.length > 0 &&
-    !value.startsWith('/') &&
-    !value.includes('\\') &&
-    !value.split('/').includes('..')
-  );
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.startsWith('/') ||
+    value.includes('\\') ||
+    value.includes('?') ||
+    value.includes('#') ||
+    Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || code === 0x7f;
+    })
+  ) {
+    return false;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return false;
+  }
+  if (decoded.startsWith('/') || decoded.includes('\\')) return false;
+  const segments = decoded.split('/');
+  return segments.every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
 }
 
 function isDigest(value: unknown): value is string {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
 
+export function parseRequiredReleaseIdentity(value: unknown): RequiredReleaseIdentity | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.length !== 4 ||
+    !Object.hasOwn(record, 'releaseId') ||
+    !Object.hasOwn(record, 'manifestSha256') ||
+    !Object.hasOwn(record, 'packageVersion') ||
+    !Object.hasOwn(record, 'hostBuildId') ||
+    typeof record.releaseId !== 'string' ||
+    !/^[a-zA-Z0-9._+-]{1,128}$/.test(record.releaseId) ||
+    !isDigest(record.manifestSha256) ||
+    typeof record.packageVersion !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._+-]{0,127}$/.test(record.packageVersion) ||
+    typeof record.hostBuildId !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._+-]{0,127}$/.test(record.hostBuildId)
+  ) {
+    return null;
+  }
+  return {
+    releaseId: record.releaseId,
+    manifestSha256: record.manifestSha256,
+    packageVersion: record.packageVersion,
+    hostBuildId: record.hostBuildId,
+  };
+}
+
+export function requiredReleaseIdentitiesEqual(left: RequiredReleaseIdentity, right: RequiredReleaseIdentity): boolean {
+  return (
+    left.releaseId === right.releaseId &&
+    left.manifestSha256 === right.manifestSha256 &&
+    left.packageVersion === right.packageVersion &&
+    left.hostBuildId === right.hostBuildId
+  );
+}
+
 function isProfile(value: unknown): value is ResourceProfile {
   return ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'].includes(String(value));
+}
+
+function digestBytes(value: string | Uint8Array): string {
+  const input = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+  return Array.from(sha256(input), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function readManifestResponse(response: Response): Promise<{
+  manifest: ReleaseManifestV3;
+  manifestSha256: string;
+}> {
+  const manifestBytes = new Uint8Array(await response.arrayBuffer());
+  const manifestSha256 = digestBytes(manifestBytes);
+  let manifestValue: unknown;
+  try {
+    const manifestText = new TextDecoder('utf-8', { fatal: true }).decode(manifestBytes);
+    manifestValue = JSON.parse(manifestText);
+  } catch {
+    throw new ResourceInstallerError('manifest');
+  }
+  return {
+    manifest: parseReleaseManifest(manifestValue),
+    manifestSha256,
+  };
+}
+
+function storageSetDescription(pack: ReleasePackage, assets: ReleaseAssetV5[]) {
+  return {
+    version: 1,
+    packageSegments: pack.segments.map((segment) => ({
+      offset: segment.offset,
+      bytes: segment.bytes,
+      sha256: segment.sha256,
+    })),
+    assets: [...assets]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((asset) => ({
+        path: asset.path,
+        bytes: asset.bytes,
+        sha256: asset.sha256,
+        whole: {
+          bytes: asset.representations.whole.bytes,
+          sha256: asset.representations.whole.sha256,
+        },
+        ...(asset.representations.fastcdc
+          ? {
+              fastcdc: {
+                algorithm: asset.representations.fastcdc.algorithm,
+                minBytes: asset.representations.fastcdc.minBytes,
+                averageBytes: asset.representations.fastcdc.averageBytes,
+                maxBytes: asset.representations.fastcdc.maxBytes,
+                normalization: asset.representations.fastcdc.normalization,
+                seed: asset.representations.fastcdc.seed,
+                chunks: asset.representations.fastcdc.chunks.map((chunk) => ({
+                  offset: chunk.offset,
+                  bytes: chunk.bytes,
+                  sha256: chunk.sha256,
+                })),
+              },
+            }
+          : {}),
+      })),
+  };
+}
+
+export function computeStorageSetSha256(pack: ReleasePackage, assets: ReleaseAssetV5[]): string {
+  return digestBytes(JSON.stringify(storageSetDescription(pack, assets)));
 }
 
 export function parseReleaseManifest(value: unknown): ReleaseManifestV3 {
   const manifest = value as Partial<ReleaseManifestV3>;
   if (
-    (manifest.version !== 3 && manifest.version !== 4) ||
+    (manifest.version !== 3 && manifest.version !== 4 && manifest.version !== 5) ||
     typeof manifest.releaseId !== 'string' ||
     !/^[a-zA-Z0-9._+-]{1,128}$/.test(manifest.releaseId) ||
     typeof manifest.packageVersion !== 'string' ||
@@ -364,7 +541,7 @@ export function parseReleaseManifest(value: unknown): ReleaseManifestV3 {
       isProfile(asset.profile) &&
       typeof asset.chunk === 'string' &&
       asset.chunk.length > 0 &&
-      (manifest.version !== 4 || (Number.isSafeInteger(asset.packageOffset) && Number(asset.packageOffset) >= 0)),
+      (manifest.version === 3 || (Number.isSafeInteger(asset.packageOffset) && Number(asset.packageOffset) >= 0)),
   );
   if (assets.length !== manifest.assets.length || new Set(assets.map((asset) => asset.path)).size !== assets.length) {
     throw new ResourceInstallerError('manifest');
@@ -374,7 +551,7 @@ export function parseReleaseManifest(value: unknown): ReleaseManifestV3 {
     if (!isProfile(profile) || !Array.isArray(manifest.profiles[profile])) throw new ResourceInstallerError('manifest');
     if (!manifest.profiles[profile].every((path) => assetPaths.has(path))) throw new ResourceInstallerError('manifest');
   }
-  if (manifest.version === 4) {
+  if (manifest.version === 4 || manifest.version === 5) {
     const pack = manifest.package;
     if (
       !pack ||
@@ -418,6 +595,71 @@ export function parseReleaseManifest(value: unknown): ReleaseManifestV3 {
       }
     }
   }
+  if (manifest.version === 5) {
+    const protocol = (manifest as Partial<ReleaseManifestV5>).contentProtocol;
+    if (
+      !protocol ||
+      protocol.version !== 1 ||
+      protocol.digest !== 'sha256' ||
+      protocol.cacheKeyFormat !== 'canonical-sha256-v1' ||
+      !isDigest(protocol.storageSetSha256) ||
+      protocol.fastcdcPolicyId !== 'fastcdc-v2020-min64k-avg256k-max1m-norm1-seed0'
+    ) {
+      throw new ResourceInstallerError('manifest');
+    }
+    const objectSizes = new Map<string, number>();
+    const recordObject = (digest: string, bytes: number) => {
+      const existing = objectSizes.get(digest);
+      if (existing !== undefined && existing !== bytes) throw new ResourceInstallerError('manifest');
+      objectSizes.set(digest, bytes);
+    };
+    for (const segment of manifest.package!.segments) recordObject(segment.sha256, segment.bytes);
+    for (const asset of assets) {
+      const representations = asset.representations;
+      if (
+        !representations ||
+        !representations.whole ||
+        representations.whole.sha256 !== asset.sha256 ||
+        representations.whole.bytes !== asset.bytes
+      ) {
+        throw new ResourceInstallerError('manifest');
+      }
+      recordObject(representations.whole.sha256, representations.whole.bytes);
+      const fastcdc = representations.fastcdc;
+      if (!fastcdc) continue;
+      if (
+        fastcdc.algorithm !== 'fastcdc-v2020' ||
+        fastcdc.minBytes !== 65_536 ||
+        fastcdc.averageBytes !== 262_144 ||
+        fastcdc.maxBytes !== 1_048_576 ||
+        fastcdc.normalization !== 1 ||
+        fastcdc.seed !== 0 ||
+        !Array.isArray(fastcdc.chunks) ||
+        fastcdc.chunks.length === 0
+      ) {
+        throw new ResourceInstallerError('manifest');
+      }
+      let expectedOffset = 0;
+      for (const chunk of fastcdc.chunks) {
+        if (
+          !chunk ||
+          chunk.offset !== expectedOffset ||
+          !Number.isSafeInteger(chunk.bytes) ||
+          chunk.bytes <= 0 ||
+          !isDigest(chunk.sha256)
+        ) {
+          throw new ResourceInstallerError('manifest');
+        }
+        expectedOffset += chunk.bytes;
+        if (expectedOffset > asset.bytes) throw new ResourceInstallerError('manifest');
+        recordObject(chunk.sha256, chunk.bytes);
+      }
+      if (expectedOffset !== asset.bytes) throw new ResourceInstallerError('manifest');
+    }
+    if (computeStorageSetSha256(manifest.package!, assets as ReleaseAssetV5[]) !== protocol.storageSetSha256) {
+      throw new ResourceInstallerError('manifest');
+    }
+  }
   return manifest as ReleaseManifestV3;
 }
 
@@ -431,15 +673,64 @@ export class ReleaseRepository {
   }
 
   async current(): Promise<{ channel: ReleaseChannel; manifest: ReleaseManifestV3 }> {
-    const channelUrl = new URL('channels/stable.json', this.baseUrl);
+    const current = await this.readCurrent('channels/stable.json', false);
+    return { channel: current.channel, manifest: current.manifest };
+  }
+
+  async currentV5(): Promise<{
+    channel: ReleaseChannel & { manifestSha256: string };
+    manifest: ReleaseManifestV5;
+    manifestSha256: string;
+  }> {
+    const current = await this.readCurrent('channels/stable-v5.json', true);
+    if (current.manifest.version !== 5) throw new ResourceInstallerError('incompatible');
+    return {
+      channel: current.channel as ReleaseChannel & { manifestSha256: string },
+      manifest: current.manifest as ReleaseManifestV5,
+      manifestSha256: current.manifestSha256,
+    };
+  }
+
+  async releaseV5(
+    releaseId: string,
+    expectedManifestSha256: string,
+  ): Promise<{ manifest: ReleaseManifestV5; manifestSha256: string }> {
+    if (!/^[a-zA-Z0-9._+-]{1,128}$/.test(releaseId) || !isDigest(expectedManifestSha256)) {
+      throw new ResourceInstallerError('manifest');
+    }
+    const manifestUrl = new URL(`releases/${encodeURIComponent(releaseId)}/manifest.json`, this.baseUrl);
+    const response = await this.fetchImpl(manifestUrl, {
+      cache: 'no-store',
+      credentials: 'omit',
+      mode: typeof location !== 'undefined' && manifestUrl.origin === location.origin ? 'same-origin' : 'cors',
+    });
+    if (!response.ok) throw networkError(response.status);
+    const { manifest, manifestSha256 } = await readManifestResponse(response);
+    if (manifestSha256 !== expectedManifestSha256) throw new ResourceInstallerError('manifest');
+    if (manifest.version !== 5 || manifest.releaseId !== releaseId) {
+      throw new ResourceInstallerError('incompatible');
+    }
+    return { manifest: manifest as ReleaseManifestV5, manifestSha256 };
+  }
+
+  private async readCurrent(
+    channelPath: 'channels/stable.json' | 'channels/stable-v5.json',
+    requireManifestSha256: boolean,
+  ): Promise<{ channel: ReleaseChannel; manifest: ReleaseManifestV3; manifestSha256: string }> {
+    const channelUrl = new URL(channelPath, this.baseUrl);
     const channelResponse = await this.fetchImpl(channelUrl, {
       cache: 'no-store',
       credentials: 'omit',
-      mode: channelUrl.origin === location.origin ? 'same-origin' : 'cors',
+      mode: typeof location !== 'undefined' && channelUrl.origin === location.origin ? 'same-origin' : 'cors',
     });
     if (!channelResponse.ok) throw networkError(channelResponse.status);
     const channel = (await channelResponse.json()) as Partial<ReleaseChannel>;
-    if (channel.version !== 1 || typeof channel.releaseId !== 'string') {
+    if (
+      channel.version !== 1 ||
+      typeof channel.releaseId !== 'string' ||
+      (requireManifestSha256 && !isDigest(channel.manifestSha256)) ||
+      (channel.manifestSha256 !== undefined && !isDigest(channel.manifestSha256))
+    ) {
       throw new ResourceInstallerError('manifest');
     }
     const manifestUrl = channel.manifestUrl
@@ -448,12 +739,15 @@ export class ReleaseRepository {
     const response = await this.fetchImpl(manifestUrl, {
       cache: 'no-store',
       credentials: 'omit',
-      mode: manifestUrl.origin === location.origin ? 'same-origin' : 'cors',
+      mode: typeof location !== 'undefined' && manifestUrl.origin === location.origin ? 'same-origin' : 'cors',
     });
     if (!response.ok) throw networkError(response.status);
-    const manifest = parseReleaseManifest(await response.json());
+    const { manifest, manifestSha256 } = await readManifestResponse(response);
+    if (channel.manifestSha256 && manifestSha256 !== channel.manifestSha256) {
+      throw new ResourceInstallerError('manifest');
+    }
     if (manifest.releaseId !== channel.releaseId) throw new ResourceInstallerError('manifest');
-    return { channel: channel as ReleaseChannel, manifest };
+    return { channel: channel as ReleaseChannel, manifest, manifestSha256 };
   }
 
   assetUrl(releaseId: string, path: string): URL {
@@ -468,6 +762,13 @@ export class ReleaseRepository {
   packageSegmentUrl(segmentSha256: string): URL {
     if (!isDigest(segmentSha256)) throw new ResourceInstallerError('manifest');
     return new URL(`segments/sha256/${segmentSha256}`, this.baseUrl);
+  }
+
+  contentObjectUrl(releaseId: string, objectSha256: string): URL {
+    if (!/^[a-zA-Z0-9._+-]{1,128}$/.test(releaseId) || !isDigest(objectSha256)) {
+      throw new ResourceInstallerError('manifest');
+    }
+    return new URL(`objects/${encodeURIComponent(releaseId)}/sha256/${objectSha256}`, this.baseUrl);
   }
 }
 

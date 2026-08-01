@@ -15,7 +15,12 @@ import {
   type OfficeHostWindowMessage,
 } from './office-host-protocol';
 import { officeHostIdentitiesEqual } from './office-host-identity';
-import { OFFICE_EDITOR_ORIGIN_SLOTS, type OfficeEditorOriginSlot } from './office-origin-pool';
+import { readOfficeHostBootstrap, writeOfficeHostBootstrap } from './office-host-url';
+import {
+  OFFICE_EDITOR_ORIGIN_SLOTS,
+  isReusableOfficeEditorHostname,
+  type OfficeEditorOriginSlot,
+} from './office-origin-pool';
 
 const DESTROY_TIMEOUT_MS = 5_000;
 const BLANK_NAVIGATION_TIMEOUT_MS = 250;
@@ -235,6 +240,16 @@ const debugStats = {
   hostResetTimeoutCount: 0,
   startupHeartbeatPortCount: 0,
   startupHeartbeatCount: 0,
+  activeHostPortCount: 0,
+  peakActiveHostPortCount: 0,
+  activeStartupHeartbeatPortCount: 0,
+  peakActiveStartupHeartbeatPortCount: 0,
+  get activeInstanceCount() {
+    return activeInstances.size;
+  },
+  get activeOriginLeaseCount() {
+    return activeOrigins.size;
+  },
 };
 let temporaryDocumentTitleOriginal: string | null = null;
 let temporaryDocumentTitleTimeout: number | null = null;
@@ -346,7 +361,10 @@ function maybeHardResetPage(): void {
 }
 
 function isolateLocalhostHostUrl(resolved: URL, hostSlot: OfficeEditorOriginSlot): void {
-  if (resolved.hostname === 'localhost' || resolved.hostname.endsWith('.localhost')) {
+  if (
+    (resolved.hostname === 'localhost' || resolved.hostname.endsWith('.localhost')) &&
+    !isReusableOfficeEditorHostname(resolved.hostname)
+  ) {
     resolved.hostname = `host-${hostSlot}.office.localhost`;
   }
 }
@@ -374,9 +392,10 @@ function resolveHostUrl(
   if (resolved.origin === window.location.origin) {
     throw new Error('createOfficeEditor requires hostUrl to be an independent origin');
   }
-  resolved.searchParams.set('sessionId', sessionId);
-  resolved.searchParams.set('parentOrigin', window.location.origin);
-  return resolved;
+  return writeOfficeHostBootstrap(resolved, {
+    sessionId,
+    parentOrigin: window.location.origin,
+  });
 }
 
 function copyArrayBuffer(value: ArrayBuffer): ArrayBuffer {
@@ -623,6 +642,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
   private readyResolve: ((instance: BrowserOfficeEditorProxy) => void) | null = null;
   private readyReject: ((error: Error) => void) | null = null;
   private destroyAckResolve: (() => void) | null = null;
+  private originLeaseState: 'active' | 'retiring' | 'released' = 'active';
   private connected = false;
   private activationStarted = false;
   private initSent = false;
@@ -664,7 +684,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       if (resolvedOrigins.has(candidate.hostUrl.origin)) continue;
       resolvedOrigins.add(candidate.hostUrl.origin);
       const existing = activeOrigins.get(candidate.hostUrl.origin);
-      if (!existing?.isActiveOriginOwner()) {
+      if (!existing?.holdsOriginLease()) {
         if (existing) activeOrigins.delete(candidate.hostUrl.origin);
         descriptor = candidate;
         break;
@@ -682,8 +702,18 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     return instance;
   }
 
-  private isActiveOriginOwner(): boolean {
-    return !this.destroyed && Boolean(this.iframe?.isConnected);
+  private holdsOriginLease(): boolean {
+    if (this.originLeaseState === 'retiring') return true;
+    if (this.originLeaseState === 'released') return false;
+    return Boolean(this.iframe?.isConnected);
+  }
+
+  private releaseOriginLease(): void {
+    if (this.originLeaseState === 'released') return;
+    this.originLeaseState = 'released';
+    if (activeOrigins.get(this.hostOrigin) === this) {
+      activeOrigins.delete(this.hostOrigin);
+    }
   }
 
   private mountHost(): void {
@@ -790,6 +820,8 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
     const channel = new MessageChannel();
     this.port = channel.port1;
+    debugStats.activeHostPortCount += 1;
+    debugStats.peakActiveHostPortCount = Math.max(debugStats.peakActiveHostPortCount, debugStats.activeHostPortCount);
     this.port.onmessage = (portEvent) => this.handlePortMessage(portEvent);
     this.port.start();
 
@@ -1138,9 +1170,17 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
       port?.close();
       return;
     }
-    this.startupHeartbeatPort?.close();
+    if (this.startupHeartbeatPort) {
+      this.startupHeartbeatPort.close();
+      debugStats.activeStartupHeartbeatPortCount = Math.max(0, debugStats.activeStartupHeartbeatPortCount - 1);
+    }
     this.startupHeartbeatPort = port;
     debugStats.startupHeartbeatPortCount += 1;
+    debugStats.activeStartupHeartbeatPortCount += 1;
+    debugStats.peakActiveStartupHeartbeatPortCount = Math.max(
+      debugStats.peakActiveStartupHeartbeatPortCount,
+      debugStats.activeStartupHeartbeatPortCount,
+    );
     port.onmessage = (event: MessageEvent<OfficeHostChildMessage>) => {
       if (!isOfficeHostMessage(event.data, this.id)) return;
       if (event.data.type === 'STARTUP_HEARTBEAT' && !this.mounted) {
@@ -1290,6 +1330,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     this.mountPhase = 'destroyed';
     if (this.destroyPromise) return this.destroyPromise;
     this.destroyed = true;
+    this.originLeaseState = 'retiring';
     this.mounted = false;
     this.state = {
       ...this.state,
@@ -1318,11 +1359,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     }
     this.pendingPluginRequests.clear();
     activeInstances.delete(this.id);
-    if (activeOrigins.get(this.hostOrigin) === this) {
-      activeOrigins.delete(this.hostOrigin);
-    }
 
-    this.destroyPromise = this.destroyHost();
+    // Keep the origin leased while the host destroys its runtime, closes its
+    // broker ports, and resets the frame. Callers may ignore the returned
+    // Promise, so releasing synchronously here would let a new session bind to
+    // the same reusable origin while the old Service Worker session is still
+    // retiring. Every teardown wait is bounded; finally prevents a failed
+    // teardown from leaking the slot forever.
+    this.destroyPromise = this.destroyHost().finally(() => this.releaseOriginLease());
     return this.destroyPromise;
   }
 
@@ -1331,46 +1375,67 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     let hostResetDone = false;
     let removeResetListener = () => {};
 
-    if (this.port) {
-      const portAck = new Promise<void>((resolve) => {
-        this.destroyAckResolve = () => {
-          resolve();
-        };
-      });
-      const resetAck = new Promise<void>((resolve) => {
-        const listener = (event: MessageEvent) => {
-          if (event.origin !== this.hostOrigin || event.source !== this.iframe?.contentWindow) return;
-          if (!isOfficeHostMessage(event.data, this.id)) return;
-          const message = event.data as OfficeHostWindowMessage;
-          if (message.type !== 'HOST_RESET_DONE') return;
-          hostResetDone = true;
-          debugStats.hostResetDoneCount += 1;
-          resolve();
-        };
-        this.parentWindow.addEventListener('message', listener);
-        removeResetListener = () => this.parentWindow.removeEventListener('message', listener);
-      });
-      this.postToHost({
-        protocol: OFFICE_HOST_PROTOCOL,
-        type: 'DESTROY',
-        sessionId: this.id,
-      });
-      await Promise.race([resetAck, portAck, delay(destroyTimeoutMs)]);
+    try {
+      if (this.port) {
+        const portAck = new Promise<void>((resolve) => {
+          this.destroyAckResolve = () => {
+            resolve();
+          };
+        });
+        const resetAck = new Promise<void>((resolve) => {
+          const listener = (event: MessageEvent) => {
+            if (event.origin !== this.hostOrigin || event.source !== this.iframe?.contentWindow) return;
+            if (!isOfficeHostMessage(event.data, this.id)) return;
+            const message = event.data as OfficeHostWindowMessage;
+            if (message.type !== 'HOST_RESET_DONE') return;
+            hostResetDone = true;
+            debugStats.hostResetDoneCount += 1;
+            resolve();
+          };
+          this.parentWindow.addEventListener('message', listener);
+          removeResetListener = () => this.parentWindow.removeEventListener('message', listener);
+        });
+        this.postToHost({
+          protocol: OFFICE_HOST_PROTOCOL,
+          type: 'DESTROY',
+          sessionId: this.id,
+        });
+        await Promise.race([resetAck, portAck, delay(destroyTimeoutMs)]);
+      }
+    } catch {
+      // Continue with the bounded frame reset below when a stale/closed port
+      // rejects the cooperative teardown message.
+    } finally {
+      removeResetListener();
     }
     if (!hostResetDone) {
       debugStats.hostResetTimeoutCount += 1;
     }
-    removeResetListener();
 
-    await this.forceRemoveIframe(hostResetDone);
+    try {
+      await this.forceRemoveIframe(hostResetDone);
+    } catch {
+      // forceRemoveIframe always detaches the browsing context in its finally
+      // block. Teardown is best-effort and must not leak a retired slot.
+    }
     if (this.port) {
       this.port.onmessage = null;
-      this.port.close();
+      try {
+        this.port.close();
+      } catch {
+        // Ignore a port that the host already closed during teardown.
+      }
+      debugStats.activeHostPortCount = Math.max(0, debugStats.activeHostPortCount - 1);
     }
     this.port = null;
     if (this.startupHeartbeatPort) {
       this.startupHeartbeatPort.onmessage = null;
-      this.startupHeartbeatPort.close();
+      try {
+        this.startupHeartbeatPort.close();
+      } catch {
+        // Ignore a heartbeat port that the host already closed.
+      }
+      debugStats.activeStartupHeartbeatPortCount = Math.max(0, debugStats.activeStartupHeartbeatPortCount - 1);
     }
     this.startupHeartbeatPort = null;
     this.hostWindow = null;
@@ -1390,12 +1455,15 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
 
     if (iframe.isConnected) {
       hideIframeForTeardown(iframe);
-      if (!hostResetDone) {
-        const resetUrl = this.getHostResetUrl();
-        await this.navigateIframeForTeardown(iframe, resetUrl, RESET_NAVIGATION_TIMEOUT_MS);
+      try {
+        if (!hostResetDone) {
+          const resetUrl = this.getHostResetUrl();
+          await this.navigateIframeForTeardown(iframe, resetUrl, RESET_NAVIGATION_TIMEOUT_MS);
+        }
+        await this.navigateIframeForTeardown(iframe, 'about:blank', BLANK_NAVIGATION_TIMEOUT_MS);
+      } finally {
+        iframe.remove();
       }
-      await this.navigateIframeForTeardown(iframe, 'about:blank', BLANK_NAVIGATION_TIMEOUT_MS);
-      iframe.remove();
     }
   }
 
@@ -1404,7 +1472,7 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     resetUrl.searchParams.set('sessionId', this.id);
     resetUrl.searchParams.set(
       'parentOrigin',
-      this.descriptor.hostUrl.searchParams.get('parentOrigin') || this.parentWindow.location.origin,
+      readOfficeHostBootstrap(this.descriptor.hostUrl).parentOrigin || this.parentWindow.location.origin,
     );
     return resetUrl.href;
   }

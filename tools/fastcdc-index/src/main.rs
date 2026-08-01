@@ -1,4 +1,4 @@
-use fastcdc::v2020::StreamCDC;
+use fastcdc::v2020::{Normalization, StreamCDC};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -10,6 +10,7 @@ use std::time::Instant;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChunkRecord {
+    offset: u64,
     sha256: String,
     bytes: usize,
 }
@@ -82,11 +83,19 @@ fn main() {
             .unwrap_or_else(|error| fail(&format!("failed to open {}: {error}", input.display())));
         let started_at = Instant::now();
         let mut chunks = Vec::new();
-        for result in StreamCDC::new(source, minimum_bytes, average_bytes, maximum_bytes) {
+        for result in StreamCDC::with_level_and_seed(
+            source,
+            minimum_bytes,
+            average_bytes,
+            maximum_bytes,
+            Normalization::Level1,
+            0,
+        ) {
             let chunk = result.unwrap_or_else(|error| {
                 fail(&format!("failed to index {}: {error}", input.display()))
             });
             chunks.push(ChunkRecord {
+                offset: chunk.offset,
                 sha256: digest_hex(&chunk.data),
                 bytes: chunk.length,
             });

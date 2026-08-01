@@ -5,9 +5,16 @@ import {
   type RuntimeFontFamily,
 } from './runtime-cache';
 import { ONLYOFFICE_BROWSER_VERSION } from '../version';
+import { CanonicalResourceInstaller } from './canonical-resource-installer';
+import { CanonicalResourceReadinessGate } from './canonical-resource-readiness-gate';
+import { ResourceInstallerFrameAdapter } from './resource-installer-frame-adapter';
+import { RESOURCE_INSTALLER_CANONICAL_ORIGIN } from './resource-installer-frame-protocol';
 import {
+  ResourceInstallerError,
   createTransactionalResourceInstaller,
+  parseRequiredReleaseIdentity,
   type OfficeRuntimeResourceInstaller,
+  type RequiredReleaseIdentity,
   type ResourceErrorCode,
   type ResourceInstallerSnapshot,
   type ResourcePlan,
@@ -73,6 +80,9 @@ export type OfficeRuntimeResourceManagerOptions = {
   cacheStorage?: CacheStorage;
   assetBaseUrl?: string | URL;
   releaseInstaller?: OfficeRuntimeResourceInstaller;
+  canonicalOrigin?: string;
+  allowLocalTestMode?: boolean;
+  requiredReleaseIdentity?: RequiredReleaseIdentity;
 };
 
 class VolatileStorage implements Storage {
@@ -105,6 +115,99 @@ function cloneProgress(progress: RuntimeCacheProgress): RuntimeCacheProgress {
   };
 }
 
+type InstallerRuntimeMode = 'canonical' | 'remote' | 'legacy';
+
+export function resolveOfficeResourceInstallerRuntimeMode(input: {
+  pageOrigin: string;
+  canonicalOrigin?: string;
+  allowLocalTestMode?: boolean;
+}): InstallerRuntimeMode {
+  let page: URL;
+  let canonical: URL;
+  try {
+    page = new URL(input.pageOrigin);
+    canonical = new URL(input.canonicalOrigin ?? RESOURCE_INSTALLER_CANONICAL_ORIGIN);
+  } catch {
+    return 'legacy';
+  }
+  if (page.origin === RESOURCE_INSTALLER_CANONICAL_ORIGIN && canonical.origin === RESOURCE_INSTALLER_CANONICAL_ORIGIN) {
+    return 'canonical';
+  }
+  if (page.origin === 'https://piwork.getpi.work' && canonical.origin === RESOURCE_INSTALLER_CANONICAL_ORIGIN) {
+    return 'remote';
+  }
+  if (
+    input.allowLocalTestMode === true &&
+    canonical.hostname === 'onlyoffice.localhost' &&
+    (canonical.protocol === 'http:' || canonical.protocol === 'https:') &&
+    page.protocol === canonical.protocol &&
+    page.port === canonical.port
+  ) {
+    if (page.hostname === 'onlyoffice.localhost') return 'canonical';
+    if (page.hostname === 'piwork.localhost') return 'remote';
+  }
+  return 'legacy';
+}
+
+async function createDefaultResourceInstaller(
+  options: OfficeRuntimeResourceManagerOptions,
+): Promise<OfficeRuntimeResourceInstaller | null> {
+  const pageOrigin = typeof location === 'undefined' ? '' : location.origin;
+  const canonicalOrigin = new URL(
+    options.canonicalOrigin ?? options.assetBaseUrl ?? RESOURCE_INSTALLER_CANONICAL_ORIGIN,
+    pageOrigin || RESOURCE_INSTALLER_CANONICAL_ORIGIN,
+  ).origin;
+  const mode = resolveOfficeResourceInstallerRuntimeMode({
+    pageOrigin,
+    canonicalOrigin,
+    allowLocalTestMode: options.allowLocalTestMode,
+  });
+  if (mode === 'remote') {
+    const requiredReleaseIdentity = parseRequiredReleaseIdentity(options.requiredReleaseIdentity);
+    if (!requiredReleaseIdentity) {
+      throw new ResourceInstallerError('incompatible', 'release/identity');
+    }
+    return ResourceInstallerFrameAdapter.create({
+      canonicalOrigin,
+      allowLocalTestMode: options.allowLocalTestMode,
+      requiredReleaseIdentity,
+    });
+  }
+  if (mode === 'canonical') {
+    const cacheStorage = options.cacheStorage ?? (typeof caches === 'undefined' ? undefined : caches);
+    const indexedDb = typeof indexedDB === 'undefined' ? undefined : indexedDB;
+    if (!cacheStorage || !indexedDb) throw new ResourceInstallerError('storage');
+    const installer = new CanonicalResourceInstaller({
+      assetBaseUrl: canonicalOrigin,
+      fetch: options.fetch ?? window.fetch.bind(window),
+      cacheStorage,
+      indexedDb,
+      locks: navigator.locks,
+      requiredReleaseIdentity: options.requiredReleaseIdentity,
+      broadcast:
+        typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('onlyoffice-canonical-resources-v1'),
+    });
+    const gated = new CanonicalResourceReadinessGate({
+      installer,
+      canonicalOrigin,
+      localTestMode: options.allowLocalTestMode,
+    });
+    await gated.initialize();
+    return gated;
+  }
+  try {
+    return await createTransactionalResourceInstaller({
+      assetBaseUrl: options.assetBaseUrl,
+      fetch: options.fetch,
+      cacheStorage: options.cacheStorage,
+    });
+  } catch {
+    // Release manifests are deployed additively. Keep the legacy runtime-cache
+    // compatibility path only on non-product origins.
+    return null;
+  }
+}
+
 export class OfficeRuntimeResourceManager {
   private readonly controller: RuntimeCacheController;
   private readonly installer: OfficeRuntimeResourceInstaller | null;
@@ -124,25 +227,16 @@ export class OfficeRuntimeResourceManager {
   }
 
   static async create(options: OfficeRuntimeResourceManagerOptions = {}): Promise<OfficeRuntimeResourceManager> {
-    let installer = options.releaseInstaller || null;
-    if (!installer) {
-      try {
-        installer = await createTransactionalResourceInstaller({
-          assetBaseUrl: options.assetBaseUrl,
-          fetch: options.fetch,
-          cacheStorage: options.cacheStorage,
-        });
-      } catch {
-        // Release Manifest v3 is deployed additively. Keep the v2 compatibility
-        // path available until the stable channel pointer exists.
-      }
-    }
-    const controller = await RuntimeCacheController.create(
-      installer ? new VolatileStorage() : options.storage,
-      options.fetch,
-      options.cacheStorage,
-      options.assetBaseUrl,
-    );
+    const installer = options.releaseInstaller || (await createDefaultResourceInstaller(options));
+    const controller = installer
+      ? RuntimeCacheController.createCanonicalFacade(
+          ONLYOFFICE_BROWSER_VERSION,
+          new VolatileStorage(),
+          options.fetch,
+          options.cacheStorage,
+          options.assetBaseUrl,
+        )
+      : await RuntimeCacheController.create(options.storage, options.fetch, options.cacheStorage, options.assetBaseUrl);
     return new OfficeRuntimeResourceManager(controller, installer);
   }
 
@@ -168,6 +262,10 @@ export class OfficeRuntimeResourceManager {
   }
 
   remainingBytes(): number {
+    if (this.installer) {
+      const snapshot = this.installer.getInstallerSnapshot();
+      return Math.max(0, snapshot.downloadBytes - snapshot.downloadedBytes);
+    }
     return this.controller.remainingBytes();
   }
 
@@ -188,6 +286,14 @@ export class OfficeRuntimeResourceManager {
 
   prepareForDocumentType(type: OfficeDocumentResourceType): Promise<RuntimeCacheProgress> {
     if (this.installer) {
+      const installerSnapshot = this.installer.getInstallerSnapshot();
+      if (
+        installerSnapshot.readiness === 'ready' &&
+        installerSnapshot.installedRelease &&
+        installerSnapshot.installedProfiles.includes(type)
+      ) {
+        return Promise.resolve(this.snapshot.progress);
+      }
       return this.run(`prepare-document:${type}`, 'prepare-document', async () => {
         const plan = await this.installer!.plan({ scope: 'document', documentType: type });
         await this.installer!.apply(plan);
@@ -223,10 +329,22 @@ export class OfficeRuntimeResourceManager {
   }
 
   downloadFontFamily(id: string): Promise<RuntimeCacheProgress> {
+    if (this.installer) {
+      return this.run(`download-font:${id}`, 'download-font', async () => {
+        const plan = await this.installer!.plan({ scope: 'fonts' });
+        await this.installer!.apply(plan);
+        return this.controller.getProgress('ready');
+      });
+    }
     return this.run(`download-font:${id}`, 'download-font', (notify) => this.controller.downloadFontFamily(id, notify));
   }
 
   uninstallFontFamily(id: string): Promise<RuntimeCacheProgress> {
+    if (this.installer) {
+      // Canonical v5 is an all-in-one installation. Individual files are not
+      // copied into, or deleted from, the embedding origin.
+      return this.run(`remove-font:${id}`, 'remove-font', async () => this.controller.getProgress('ready'));
+    }
     return this.run(`remove-font:${id}`, 'remove-font', async () => this.controller.uninstallFontFamily(id));
   }
 
@@ -312,6 +430,13 @@ export class OfficeRuntimeResourceManager {
     error: { code: ResourceErrorCode; path?: string } | null,
   ): OfficeRuntimeResourceSnapshot {
     const installer = this.installer?.getInstallerSnapshot();
+    const installerFailure = installer?.errorCode
+      ? {
+          code: installer.errorCode,
+          ...(installer.failedResources[0]?.path ? { path: installer.failedResources[0].path } : {}),
+        }
+      : null;
+    const effectiveError = error ?? installerFailure;
     const installedProfiles = new Set(installer?.installedProfiles || []);
     const packs = progress.categories.map((category) => ({
       id: category.category,
@@ -328,7 +453,7 @@ export class OfficeRuntimeResourceManager {
       assetVersion: this.controller.version,
       readiness:
         installer?.readiness ||
-        (error || progress.phase === 'error'
+        (effectiveError || progress.phase === 'error'
           ? 'error'
           : operation || progress.phase === 'checking' || progress.phase === 'loading'
             ? 'updating'
@@ -340,7 +465,7 @@ export class OfficeRuntimeResourceManager {
       fonts: this.controller.listFonts(),
       verifiedFontPaths: this.getVerifiedFontPaths(),
       operation,
-      error,
+      error: effectiveError,
       installedRelease: installer?.installedRelease || null,
       targetRelease: installer?.targetRelease || this.controller.version,
       availableRelease: installer?.availableRelease || null,

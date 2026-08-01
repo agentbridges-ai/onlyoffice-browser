@@ -2,11 +2,17 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   MemoryInstallationJournal,
+  ReleaseRepository,
   ResourcePlanner,
   TransactionalResourceInstaller,
+  computeStorageSetSha256,
+  parseRequiredReleaseIdentity,
   parseReleaseManifest,
+  requiredReleaseIdentitiesEqual,
   type ReleaseAsset,
+  type ReleaseAssetV5,
   type ReleaseManifestV3,
+  type ReleaseManifestV5,
 } from '../../src/lib/release-resources';
 
 function digest(bytes: Uint8Array | string): string {
@@ -92,6 +98,36 @@ function packageManifest(releaseId = 'v0.5.0-pack'): ReleaseManifestV3 {
   };
 }
 
+function contentManifest(releaseId = 'v0.6.0-content'): ReleaseManifestV5 {
+  const release = packageManifest(releaseId);
+  const assets: ReleaseAssetV5[] = [
+    {
+      ...asset,
+      packageOffset: 16,
+      representations: {
+        whole: {
+          sha256: asset.sha256,
+          bytes: asset.bytes,
+        },
+      },
+    },
+  ];
+  const packageDescriptor = release.package!;
+  return {
+    ...release,
+    version: 5,
+    package: packageDescriptor,
+    assets,
+    contentProtocol: {
+      version: 1,
+      digest: 'sha256',
+      cacheKeyFormat: 'canonical-sha256-v1',
+      storageSetSha256: computeStorageSetSha256(packageDescriptor, assets),
+      fastcdcPolicyId: 'fastcdc-v2020-min64k-avg256k-max1m-norm1-seed0',
+    },
+  };
+}
+
 function packageFetch(release = packageManifest()) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -135,6 +171,21 @@ function memoryCacheStorage() {
 }
 
 describe('Release Manifest v3', () => {
+  it('strictly parses the immutable release identity used by Piwork', () => {
+    const identity = {
+      releaseId: 'v0.5.7-prod.1',
+      manifestSha256: 'ab'.repeat(32),
+      packageVersion: '0.5.7',
+      hostBuildId: 'office-host-v0.5.7-r1',
+    };
+    expect(parseRequiredReleaseIdentity(identity)).toEqual(identity);
+    expect(requiredReleaseIdentitiesEqual(identity, { ...identity })).toBe(true);
+    expect(parseRequiredReleaseIdentity({ ...identity, manifestSha256: 'AB'.repeat(32) })).toBeNull();
+    expect(parseRequiredReleaseIdentity({ ...identity, unexpected: true })).toBeNull();
+    expect(parseRequiredReleaseIdentity({ ...identity, releaseId: '../stable' })).toBeNull();
+    expect(parseRequiredReleaseIdentity(Object.assign(Object.create({}), identity))).toBeNull();
+  });
+
   it('rejects truncated digests and unsafe paths', () => {
     expect(parseReleaseManifest(manifest())).toMatchObject({ version: 3, releaseId: 'v0.4.0-test' });
     expect(() =>
@@ -413,6 +464,91 @@ describe('Release Manifest v4 Office Pack', () => {
     },
   );
 
+  it.each(['cache-storage', 'http-cache'] as const)(
+    'reuses unchanged content-addressed segments across releases in %s mode',
+    async (storageMode) => {
+      const nextPackBody = packBody.slice();
+      nextPackBody.fill(42, 10);
+      const segmentedRelease = (releaseId: string, bytes: Uint8Array) => {
+        const release = packageManifest(releaseId);
+        release.package = {
+          ...release.package!,
+          sha256: digest(bytes),
+          segmentBytes: 10,
+          segments: [
+            {
+              id: digest(bytes.slice(0, 10)),
+              offset: 0,
+              bytes: 10,
+              sha256: digest(bytes.slice(0, 10)),
+            },
+            {
+              id: digest(bytes.slice(10, 20)),
+              offset: 10,
+              bytes: 10,
+              sha256: digest(bytes.slice(10, 20)),
+            },
+          ],
+        };
+        return release;
+      };
+      const firstRelease = segmentedRelease('v0.5.0-segmented', packBody);
+      const nextRelease = segmentedRelease('v0.5.1-segmented', nextPackBody);
+      let currentRelease = firstRelease;
+      const segmentBodies = new Map([
+        [digest(packBody.slice(0, 10)), packBody.slice(0, 10)],
+        [digest(packBody.slice(10, 20)), packBody.slice(10, 20)],
+        [digest(nextPackBody.slice(10, 20)), nextPackBody.slice(10, 20)],
+      ]);
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/channels/stable.json') {
+          return Response.json({ version: 1, releaseId: currentRelease.releaseId });
+        }
+        if (url.pathname === `/releases/${currentRelease.releaseId}/manifest.json`) {
+          return Response.json(currentRelease);
+        }
+        const segment = segmentBodies.get(url.pathname.split('/').at(-1) || '');
+        return segment
+          ? new Response(segment, { headers: { 'Content-Length': String(segment.byteLength) } })
+          : new Response(null, { status: 404 });
+      });
+      const journal = new MemoryInstallationJournal();
+      const cached = memoryCacheStorage();
+      const create = async () => {
+        const installer = new TransactionalResourceInstaller({
+          assetBaseUrl: 'https://onlyoffice.example.test',
+          fetch: fetchMock as unknown as typeof fetch,
+          cacheStorage: storageMode === 'cache-storage' ? cached.storage : undefined,
+          journal,
+          storageMode,
+          retryDelaysMs: [],
+        });
+        await installer.initialize();
+        return installer;
+      };
+
+      const first = await create();
+      await first.apply(await first.plan({ scope: 'all' }));
+      currentRelease = nextRelease;
+      const upgraded = await create();
+      const plan = await upgraded.plan({ scope: 'all' });
+      expect(plan).toMatchObject({ downloadBytes: 10, reusedBytes: 10 });
+      await upgraded.apply(plan);
+
+      const sharedDigest = digest(packBody.slice(0, 10));
+      const segmentRequests = fetchMock.mock.calls
+        .map(([input]) => new URL(String(input)))
+        .filter((url) => url.pathname.startsWith('/segments/sha256/'));
+      expect(segmentRequests.filter((url) => url.pathname.endsWith(sharedDigest))).toHaveLength(1);
+      expect(segmentRequests).toHaveLength(3);
+      expect(upgraded.getInstallerSnapshot()).toMatchObject({
+        installedRelease: nextRelease.releaseId,
+        readiness: 'ready',
+      });
+    },
+  );
+
   it('detects an evicted standalone segment and repairs only the missing segment', async () => {
     const release = packageManifest('v0.5.0-segmented');
     release.package = {
@@ -504,6 +640,117 @@ describe('Release Manifest v4 Office Pack', () => {
       failedResources: [{ path: 'office-resources.oobpack', code: 'integrity' }],
     });
     expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/segments/sha256/'))).toHaveLength(1);
+  });
+});
+
+describe('Release Manifest v5 content protocol', () => {
+  it('pins the SHA-256 of the exact manifest response bytes', async () => {
+    const release = contentManifest('v0.6.0-raw-manifest');
+    const encoded = new TextEncoder().encode(JSON.stringify(release));
+    const raw = new Uint8Array(encoded.byteLength + 3);
+    raw.set([0xef, 0xbb, 0xbf]);
+    raw.set(encoded, 3);
+    const repository = new ReleaseRepository(
+      'https://onlyoffice.example.test/',
+      vi.fn(async () => new Response(raw)) as unknown as typeof fetch,
+    );
+
+    await expect(repository.releaseV5(release.releaseId, digest(raw))).resolves.toMatchObject({
+      manifest: { releaseId: release.releaseId },
+      manifestSha256: digest(raw),
+    });
+    await expect(repository.releaseV5(release.releaseId, digest(encoded))).rejects.toMatchObject({
+      code: 'manifest',
+    });
+    await expect(repository.releaseV5('different-release-id', digest(raw))).rejects.toMatchObject({
+      code: 'incompatible',
+    });
+  });
+
+  it('accepts a deterministic whole-file CAS representation', () => {
+    const release = contentManifest();
+    expect(parseReleaseManifest(release)).toMatchObject({
+      version: 5,
+      releaseId: 'v0.6.0-content',
+      contentProtocol: {
+        cacheKeyFormat: 'canonical-sha256-v1',
+        storageSetSha256: computeStorageSetSha256(release.package, release.assets),
+      },
+    });
+  });
+
+  it('rejects a storage-set digest or whole representation that does not match the asset', () => {
+    const release = contentManifest();
+    expect(() =>
+      parseReleaseManifest({
+        ...release,
+        contentProtocol: { ...release.contentProtocol, storageSetSha256: digest('tampered') },
+      }),
+    ).toThrowError('manifest');
+    expect(() =>
+      parseReleaseManifest({
+        ...release,
+        assets: [
+          {
+            ...release.assets[0],
+            representations: {
+              whole: { ...release.assets[0].representations.whole, bytes: asset.bytes + 1 },
+            },
+          },
+        ],
+      }),
+    ).toThrowError('manifest');
+  });
+
+  it('rejects unsafe encoded paths, non-contiguous FastCDC chunks, and digest-size conflicts', () => {
+    const release = contentManifest();
+    expect(() =>
+      parseReleaseManifest({
+        ...release,
+        assets: [{ ...release.assets[0], path: '%2e%2e/secret' }],
+      }),
+    ).toThrowError('manifest');
+
+    const withFastCdc = (chunks: Array<{ offset: number; bytes: number; sha256: string }>) => ({
+      ...release.assets[0],
+      representations: {
+        ...release.assets[0].representations,
+        fastcdc: {
+          algorithm: 'fastcdc-v2020',
+          minBytes: 65_536,
+          averageBytes: 262_144,
+          maxBytes: 1_048_576,
+          normalization: 1,
+          seed: 0,
+          chunks,
+        },
+      },
+    });
+    expect(() =>
+      parseReleaseManifest({
+        ...release,
+        assets: [
+          withFastCdc([
+            { offset: 0, bytes: 2, sha256: digest('first') },
+            { offset: 3, bytes: 2, sha256: digest('second') },
+          ]),
+        ],
+      }),
+    ).toThrowError('manifest');
+    expect(() =>
+      parseReleaseManifest({
+        ...release,
+        assets: [
+          withFastCdc([
+            {
+              offset: 0,
+              bytes: asset.bytes,
+              sha256: release.package.segments[0].sha256,
+            },
+          ]),
+        ],
+      }),
+    ).toThrowError('manifest');
   });
 });
 

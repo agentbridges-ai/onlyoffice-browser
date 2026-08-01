@@ -72,6 +72,10 @@ function runConversionWorker(
   operation: ConversionWorkerOperation,
 ): Promise<SerializedConversionResult | SerializedBinConversionResult> {
   const id = `conversion-${nextConversionId++}-${crypto.randomUUID?.() || Date.now()}`;
+  // x2t.js is the classic Emscripten runtime and is loaded with importScripts
+  // inside conversion-worker.ts. Module workers reject importScripts, while
+  // Vite emits this dependency as a self-contained IIFE suitable for a
+  // classic worker.
   const worker = new Worker(new URL('../conversion-worker.ts', import.meta.url));
   const request: ConversionWorkerRequest = { protocol: CONVERSION_WORKER_PROTOCOL, id, operation };
 

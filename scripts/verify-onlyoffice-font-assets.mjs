@@ -2,7 +2,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { REQUIRED_DEFAULT_FONT_PICKER_FAMILIES, isCommonFontPickerFamily } from './font-picker-policy.mjs';
 
 export const FONT_ASSETS_DIR_ENV = 'ONLYOFFICE_BROWSER_FONT_ASSETS_DIR';
 export const GENERATED_FONT_ASSETS_MANIFEST = 'onlyoffice-browser-font-assets.json';
@@ -79,6 +81,62 @@ function assertStringArray(value, label) {
     !value.every((item) => typeof item === 'string' && item.length > 0)
   ) {
     throw new Error(`Generated font asset manifest has invalid ${label}`);
+  }
+}
+
+function verifyManifestAssetMetadata(root, manifest, assetPaths) {
+  if (!Array.isArray(manifest.assets)) {
+    throw new Error('Generated font asset manifest has invalid assets');
+  }
+  const assetsByPath = new Map(manifest.assets.map((asset) => [asset?.path, asset]));
+  let totalBytes = 0;
+  for (const assetPath of assetPaths) {
+    const asset = assetsByPath.get(assetPath);
+    if (!asset) throw new Error(`Generated font asset manifest is missing metadata: ${assetPath}`);
+    const bytes = fs.readFileSync(path.resolve(root, assetPath));
+    const revision = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+    if (asset.bytes !== bytes.byteLength) {
+      throw new Error(`Generated font asset manifest byte count does not match: ${assetPath}`);
+    }
+    if (asset.revision !== revision) {
+      throw new Error(`Generated font asset manifest revision does not match: ${assetPath}`);
+    }
+    totalBytes += bytes.byteLength;
+  }
+  if (manifest.totalBytes !== totalBytes) {
+    throw new Error('Generated font asset manifest totalBytes does not match its assets');
+  }
+}
+
+function sameStringSet(left, right) {
+  return (
+    Array.isArray(left) &&
+    Array.isArray(right) &&
+    JSON.stringify([...new Set(left)].sort()) === JSON.stringify([...new Set(right)].sort())
+  );
+}
+
+function verifyFullFontDefaults(manifest) {
+  if (!Array.isArray(manifest.fontFamilies)) {
+    throw new Error('Generated full font asset manifest has invalid fontFamilies');
+  }
+  for (const [familyName, role] of [
+    ['Aptos', 'default'],
+    ['DengXian', 'cjk'],
+  ]) {
+    const family = manifest.fontFamilies.find((candidate) => candidate?.name === familyName);
+    const paths = family?.paths;
+    const rolePaths = manifest.fallbackFonts?.[role];
+    if (
+      !Array.isArray(paths) ||
+      paths.length === 0 ||
+      !Array.isArray(rolePaths) ||
+      !paths.some((fontPath) => rolePaths.includes(fontPath)) ||
+      !Array.isArray(manifest.defaultFonts) ||
+      !paths.some((fontPath) => manifest.defaultFonts.includes(fontPath))
+    ) {
+      throw new Error(`Generated full font asset manifest has invalid ${role} fallback files for ${familyName}`);
+    }
   }
 }
 
@@ -249,6 +307,9 @@ function verifyAllFonts(root, allFontsRelativePath, thumbnails) {
     if (!fontInfoNames.has(visibleName)) {
       throw new Error(`Generated AllFonts.js visible font is missing from __fonts_infos: ${visibleName}`);
     }
+    if (!isCommonFontPickerFamily(visibleName)) {
+      throw new Error(`Generated AllFonts.js exposes a non-common font in the picker: ${visibleName}`);
+    }
   }
 
   for (let index = 0; index < fontRanges.length; index += 3) {
@@ -283,6 +344,7 @@ function verifyAllFonts(root, allFontsRelativePath, thumbnails) {
       );
     }
   }
+  return visibleNames;
 }
 
 function verifyZhCoreFallbackChain(root, source, sourceMapRelativePath) {
@@ -295,7 +357,10 @@ function verifyZhCoreFallbackChain(root, source, sourceMapRelativePath) {
   const fontRanges = parseJsArray(source, '__fonts_ranges');
   const sourceMap = JSON.parse(fs.readFileSync(path.resolve(root, sourceMapRelativePath), 'utf8'));
   const sourceByPackedFile = new Map(
-    (sourceMap.fonts || []).map((entry) => [String(entry.file || '').replace(/^fonts\//, ''), String(entry.source || '')]),
+    (sourceMap.fonts || []).map((entry) => [
+      String(entry.file || '').replace(/^fonts\//, ''),
+      String(entry.source || ''),
+    ]),
   );
 
   for (const [familyName, expectedSource] of ZH_CORE_REQUIRED_FALLBACK_SOURCES) {
@@ -362,11 +427,33 @@ export function verifyOnlyOfficeFontAssets(input) {
   if (manifest.fontSourceMap) assertFile(root, manifest.fontSourceMap);
   for (const thumbnail of manifest.fontThumbnails) assertFile(root, thumbnail);
   for (const font of manifest.fonts) assertFile(root, font);
-  verifyAllFonts(root, manifest.allFonts, manifest.fontThumbnails);
+  const assetPaths = [
+    manifest.allFonts,
+    manifest.fontSelection,
+    ...(manifest.fontSourceMap ? [manifest.fontSourceMap] : []),
+    ...manifest.fontThumbnails,
+    ...manifest.fonts,
+  ];
+  const visibleNames = verifyAllFonts(root, manifest.allFonts, manifest.fontThumbnails);
+  if (manifest.fontSet === 'full') {
+    for (const requiredFamily of REQUIRED_DEFAULT_FONT_PICKER_FAMILIES) {
+      if (!visibleNames.includes(requiredFamily)) {
+        throw new Error(`Generated AllFonts.js font picker is missing required default family: ${requiredFamily}`);
+      }
+    }
+    verifyFullFontDefaults(manifest);
+  }
+  if (manifest.fontSourceMap) {
+    const sourceMap = JSON.parse(fs.readFileSync(path.resolve(root, manifest.fontSourceMap), 'utf8'));
+    if (sourceMap.visibleFamilies !== undefined && !sameStringSet(sourceMap.visibleFamilies, visibleNames)) {
+      throw new Error('Generated font source map visibleFamilies does not match AllFonts.js');
+    }
+  }
   if (manifest.fontSet === 'zh-core') {
     const source = fs.readFileSync(path.resolve(root, manifest.allFonts), 'utf8');
     verifyZhCoreFallbackChain(root, source, manifest.fontSourceMap);
   }
+  verifyManifestAssetMetadata(root, manifest, assetPaths);
 
   return {
     root,

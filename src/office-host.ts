@@ -21,15 +21,27 @@ import {
   resolveAvailableFontFamilyNames,
   resolveRuntimeAssetCacheMode,
 } from './lib/font-assets';
-import { isReusableOfficeEditorHostname } from './lib/office-origin-pool';
+import { isProductionOfficeEditorHostname, isReusableOfficeEditorHostname } from './lib/office-origin-pool';
+import { readOfficeHostBootstrap } from './lib/office-host-url';
+import {
+  EDITOR_RESOURCE_BROKER_BIND_ERROR_TYPE,
+  EDITOR_RESOURCE_BROKER_BIND_TYPE,
+  EDITOR_RESOURCE_BROKER_BOUND_TYPE,
+} from './lib/editor-resource-broker';
+import {
+  RESOURCE_BROKER_CANONICAL_ORIGIN,
+  RESOURCE_BROKER_FRAME_CONNECT_TIMEOUT_MS,
+  createResourceBrokerFrameClient,
+  type ResourceBrokerFrameClient,
+  type ResourceBrokerFrameConnection,
+} from './lib/resource-broker-frame-client';
+import { RESOURCE_BROKER_PROTOCOL } from './lib/resource-broker-protocol';
 import { ONLYOFFICE_BROWSER_VERSION } from './version';
 import './styles/base.css';
 
 type RuntimeOptions = Parameters<typeof createRuntimeOfficeEditor>[1];
 
-const params = new URLSearchParams(window.location.search);
-const sessionId = params.get('sessionId') || '';
-const parentOrigin = params.get('parentOrigin') || '';
+const { sessionId, parentOrigin, releaseId } = readOfficeHostBootstrap(new URL(window.location.href));
 const root = document.querySelector<HTMLElement>('#office-host') ?? document.body;
 const HOST_RESET_PATH = '/reset.html';
 const SAVE_ACK_TIMEOUT_MS = 60_000;
@@ -39,6 +51,7 @@ const OFFICE_HOST_BUILD_ID = `office-host-${ONLYOFFICE_BROWSER_VERSION}-r1`;
 const OFFICE_RUNTIME_ASSET_MANIFEST_PATH = '/onlyoffice-runtime-assets.json';
 const OFFICE_SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
 const OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS = 30_000;
+const OFFICE_RESOURCE_BROKER_BIND_TIMEOUT_MS = 30_000;
 const PRINT_PDF_CACHE_NAME = 'onlyoffice-browser-print-pdfs';
 const STARTUP_HEARTBEAT_INTERVAL_MS = 5_000;
 const PLUGIN_REQUEST_TIMEOUT_MS = 30_000;
@@ -53,6 +66,12 @@ let startupHeartbeatInterval: number | null = null;
 let startupHeartbeatWorker: Worker | null = null;
 let activeSaveRequestId: string | undefined;
 let nativeSaveRequestSequence = 0;
+let resourceBrokerFrameClient: ResourceBrokerFrameClient | null = null;
+let resourceBrokerBindPromise: Promise<void> | null = null;
+let resourceBrokerBindController: ServiceWorker | null = null;
+let resourceBrokerBoundController: ServiceWorker | null = null;
+let resourceBrokerGeneration = 0;
+let resourceBrokerDisposed = false;
 const pluginRuntimes = new Map<string, OfficePluginRuntime<Window>>();
 const configuredPluginGuids = new Set<string>();
 const pendingPluginRequests = new Map<string, { runtime: OfficePluginRuntime<Window>; timeoutId: number }>();
@@ -94,6 +113,297 @@ function bytesToHex(bytes: ArrayBuffer): string {
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+type ResourceBrokerBindResponse =
+  | {
+      protocol: typeof RESOURCE_BROKER_PROTOCOL;
+      type: typeof EDITOR_RESOURCE_BROKER_BOUND_TYPE;
+      ok: true;
+      releaseId: string;
+      sessionId: string;
+    }
+  | {
+      protocol: typeof RESOURCE_BROKER_PROTOCOL;
+      type: typeof EDITOR_RESOURCE_BROKER_BIND_ERROR_TYPE;
+      ok: false;
+      code: 'identity' | 'ports' | 'protocol';
+    };
+
+type ResourceBrokerNeededMessage = {
+  protocol: typeof RESOURCE_BROKER_PROTOCOL;
+  type: 'ONLYOFFICE_BROKER_NEEDED';
+  releaseId: string;
+  sessionId: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function parseResourceBrokerBindResponse(value: unknown): ResourceBrokerBindResponse | null {
+  if (!isRecord(value) || value.protocol !== RESOURCE_BROKER_PROTOCOL || typeof value.type !== 'string') {
+    return null;
+  }
+  if (
+    value.type === EDITOR_RESOURCE_BROKER_BOUND_TYPE &&
+    hasExactKeys(value, ['protocol', 'type', 'ok', 'releaseId', 'sessionId']) &&
+    value.ok === true &&
+    value.releaseId === releaseId &&
+    value.sessionId === sessionId
+  ) {
+    return {
+      protocol: RESOURCE_BROKER_PROTOCOL,
+      type: EDITOR_RESOURCE_BROKER_BOUND_TYPE,
+      ok: true,
+      releaseId,
+      sessionId,
+    };
+  }
+  if (
+    value.type === EDITOR_RESOURCE_BROKER_BIND_ERROR_TYPE &&
+    hasExactKeys(value, ['protocol', 'type', 'ok', 'code']) &&
+    value.ok === false &&
+    ['identity', 'ports', 'protocol'].includes(String(value.code))
+  ) {
+    return {
+      protocol: RESOURCE_BROKER_PROTOCOL,
+      type: EDITOR_RESOURCE_BROKER_BIND_ERROR_TYPE,
+      ok: false,
+      code: value.code as Extract<ResourceBrokerBindResponse, { ok: false }>['code'],
+    };
+  }
+  return null;
+}
+
+function parseResourceBrokerNeededMessage(value: unknown): ResourceBrokerNeededMessage | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['protocol', 'type', 'releaseId', 'sessionId']) ||
+    value.protocol !== RESOURCE_BROKER_PROTOCOL ||
+    value.type !== 'ONLYOFFICE_BROKER_NEEDED' ||
+    value.releaseId !== releaseId ||
+    value.sessionId !== sessionId
+  ) {
+    return null;
+  }
+  return {
+    protocol: RESOURCE_BROKER_PROTOCOL,
+    type: 'ONLYOFFICE_BROKER_NEEDED',
+    releaseId,
+    sessionId,
+  };
+}
+
+function requiresCanonicalResourceBroker(): boolean {
+  // Every immutable `/r/<release>/office-host.html` is fail-closed. The only
+  // compatibility exception is the unversioned local development host.
+  return Boolean(releaseId);
+}
+
+function resolveCanonicalResourceBrokerOptions(): {
+  canonicalOrigin: string;
+  allowLocalMatrix: boolean;
+} {
+  if (isProductionOfficeEditorHostname(window.location.hostname)) {
+    return {
+      canonicalOrigin: RESOURCE_BROKER_CANONICAL_ORIGIN,
+      allowLocalMatrix: false,
+    };
+  }
+  if (!isReusableOfficeEditorHostname(window.location.hostname)) {
+    throw new Error('Versioned Office host is not running on an approved editor origin');
+  }
+  const canonical = new URL(window.location.origin);
+  canonical.hostname = 'onlyoffice.localhost';
+  return {
+    canonicalOrigin: canonical.origin,
+    allowLocalMatrix: true,
+  };
+}
+
+function closeResourceBrokerFrame(): void {
+  resourceBrokerGeneration += 1;
+  resourceBrokerFrameClient?.destroy();
+  resourceBrokerFrameClient = null;
+  resourceBrokerBindController = null;
+  resourceBrokerBoundController = null;
+}
+
+function disposeResourceBroker(): void {
+  if (resourceBrokerDisposed) return;
+  resourceBrokerDisposed = true;
+  closeResourceBrokerFrame();
+  resourceBrokerBindPromise = null;
+}
+
+async function transferResourceBrokerConnection(
+  connection: ResourceBrokerFrameConnection,
+  controller: ServiceWorker,
+  generation: number,
+): Promise<void> {
+  const reply = new MessageChannel();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settle = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reply.port1.onmessage = null;
+        reply.port1.onmessageerror = null;
+        reply.port1.close();
+        if (error) reject(error);
+        else resolve();
+      };
+      const timeoutId = window.setTimeout(() => {
+        settle(new Error('Office Resource Broker service worker binding timed out'));
+      }, OFFICE_RESOURCE_BROKER_BIND_TIMEOUT_MS);
+      reply.port1.onmessage = (event: MessageEvent) => {
+        const response = parseResourceBrokerBindResponse(event.data);
+        if (!response) {
+          settle(new Error('Office Resource Broker returned an invalid binding response'));
+          return;
+        }
+        if (!response.ok) {
+          settle(new Error(`Office Resource Broker binding failed: ${response.code}`));
+          return;
+        }
+        if (
+          resourceBrokerDisposed ||
+          generation !== resourceBrokerGeneration ||
+          navigator.serviceWorker.controller !== controller
+        ) {
+          settle(new Error('Office Resource Broker controller changed during binding'));
+          return;
+        }
+        settle();
+      };
+      reply.port1.onmessageerror = () => {
+        settle(new Error('Office Resource Broker binding response channel failed'));
+      };
+      reply.port1.start();
+      try {
+        controller.postMessage(
+          {
+            protocol: RESOURCE_BROKER_PROTOCOL,
+            type: EDITOR_RESOURCE_BROKER_BIND_TYPE,
+            releaseId,
+            sessionId,
+          },
+          [connection.port, reply.port2],
+        );
+      } catch (error) {
+        reply.port2.close();
+        settle(toError(error));
+      }
+    });
+  } catch (error) {
+    connection.port.close();
+    throw error;
+  }
+}
+
+async function connectResourceBroker(controller: ServiceWorker, generation: number): Promise<void> {
+  const options = resolveCanonicalResourceBrokerOptions();
+  const frameClient = createResourceBrokerFrameClient({
+    releaseId,
+    sessionId,
+    parentOrigin,
+    canonicalOrigin: options.canonicalOrigin,
+    allowLocalMatrix: options.allowLocalMatrix,
+    connectTimeoutMs: RESOURCE_BROKER_FRAME_CONNECT_TIMEOUT_MS,
+  });
+  if (generation !== resourceBrokerGeneration || resourceBrokerDisposed) {
+    frameClient.destroy();
+    throw new Error('Office Resource Broker connection was superseded');
+  }
+  resourceBrokerFrameClient = frameClient;
+  try {
+    const connection = await frameClient.connect();
+    if (
+      generation !== resourceBrokerGeneration ||
+      resourceBrokerDisposed ||
+      navigator.serviceWorker.controller !== controller
+    ) {
+      throw new Error('Office Resource Broker controller changed while connecting');
+    }
+    await transferResourceBrokerConnection(connection, controller, generation);
+    if (
+      generation !== resourceBrokerGeneration ||
+      resourceBrokerDisposed ||
+      navigator.serviceWorker.controller !== controller
+    ) {
+      throw new Error('Office Resource Broker connection was superseded');
+    }
+    resourceBrokerBoundController = controller;
+  } catch (error) {
+    if (resourceBrokerFrameClient === frameClient) {
+      frameClient.destroy();
+      resourceBrokerFrameClient = null;
+      resourceBrokerBoundController = null;
+    }
+    throw error;
+  }
+}
+
+function ensureCanonicalResourceBrokerBound(force = false): Promise<void> {
+  if (!requiresCanonicalResourceBroker()) return Promise.resolve();
+  if (resourceBrokerDisposed) {
+    return Promise.reject(new Error('Office Resource Broker was disposed'));
+  }
+  const controller = navigator.serviceWorker.controller;
+  if (!controller) {
+    return Promise.reject(new Error('Office service worker is not controlling the versioned editor host'));
+  }
+  if (!force && resourceBrokerBoundController === controller && resourceBrokerFrameClient) {
+    return Promise.resolve();
+  }
+  if (resourceBrokerBindPromise && resourceBrokerBindController === controller) {
+    return resourceBrokerBindPromise;
+  }
+
+  closeResourceBrokerFrame();
+  const generation = resourceBrokerGeneration;
+  resourceBrokerBindController = controller;
+  const promise = connectResourceBroker(controller, generation);
+  resourceBrokerBindPromise = promise;
+  void promise
+    .catch(() => undefined)
+    .finally(() => {
+      if (resourceBrokerBindPromise === promise) {
+        resourceBrokerBindPromise = null;
+        resourceBrokerBindController = null;
+      }
+    });
+  return promise;
+}
+
+function handleResourceBrokerNeeded(event: MessageEvent): void {
+  if (
+    !requiresCanonicalResourceBroker() ||
+    event.source !== navigator.serviceWorker.controller ||
+    !parseResourceBrokerNeededMessage(event.data)
+  ) {
+    return;
+  }
+  void ensureCanonicalResourceBrokerBound(true).catch((error) => {
+    console.error('[onlyoffice-browser] Failed to restore Office Resource Broker', error);
+  });
+}
+
+function handleOfficeServiceWorkerControllerChange(): void {
+  if (!requiresCanonicalResourceBroker() || resourceBrokerDisposed) return;
+  void ensureCanonicalResourceBrokerBound(true).catch((error) => {
+    console.error('[onlyoffice-browser] Failed to bind the replacement Office service worker', error);
+  });
+}
+
 async function loadOfficeHostIdentity() {
   const response = await fetch(OFFICE_RUNTIME_ASSET_MANIFEST_PATH, {
     cache: resolveRuntimeAssetCacheMode(location.hostname),
@@ -111,7 +421,12 @@ async function loadOfficeHostIdentity() {
 }
 
 async function ensureOfficeServiceWorkerControl(): Promise<void> {
-  if (!('serviceWorker' in navigator)) return;
+  if (!('serviceWorker' in navigator)) {
+    if (requiresCanonicalResourceBroker()) {
+      throw new Error('Service workers are required for a versioned Office editor host');
+    }
+    return;
+  }
   await navigator.serviceWorker.register(OFFICE_SERVICE_WORKER_PATH, { scope: '/' });
   await navigator.serviceWorker.ready;
   if (navigator.serviceWorker.controller) return;
@@ -132,6 +447,11 @@ async function ensureOfficeServiceWorkerControl(): Promise<void> {
 async function announceHostReady(): Promise<void> {
   try {
     await ensureOfficeServiceWorkerControl();
+    // A production/versioned host is not ready until its controller is bound
+    // to the canonical, release-pinned Broker. This deliberately precedes the
+    // first manifest/font/SDK read so no Office resource can fall back to the
+    // editor origin network.
+    await ensureCanonicalResourceBrokerBound();
     const identity = await loadOfficeHostIdentity();
     postWindowMessage({
       protocol: OFFICE_HOST_PROTOCOL,
@@ -182,7 +502,9 @@ function startStartupHeartbeat(): void {
   if (startupHeartbeatWorker || startupHeartbeatInterval !== null) return;
   if (typeof Worker !== 'undefined' && typeof MessageChannel !== 'undefined') {
     try {
-      const worker = new Worker(new URL('./startup-heartbeat-worker.ts', import.meta.url), { type: 'module' });
+      const worker = new Worker(new URL('./startup-heartbeat-worker.ts', import.meta.url), {
+        type: 'module',
+      });
       const channel = new MessageChannel();
       startupHeartbeatWorker = worker;
       postPortMessage(
@@ -582,6 +904,7 @@ async function destroyRuntime(): Promise<void> {
     console.warn('Failed to destroy runtime editor:', error);
   }
   editor = null;
+  disposeResourceBroker();
   await blankAndRemoveEditorIframes();
   resources.cleanup();
   await clearHostWorkersAndCaches();
@@ -967,7 +1290,16 @@ function handleConnect(event: MessageEvent): void {
 
 window.addEventListener('message', handleConnect);
 window.addEventListener('message', handlePluginWindowMessage);
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', handleResourceBrokerNeeded);
+  navigator.serviceWorker.addEventListener('controllerchange', handleOfficeServiceWorkerControllerChange);
+}
 window.addEventListener('pagehide', () => {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.removeEventListener('message', handleResourceBrokerNeeded);
+    navigator.serviceWorker.removeEventListener('controllerchange', handleOfficeServiceWorkerControllerChange);
+  }
+  disposeResourceBroker();
   void destroyRuntime();
 });
 window.addEventListener('unload', () => undefined);

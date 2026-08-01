@@ -147,6 +147,16 @@ export function OfficeResourcePanel({ manager, copy }: { manager: OfficeRuntimeR
           <Button size="sm" variant="primary" onPress={() => runResourceAction(() => manager.repair({ scope: 'all' }))}>
             {copy.retry}
           </Button>
+        ) : snapshot.readiness === 'repair-needed' ? (
+          <Button
+            isDisabled={busy}
+            isPending={snapshot.operation === 'check-health'}
+            size="sm"
+            variant="primary"
+            onPress={() => runResourceAction(() => manager.repair({ scope: 'all' }))}
+          >
+            {copy.repair}
+          </Button>
         ) : snapshot.readiness === 'ready' ? (
           <Button
             isDisabled={busy}

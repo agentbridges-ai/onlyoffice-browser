@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,7 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 // The release builder is intentionally executable Node ESM rather than part of
 // the browser TypeScript bundle.
 // @ts-expect-error JavaScript build script has no declaration output.
-import { buildRelease, chunkReleaseAssets } from '../../scripts/build-release-manifest.mjs';
+import { buildRelease, chunkReleaseAssets, computeStorageSetSha256 } from '../../scripts/build-release-manifest.mjs';
+import { parseReleaseManifest } from '../../src/lib/release-resources';
 
 const temporaryDirectories: string[] = [];
 
@@ -98,7 +100,15 @@ describe('immutable release builder', () => {
       x2tCommit: 'abc123',
     });
     expect(second.releaseId).toBe(first.releaseId);
-    expect(first.version).toBe(4);
+    expect(first.version).toBe(5);
+    expect(first.contentProtocol).toMatchObject({
+      version: 1,
+      digest: 'sha256',
+      cacheKeyFormat: 'canonical-sha256-v1',
+      fastcdcPolicyId: 'fastcdc-v2020-min64k-avg256k-max1m-norm1-seed0',
+    });
+    expect(first.contentProtocol.storageSetSha256).toBe(computeStorageSetSha256(first.package, first.assets));
+    expect(() => parseReleaseManifest(first)).not.toThrow();
     expect(first.package).toMatchObject({
       format: 'onlyoffice-pack-v1',
       path: 'office-resources.oobpack',
@@ -120,6 +130,7 @@ describe('immutable release builder', () => {
     expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('.vite/manifest.json');
     expect(first.assets.map((item: { path: string }) => item.path)).not.toContain('wasm/x2t/x2t.wasm.br');
     expect(fs.existsSync(path.join(output, 'releases', first.releaseId, 'manifest.json'))).toBe(true);
+    expect(fs.existsSync(path.join(output, 'releases', first.releaseId, 'manifest-v4.json'))).toBe(true);
     const packPath = path.join(output, 'packages/sha256', `${first.package.sha256}.oobpack`);
     expect(fs.existsSync(packPath)).toBe(true);
     expect(fs.readFileSync(packPath).subarray(0, 8).toString()).toBe('OOBPACK1');
@@ -140,10 +151,24 @@ describe('immutable release builder', () => {
     expect(JSON.parse(fs.readFileSync(path.join(output, 'channels/stable.json'), 'utf8'))).toEqual({
       version: 1,
       releaseId: first.releaseId,
+      manifestUrl: `/releases/${first.releaseId}/manifest-v4.json`,
+      manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(output, 'channels/stable-v5.json'), 'utf8'))).toEqual({
+      version: 1,
+      releaseId: first.releaseId,
+      manifestUrl: `/releases/${first.releaseId}/manifest.json`,
+      manifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     for (const item of first.assets as Array<{ sha256: string }>) {
       expect(fs.existsSync(path.join(output, 'blobs/sha256', item.sha256))).toBe(true);
     }
+    expect(
+      first.assets.every(
+        (item: { bytes: number; sha256: string; representations: { whole: { bytes: number; sha256: string } } }) =>
+          item.representations.whole.bytes === item.bytes && item.representations.whole.sha256 === item.sha256,
+      ),
+    ).toBe(true);
 
     fs.writeFileSync(path.join(root, 'sdkjs/word/word.js'), 'word changed');
     const changed = buildRelease({
@@ -161,5 +186,68 @@ describe('immutable release builder', () => {
     );
     expect(reusedSegments.length).toBeGreaterThan(0);
     expect(reusedSegments.reduce((sum, segment: { bytes: number }) => sum + segment.bytes, 0)).toBeGreaterThan(0);
+  });
+
+  it('adds stable per-file FastCDC objects automatically for large cache writes', () => {
+    const root = temp();
+    const output = temp();
+    const largeChunks = Array.from({ length: 16 }, (_, index) => Buffer.alloc(1024 * 1024, index));
+    const largeFile = Buffer.concat(largeChunks);
+    const files = {
+      'office-host.html': '<html>host</html>',
+      'index.html': '<html>shell</html>',
+      'sw.js': 'worker',
+      'assets/officeHost-test.js': 'host bundle',
+      'assets/main-test.js': 'shell bundle',
+      'wasm/x2t/x2t.wasm': largeFile,
+    };
+    for (const [relative, contents] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+      fs.writeFileSync(path.join(root, relative), contents);
+    }
+    fs.writeFileSync(
+      path.join(root, 'onlyoffice-runtime-assets.json'),
+      JSON.stringify({
+        version: 2,
+        assets: [{ path: 'wasm/x2t/x2t.wasm', pack: 'core', bytes: largeFile.byteLength, revision: 'test' }],
+      }),
+    );
+    let offset = 0;
+    const chunks = largeChunks.map((bytes) => {
+      const chunk = {
+        offset,
+        bytes: bytes.byteLength,
+        sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      };
+      offset += bytes.byteLength;
+      return chunk;
+    });
+    const manifest = buildRelease({
+      root,
+      output,
+      packageVersion: '0.6.0',
+      x2tVersion: '9.3.0+2',
+      x2tCommit: 'abc123',
+      fastCdcIndexer: () => ({
+        bytes: largeFile.byteLength,
+        configurations: [
+          {
+            minimumBytes: 64 * 1024,
+            averageBytes: 256 * 1024,
+            maximumBytes: 1024 * 1024,
+            chunks,
+          },
+        ],
+      }),
+    });
+    const x2t = manifest.assets.find((asset: { path: string }) => asset.path === 'wasm/x2t/x2t.wasm');
+    expect(x2t?.representations.fastcdc).toMatchObject({
+      algorithm: 'fastcdc-v2020',
+      chunks,
+    });
+    for (const chunk of chunks) {
+      expect(fs.statSync(path.join(output, 'blobs', 'sha256', chunk.sha256)).size).toBe(chunk.bytes);
+    }
+    expect(() => parseReleaseManifest(manifest)).not.toThrow();
   });
 });

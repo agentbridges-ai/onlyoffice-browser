@@ -228,8 +228,20 @@ describe('generate-onlyoffice-font-assets options', () => {
     expect(script).toContain('is_emoji_family_name');
     expect(script).toContain('is_math_family_name');
     expect(script).toContain('"styles": sorted(styles_by_source_index.get(old_index, set()))');
-    expect(script).toContain('visible_family_names = {info[0] for info in web_infos');
+    expect(script).toContain('visible_family_names = {');
     expect(script).toContain('"visibleFamilies": sorted(visible_family_names)');
+  });
+
+  it('keeps support faces installed but limits the full picker to curated Chinese and Western families', () => {
+    const script = dockerGenerationScript({ fontSet: 'full', keepFonts: [] });
+
+    expect(script).toContain('COMMON_FONT_PICKER_FAMILIES');
+    expect(script).toContain('common_font_picker_families = set(');
+    expect(script).toContain('if name in common_font_picker_families');
+    expect(script).toContain('kept_family_names = {info[0] for info in web_infos if info}');
+    expect(script).toContain('visible_family_names = {');
+    expect(script).toContain('if name and name in common_font_picker_families');
+    expect(script).not.toContain('if name in common_font_picker_families or name in keep_font_families');
   });
 
   it('does not derive the default download set from every hidden compatibility family', () => {

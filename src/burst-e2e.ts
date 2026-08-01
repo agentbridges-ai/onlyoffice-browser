@@ -1,4 +1,5 @@
 import { mountOfficeEditor, type OfficeEditorInstance, type OfficeEditorMount } from './lib/office-editor';
+import { resolveDemoHostUrl } from './lib/demo-host-url';
 
 type BurstOptions = {
   count?: number;
@@ -29,6 +30,9 @@ type BurstRecord = {
 const grid = document.querySelector<HTMLElement>('#burst-grid')!;
 const statusElement = document.querySelector<HTMLElement>('#burst-status')!;
 const records: BurstRecord[] = [];
+const pageUrl = new URL(window.location.href);
+const configuredReleaseId = pageUrl.searchParams.get('releaseId');
+const hostUrlResolver = resolveDemoHostUrl(pageUrl);
 let status: BurstStatus = emptyStatus();
 let completion: Promise<void> = Promise.resolve();
 
@@ -78,10 +82,15 @@ async function loadFixtures(): Promise<Array<{ name: string; type: string; bytes
 }
 
 function createRecordMount(record: Pick<BurstRecord, 'container' | 'file'>): OfficeEditorMount {
-  const hostUrl = new URL('/office-host.html', window.location.href);
-  hostUrl.hostname = 'localhost';
   return mountOfficeEditor(record.container, {
-    hostUrl: hostUrl.href,
+    hostUrl: (context) => {
+      const base = typeof hostUrlResolver === 'function' ? hostUrlResolver(context) : hostUrlResolver;
+      const hostUrl = new URL(base, window.location.href);
+      if (configuredReleaseId) {
+        hostUrl.pathname = `/r/${encodeURIComponent(configuredReleaseId)}/office-host.html`;
+      }
+      return hostUrl.href;
+    },
     file: record.file,
     fileName: record.file.name,
     destroyTimeoutMs: 5_000,

@@ -1,30 +1,28 @@
 #!/usr/bin/env node
 
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
 const DEFAULT_ORIGIN = 'https://onlyoffice.getpi.work';
-const FASTCDC_AVERAGES = [256 * 1024, 1024 * 1024, 4 * 1024 * 1024];
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const FASTCDC_MANIFEST = path.resolve(SCRIPT_DIR, '../tools/fastcdc-index/Cargo.toml');
+const DEFAULT_MANIFEST_VERSION = 5;
+
+function addDescriptor(descriptors, item, label = 'content object') {
+  const digest = item?.sha256;
+  const bytes = item?.bytes;
+  if (typeof digest !== 'string' || !Number.isSafeInteger(bytes) || bytes < 0) {
+    throw new Error(`${label} has an invalid identity`);
+  }
+  const existing = descriptors.get(digest);
+  if (existing !== undefined && existing !== bytes) {
+    throw new Error(`digest ${digest} has conflicting byte lengths`);
+  }
+  descriptors.set(digest, bytes);
+}
 
 function uniqueDescriptors(items) {
   const descriptors = new Map();
-  for (const item of items || []) {
-    const digest = item?.sha256;
-    const bytes = item?.bytes;
-    if (typeof digest !== 'string' || typeof bytes !== 'number') continue;
-    const existing = descriptors.get(digest);
-    if (existing !== undefined && existing !== bytes) {
-      throw new Error(`digest ${digest} has conflicting byte lengths`);
-    }
-    descriptors.set(digest, bytes);
-  }
+  for (const item of items || []) addDescriptor(descriptors, item);
   return descriptors;
 }
 
@@ -73,44 +71,182 @@ export function compareAssetPaths(fromAssets, toAssets) {
   return { unchanged, changed, added, removed };
 }
 
-export function compareReleasePair(fromManifest, toManifest, fastCdcIndexes) {
-  const fixedSegments = compareContentAddressedItems(fromManifest.package?.segments, toManifest.package?.segments);
+function wholeDescriptor(asset) {
+  const whole = asset?.representations?.whole;
+  if (whole) {
+    if (whole.sha256 !== asset.sha256 || whole.bytes !== asset.bytes) {
+      throw new Error(`asset ${asset.path} has an invalid whole representation`);
+    }
+    return whole;
+  }
+  return { sha256: asset.sha256, bytes: asset.bytes };
+}
+
+function fastCdcDescriptors(asset) {
+  const fastCdc = asset?.representations?.fastcdc;
+  if (!fastCdc) return null;
+  if (!Array.isArray(fastCdc.chunks) || fastCdc.chunks.length === 0) {
+    throw new Error(`asset ${asset.path} has an empty FastCDC representation`);
+  }
+  let expectedOffset = 0;
+  const chunks = fastCdc.chunks.map((chunk, index) => {
+    if (
+      chunk?.offset !== expectedOffset ||
+      !Number.isSafeInteger(chunk.bytes) ||
+      chunk.bytes <= 0 ||
+      typeof chunk.sha256 !== 'string'
+    ) {
+      throw new Error(`asset ${asset.path} has an invalid FastCDC chunk at index ${index}`);
+    }
+    expectedOffset += chunk.bytes;
+    return { sha256: chunk.sha256, bytes: chunk.bytes };
+  });
+  if (expectedOffset !== asset.bytes) {
+    throw new Error(`asset ${asset.path} FastCDC chunks do not cover the complete file`);
+  }
+  uniqueDescriptors(chunks);
+  return chunks;
+}
+
+/**
+ * Models the v5 path-by-path update rule rather than applying content-defined
+ * chunking to the complete Office Pack:
+ *
+ * - an unchanged path reuses its active mapping and downloads nothing;
+ * - an ordinary changed/added path downloads its whole content-addressed blob;
+ * - a changed/added path with a v5 FastCDC representation downloads only chunks
+ *   absent from the previous manifest's representation for the same path.
+ *
+ * Object totals are de-duplicated by SHA-256 because the canonical store keeps
+ * one physical copy even when several paths reference the same object.
+ */
+export function compareHybridPlanner(fromManifest, toManifest) {
+  const fromByPath = new Map((fromManifest.assets || []).map((asset) => [asset.path, asset]));
+  const toByPath = new Map((toManifest.assets || []).map((asset) => [asset.path, asset]));
+  const targetObjects = new Map();
+  const downloadObjects = new Map();
+  const decisions = [];
+  const paths = { unchanged: 0, whole: 0, fastCdc: 0, removed: 0 };
+  let targetBytes = 0;
+
+  for (const asset of [...toByPath.values()].sort((left, right) => left.path.localeCompare(right.path))) {
+    if (!Number.isSafeInteger(asset.bytes) || asset.bytes < 0 || typeof asset.sha256 !== 'string') {
+      throw new Error(`asset ${asset.path} has an invalid identity`);
+    }
+    targetBytes += asset.bytes;
+    const previous = fromByPath.get(asset.path);
+    const targetFastCdc = toManifest.version === 5 ? fastCdcDescriptors(asset) : null;
+    const selectedObjects = targetFastCdc || [wholeDescriptor(asset)];
+    for (const descriptor of selectedObjects) addDescriptor(targetObjects, descriptor, `asset ${asset.path}`);
+
+    if (previous?.sha256 === asset.sha256) {
+      paths.unchanged += 1;
+      decisions.push({
+        path: asset.path,
+        change: 'unchanged',
+        strategy: 'unchanged',
+        targetBytes: asset.bytes,
+        downloadBytes: 0,
+        downloadObjects: 0,
+      });
+      continue;
+    }
+
+    if (!targetFastCdc) {
+      const descriptor = wholeDescriptor(asset);
+      const alreadyPlanned = downloadObjects.has(descriptor.sha256);
+      addDescriptor(downloadObjects, descriptor, `asset ${asset.path}`);
+      paths.whole += 1;
+      decisions.push({
+        path: asset.path,
+        change: previous ? 'changed' : 'added',
+        strategy: 'whole',
+        targetBytes: asset.bytes,
+        downloadBytes: alreadyPlanned ? 0 : descriptor.bytes,
+        downloadObjects: alreadyPlanned ? 0 : 1,
+      });
+      continue;
+    }
+
+    const previousChunks = uniqueDescriptors(fromManifest.version === 5 ? fastCdcDescriptors(previous) || [] : []);
+    let pathDownloadBytes = 0;
+    let pathDownloadObjects = 0;
+    for (const descriptor of targetFastCdc) {
+      if (previousChunks.get(descriptor.sha256) === descriptor.bytes || downloadObjects.has(descriptor.sha256)) {
+        continue;
+      }
+      addDescriptor(downloadObjects, descriptor, `asset ${asset.path}`);
+      pathDownloadBytes += descriptor.bytes;
+      pathDownloadObjects += 1;
+    }
+    paths.fastCdc += 1;
+    decisions.push({
+      path: asset.path,
+      change: previous ? 'changed' : 'added',
+      strategy: 'fastcdc',
+      targetBytes: asset.bytes,
+      downloadBytes: pathDownloadBytes,
+      downloadObjects: pathDownloadObjects,
+    });
+  }
+
+  for (const asset of [...fromByPath.values()].sort((left, right) => left.path.localeCompare(right.path))) {
+    if (toByPath.has(asset.path)) continue;
+    paths.removed += 1;
+    decisions.push({
+      path: asset.path,
+      change: 'removed',
+      strategy: 'removed',
+      targetBytes: 0,
+      downloadBytes: 0,
+      downloadObjects: 0,
+    });
+  }
+
+  const downloadBytes = [...downloadObjects.values()].reduce((total, bytes) => total + bytes, 0);
+  return {
+    targetBytes,
+    targetObjects: targetObjects.size,
+    downloadBytes,
+    downloadObjects: downloadObjects.size,
+    reusedBytes: Math.max(0, targetBytes - downloadBytes),
+    reusedObjects: Math.max(0, targetObjects.size - downloadObjects.size),
+    paths,
+    decisions,
+  };
+}
+
+export function compareReleasePair(fromManifest, toManifest) {
+  const targetPackageBytes =
+    toManifest.package?.bytes ||
+    (toManifest.assets || []).reduce((total, asset) => total + (Number(asset.bytes) || 0), 0);
+  const fixedSegments = compareContentAddressedItems(
+    fromManifest.package?.segments || [],
+    toManifest.package?.segments || [],
+  );
   const fileCas = compareContentAddressedItems(fromManifest.assets, toManifest.assets);
-  const result = {
+  return {
     fromReleaseId: fromManifest.releaseId,
     toReleaseId: toManifest.releaseId,
-    logicalTargetBytes: toManifest.package.bytes,
+    fromManifestVersion: fromManifest.version,
+    toManifestVersion: toManifest.version,
+    logicalTargetBytes: targetPackageBytes,
     assetPaths: compareAssetPaths(fromManifest.assets, toManifest.assets),
     currentReleaseBoundSegments: {
-      targetBytes: toManifest.package.bytes,
-      targetObjects: toManifest.package.segments.length,
-      downloadBytes: toManifest.package.bytes,
-      downloadObjects: toManifest.package.segments.length,
+      targetBytes: targetPackageBytes,
+      targetObjects: toManifest.package?.segments?.length || 0,
+      downloadBytes: targetPackageBytes,
+      downloadObjects: toManifest.package?.segments?.length || 0,
       reusedBytes: 0,
       reusedObjects: 0,
     },
     fixedDigestSegments: fixedSegments,
     fileCas,
+    hybridPlanner: compareHybridPlanner(fromManifest, toManifest),
+    // Kept as an empty compatibility field for consumers of report v1. The
+    // whole-pack FastCDC experiment is historical evidence, not the v5 plan.
     fastCdc: [],
   };
-
-  if (fastCdcIndexes) {
-    for (const fromConfiguration of fastCdcIndexes.from.configurations) {
-      const toConfiguration = fastCdcIndexes.to.configurations.find(
-        (candidate) => candidate.averageBytes === fromConfiguration.averageBytes,
-      );
-      if (!toConfiguration) continue;
-      result.fastCdc.push({
-        minimumBytes: toConfiguration.minimumBytes,
-        averageBytes: toConfiguration.averageBytes,
-        maximumBytes: toConfiguration.maximumBytes,
-        fromElapsedMs: fromConfiguration.elapsedMs,
-        toElapsedMs: toConfiguration.elapsedMs,
-        ...compareContentAddressedItems(fromConfiguration.chunks, toConfiguration.chunks),
-      });
-    }
-  }
-  return result;
 }
 
 function formatBytes(bytes) {
@@ -134,88 +270,33 @@ function savedPercent(result) {
 export function formatBenchmarkMarkdown(report) {
   const lines = ['# OnlyOffice incremental release benchmark', '', `Generated: ${report.generatedAt}`, ''];
   for (const pair of report.pairs) {
+    const hybrid = pair.hybridPlanner;
     lines.push(
       `## ${pair.fromReleaseId} → ${pair.toReleaseId}`,
       '',
-      `Target package: ${formatBytes(pair.logicalTargetBytes)}; asset paths: ${pair.assetPaths.unchanged} unchanged, ${pair.assetPaths.changed} changed, ${pair.assetPaths.added} added, ${pair.assetPaths.removed} removed.`,
+      `Manifest: v${pair.fromManifestVersion ?? '?'} → v${pair.toManifestVersion ?? '?'}; target package: ${formatBytes(pair.logicalTargetBytes)}; asset paths: ${pair.assetPaths.unchanged} unchanged, ${pair.assetPaths.changed} changed, ${pair.assetPaths.added} added, ${pair.assetPaths.removed} removed.`,
       '',
-      '| Strategy | Update download | Update objects | Cold objects | Reused | Reuse |',
+      '| Strategy | Update download | Update objects | Target objects | Reused | Reuse |',
       '| --- | ---: | ---: | ---: | ---: | ---: |',
     );
     const rows = [
-      ['Current release-bound 24 MiB segments', pair.currentReleaseBoundSegments],
-      ['Digest-addressed fixed 24 MiB segments', pair.fixedDigestSegments],
-      ['File-level CAS', pair.fileCas],
-      ...pair.fastCdc.map((result) => [`FastCDC avg ${formatBytes(result.averageBytes)}`, result]),
+      ['Release-bound package segments', pair.currentReleaseBoundSegments],
+      ['Digest-addressed fixed package segments', pair.fixedDigestSegments],
+      ['File-level whole CAS', pair.fileCas],
+      ['Hybrid path planner', hybrid],
     ];
     for (const [label, result] of rows) {
       lines.push(
         `| ${label} | ${formatBytes(result.downloadBytes)} | ${result.downloadObjects} | ${result.targetObjects} | ${formatBytes(result.reusedBytes)} | ${savedPercent(result)} |`,
       );
     }
-    lines.push('');
+    lines.push(
+      '',
+      `Hybrid paths: ${hybrid.paths.unchanged} unchanged (zero download), ${hybrid.paths.whole} whole blobs, ${hybrid.paths.fastCdc} per-file FastCDC, ${hybrid.paths.removed} removed.`,
+      '',
+    );
   }
   return `${lines.join('\n')}\n`;
-}
-
-async function sha256File(filePath) {
-  const digest = crypto.createHash('sha256');
-  for await (const chunk of fs.createReadStream(filePath)) digest.update(chunk);
-  return digest.digest('hex');
-}
-
-async function downloadPack(origin, manifest, workDir) {
-  const destination = path.join(workDir, `${manifest.releaseId}.oobpack`);
-  fs.mkdirSync(workDir, { recursive: true });
-  let currentBytes = fs.existsSync(destination) ? fs.statSync(destination).size : 0;
-  if (currentBytes > manifest.package.bytes) {
-    fs.truncateSync(destination, 0);
-    currentBytes = 0;
-  }
-
-  for (let attempt = 1; attempt <= 3 && currentBytes < manifest.package.bytes; attempt += 1) {
-    const headers = currentBytes > 0 ? { Range: `bytes=${currentBytes}-` } : {};
-    const response = await fetch(`${origin}/p/${encodeURIComponent(manifest.releaseId)}/office-resources.oobpack`, {
-      headers,
-    });
-    if (!response.ok || !response.body) {
-      throw new Error(`package request for ${manifest.releaseId} failed (${response.status})`);
-    }
-    const serverResumed = currentBytes > 0 && response.status === 206;
-    const flags = serverResumed ? 'a' : 'w';
-    if (!serverResumed) currentBytes = 0;
-    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(destination, { flags }));
-    currentBytes = fs.statSync(destination).size;
-  }
-  if (currentBytes !== manifest.package.bytes) {
-    throw new Error(`${manifest.releaseId} package has ${currentBytes} bytes, expected ${manifest.package.bytes}`);
-  }
-  const digest = await sha256File(destination);
-  if (digest !== manifest.package.sha256) {
-    throw new Error(`${manifest.releaseId} package SHA-256 mismatch`);
-  }
-  return destination;
-}
-
-function buildFastCdcIndex(packPath) {
-  const result = spawnSync(
-    'cargo',
-    [
-      'run',
-      '--quiet',
-      '--release',
-      '--manifest-path',
-      FASTCDC_MANIFEST,
-      '--',
-      packPath,
-      ...FASTCDC_AVERAGES.map(String),
-    ],
-    { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
-  );
-  if (result.status !== 0) {
-    throw new Error(result.stderr || `FastCDC indexer exited with ${result.status}`);
-  }
-  return JSON.parse(result.stdout);
 }
 
 function valuesAfter(arguments_, name) {
@@ -231,59 +312,61 @@ function valueAfter(arguments_, name, fallback) {
   return index >= 0 && arguments_[index + 1] ? arguments_[index + 1] : fallback;
 }
 
+export function releaseManifestPath(releaseId, version = DEFAULT_MANIFEST_VERSION) {
+  if (version !== 4 && version !== 5) throw new Error('manifest version must be 4 or 5');
+  const file = version === 4 ? 'manifest-v4.json' : 'manifest.json';
+  return `/releases/${encodeURIComponent(releaseId)}/${file}`;
+}
+
+async function fetchReleaseManifest(origin, releaseId, version) {
+  const paths = [
+    releaseManifestPath(releaseId, version),
+    ...(version === 4 ? [`/releases/${encodeURIComponent(releaseId)}/manifest.json`] : []),
+  ];
+  for (const [index, manifestPath] of paths.entries()) {
+    const response = await fetch(`${origin}${manifestPath}`, { cache: 'no-store' });
+    if (response.status === 404 && index < paths.length - 1) continue;
+    if (!response.ok) throw new Error(`manifest request for ${releaseId} failed (${response.status})`);
+    const manifest = await response.json();
+    if (manifest.releaseId !== releaseId || manifest.version !== version) {
+      throw new Error(`manifest identity mismatch for ${releaseId}`);
+    }
+    return manifest;
+  }
+  throw new Error(`manifest request for ${releaseId} failed`);
+}
+
 async function run() {
   const arguments_ = process.argv.slice(2);
   const releaseIds = valuesAfter(arguments_, '--release');
   if (releaseIds.length < 2) {
     throw new Error('pass at least two production release IDs with repeated --release options');
   }
+  if (arguments_.includes('--fastcdc') || arguments_.includes('--work-dir')) {
+    throw new Error('whole-pack FastCDC options were removed; v5 manifests carry per-file FastCDC metadata');
+  }
   const origin = valueAfter(arguments_, '--origin', DEFAULT_ORIGIN).replace(/\/+$/, '');
   const output = valueAfter(arguments_, '--output', '');
-  const workDir = valueAfter(arguments_, '--work-dir', '');
-  const withFastCdc = arguments_.includes('--fastcdc');
-  if (withFastCdc && !workDir) {
-    throw new Error('--fastcdc requires --work-dir outside the repository for downloaded packages');
+  const manifestVersion = Number(valueAfter(arguments_, '--manifest-version', String(DEFAULT_MANIFEST_VERSION)));
+  if (manifestVersion !== 4 && manifestVersion !== 5) {
+    throw new Error('--manifest-version must be 4 or 5');
   }
 
   const manifests = [];
   for (const releaseId of releaseIds) {
-    const response = await fetch(`${origin}/releases/${encodeURIComponent(releaseId)}/manifest.json`, {
-      cache: 'no-store',
-    });
-    if (!response.ok) throw new Error(`manifest request for ${releaseId} failed (${response.status})`);
-    const manifest = await response.json();
-    if (manifest.releaseId !== releaseId || manifest.version !== 4) {
-      throw new Error(`manifest identity mismatch for ${releaseId}`);
-    }
-    manifests.push(manifest);
-  }
-
-  const indexes = new Map();
-  if (withFastCdc) {
-    for (const manifest of manifests) {
-      const packPath = await downloadPack(origin, manifest, path.resolve(workDir));
-      indexes.set(manifest.releaseId, buildFastCdcIndex(packPath));
-    }
+    manifests.push(await fetchReleaseManifest(origin, releaseId, manifestVersion));
   }
 
   const report = {
-    version: 1,
+    version: 2,
     generatedAt: new Date().toISOString(),
     origin,
     releases: releaseIds,
-    fastCdcAverages: withFastCdc ? FASTCDC_AVERAGES : [],
+    manifestVersion,
     pairs: [],
   };
   for (let index = 1; index < manifests.length; index += 1) {
-    const from = manifests[index - 1];
-    const to = manifests[index];
-    report.pairs.push(
-      compareReleasePair(
-        from,
-        to,
-        withFastCdc ? { from: indexes.get(from.releaseId), to: indexes.get(to.releaseId) } : undefined,
-      ),
-    );
+    report.pairs.push(compareReleasePair(manifests[index - 1], manifests[index]));
   }
   const markdown = formatBenchmarkMarkdown(report);
   if (output) {
