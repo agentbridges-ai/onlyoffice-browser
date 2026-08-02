@@ -391,23 +391,55 @@ jobs:
       - name: Validate and freeze the legacy v4 compatibility pointer
         run: |
           set -euo pipefail
-          rclone cat r2:onlyoffice-getpi-work/channels/stable.json \
-            > "${RUNNER_TEMP}/onlyoffice-legacy-stable.json"
+          rclone_cat_to_file() {
+            local source="$1"
+            local destination="$2"
+            local temporary="${destination}.partial"
+            for attempt in 1 2 3; do
+              if timeout 60s rclone cat "${source}" \
+                --retries 2 \
+                --low-level-retries 3 \
+                --retries-sleep 2s > "${temporary}"; then
+                mv "${temporary}" "${destination}"
+                return 0
+              fi
+              rm -f "${temporary}"
+              echo "::warning::rclone metadata read attempt ${attempt} failed"
+              if [ "${attempt}" = "3" ]; then
+                return 1
+              fi
+              sleep "$((attempt * 3))"
+            done
+          }
+          rclone_cat_to_file \
+            r2:onlyoffice-getpi-work/channels/stable.json \
+            "${RUNNER_TEMP}/onlyoffice-legacy-stable.json"
           export ONLYOFFICE_LEGACY_MANIFEST_KEY="$(
             node -e "
               const fs=require('node:fs');
               const pointer=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/onlyoffice-legacy-stable.json'));
+              const keys=Object.keys(pointer).sort();
+              const allowed=new Set(['manifestSha256','manifestUrl','releaseId','version']);
               if (
                 pointer.version !== 1 ||
                 !/^[a-zA-Z0-9._+-]{1,128}$/.test(pointer.releaseId || '') ||
-                pointer.manifestUrl !== '/releases/'+pointer.releaseId+'/manifest-v4.json' ||
-                !/^[a-f0-9]{64}$/.test(pointer.manifestSha256 || '')
+                keys.some((key) => !allowed.has(key)) ||
+                ((pointer.manifestUrl === undefined) !== (pointer.manifestSha256 === undefined)) ||
+                (pointer.manifestUrl !== undefined && (
+                  pointer.manifestUrl !== '/releases/'+pointer.releaseId+'/manifest-v4.json' ||
+                  !/^[a-f0-9]{64}$/.test(pointer.manifestSha256 || '')
+                ))
               ) throw new Error('Existing stable.json is not a valid v4 compatibility pointer');
-              process.stdout.write(pointer.manifestUrl.slice(1));
+              process.stdout.write(
+                pointer.manifestUrl
+                  ? pointer.manifestUrl.slice(1)
+                  : 'releases/'+pointer.releaseId+'/manifest.json'
+              );
             "
           )"
-          rclone cat "r2:onlyoffice-getpi-work/${ONLYOFFICE_LEGACY_MANIFEST_KEY}" \
-            > "${RUNNER_TEMP}/onlyoffice-legacy-manifest-v4.json"
+          rclone_cat_to_file \
+            "r2:onlyoffice-getpi-work/${ONLYOFFICE_LEGACY_MANIFEST_KEY}" \
+            "${RUNNER_TEMP}/onlyoffice-legacy-manifest-v4.json"
           node -e "
             const crypto=require('node:crypto');
             const fs=require('node:fs');
@@ -415,7 +447,11 @@ jobs:
             const bytes=fs.readFileSync(process.env.RUNNER_TEMP+'/onlyoffice-legacy-manifest-v4.json');
             const manifest=JSON.parse(bytes);
             const sha256=crypto.createHash('sha256').update(bytes).digest('hex');
-            if (sha256 !== pointer.manifestSha256 || manifest.version !== 4 || manifest.releaseId !== pointer.releaseId) {
+            if (
+              (pointer.manifestSha256 && sha256 !== pointer.manifestSha256) ||
+              manifest.version !== 4 ||
+              manifest.releaseId !== pointer.releaseId
+            ) {
               throw new Error('Existing stable.json compatibility manifest is unavailable or invalid');
             }
           "
