@@ -108,7 +108,11 @@ describe('R2 release workflow', () => {
     expect(freezeStart).toBeGreaterThanOrEqual(0);
     expect(activationStart).toBeGreaterThan(freezeStart);
     expect(verificationStart).toBeGreaterThan(activationStart);
-    expect(freeze).toContain('rclone cat r2:onlyoffice-getpi-work/channels/stable.json');
+    expect(freeze).toContain('rclone_cat_to_file \\');
+    expect(freeze).toContain('r2:onlyoffice-getpi-work/channels/stable.json');
+    expect(freeze).toContain('timeout 60s rclone cat "${source}"');
+    expect(freeze).toContain("'releases/'+pointer.releaseId+'/manifest.json'");
+    expect(freeze).toContain('((pointer.manifestUrl === undefined) !== (pointer.manifestSha256 === undefined))');
     expect(freeze).toContain('manifest.version !== 4');
     expect(activation).not.toContain('channels/stable.json');
     expect(activation).toContain('r2:onlyoffice-getpi-work/channels/stable-v5.json');
