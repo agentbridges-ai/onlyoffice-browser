@@ -54,6 +54,8 @@ describe('Office Host canonical Resource Broker wiring', () => {
     expect(source).toContain('allowLocalMatrix: true');
     expect(source).toContain('resourceBrokerFrameClient?.destroy()');
     expect(source).toContain('disposeResourceBroker();');
+    expect(source).toContain('type: EDITOR_RESOURCE_BROKER_UNBIND_TYPE');
+    expect(source).toContain('navigator.serviceWorker.controller?.postMessage({');
     expect(source).toContain(
       "navigator.serviceWorker.removeEventListener('controllerchange', handleOfficeServiceWorkerControllerChange)",
     );

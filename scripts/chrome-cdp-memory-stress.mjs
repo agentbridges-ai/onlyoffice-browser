@@ -85,8 +85,18 @@ export class CdpClient {
       message.sessionId = sessionId;
     }
 
+    const requestError = new Error(`CDP ${method} failed`);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, {
+        resolve,
+        reject: (error) => {
+          if (error instanceof Error) {
+            requestError.message = `CDP ${method} failed: ${error.message}`;
+            requestError.cause = error;
+          }
+          reject(requestError);
+        },
+      });
       this.ws.send(JSON.stringify(message));
     });
   }
@@ -966,6 +976,16 @@ async function closeOfficeDocument(cdp, sessionId, timeoutMs, closeMode, waitFor
       cdp,
       sessionId,
       `(() => {
+        clearInterval(globalThis.__officeStressDiscardTimer);
+        globalThis.__officeStressDiscardTimer = setInterval(() => {
+          const dialog = document.querySelector('#dirty-dialog[open]');
+          dialog?.querySelector('button[value="discard"]')?.click();
+          const active = window.__officeDemo?.tabs?.length ?? (window.__officeDemo?.editor ? 1 : 0);
+          if (active === 0) {
+            clearInterval(globalThis.__officeStressDiscardTimer);
+            delete globalThis.__officeStressDiscardTimer;
+          }
+        }, 25);
         window.__officeDemo?.closeAll?.();
         return true;
       })()`,
@@ -1033,6 +1053,16 @@ async function closeOfficeDocuments(cdp, sessionId, timeoutMs, closeMode, waitFo
       cdp,
       sessionId,
       `(() => {
+        clearInterval(globalThis.__officeStressDiscardTimer);
+        globalThis.__officeStressDiscardTimer = setInterval(() => {
+          const dialog = document.querySelector('#dirty-dialog[open]');
+          dialog?.querySelector('button[value="discard"]')?.click();
+          const active = window.__officeDemo?.tabs?.length ?? (window.__officeDemo?.editor ? 1 : 0);
+          if (active === 0) {
+            clearInterval(globalThis.__officeStressDiscardTimer);
+            delete globalThis.__officeStressDiscardTimer;
+          }
+        }, 25);
         window.__officeDemo?.closeAll?.();
         return true;
       })()`,

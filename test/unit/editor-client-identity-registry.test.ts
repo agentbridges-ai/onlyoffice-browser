@@ -116,4 +116,26 @@ describe('EditorClientIdentityRegistry', () => {
       }),
     ).toEqual(sessionB);
   });
+
+  it('removes the exact host and nested lineage on an authenticated unbind', () => {
+    const registry = new EditorClientIdentityRegistry();
+    registry.bindHost('host-a', sessionA);
+    registry.resolve({
+      clientId: 'host-a',
+      resultingClientId: 'runtime-child',
+      releaseId: 'release-a',
+      sourceIsOfficeRuntime: false,
+    });
+
+    expect(registry.unbindHost('host-a', sessionB)).toBe(false);
+    expect(registry.unbindHost('unknown', sessionA)).toBe(false);
+    expect(registry.unbindHost('host-a', sessionA)).toBe(true);
+    expect(
+      registry.resolve({
+        clientId: 'runtime-child',
+        releaseId: 'release-a',
+        sourceIsOfficeRuntime: false,
+      }),
+    ).toBeNull();
+  });
 });

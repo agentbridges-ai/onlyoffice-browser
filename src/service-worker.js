@@ -30,10 +30,12 @@ import {
 import {
   EDITOR_RESOURCE_BROKER_BIND_ERROR_TYPE,
   EDITOR_RESOURCE_BROKER_BIND_TYPE,
+  EDITOR_RESOURCE_BROKER_UNBIND_TYPE,
   EDITOR_RESOURCE_BROKER_REQUEST_TIMEOUT_MS,
   EditorResourceBrokerClient,
   EditorResourceBrokerError,
   parseEditorResourceBrokerBindMessage,
+  parseEditorResourceBrokerUnbindMessage,
 } from './lib/editor-resource-broker';
 import { EditorClientIdentityRegistry } from './lib/editor-client-identity-registry';
 import { releaseIdFromOfficeHostUrl } from './lib/office-host-url';
@@ -577,6 +579,26 @@ self.addEventListener('message', (event) => {
       return;
     }
     event.waitUntil(canonicalResourceBroker.handle(brokerRequest, port));
+  } else if (
+    isIsolatedEditorHost &&
+    event.data?.protocol === RESOURCE_BROKER_PROTOCOL &&
+    event.data?.type === EDITOR_RESOURCE_BROKER_UNBIND_TYPE
+  ) {
+    const unbind = parseEditorResourceBrokerUnbindMessage(event.data);
+    const sourceUrl = typeof event.source?.url === 'string' ? event.source.url : '';
+    const sourceClientId = typeof event.source?.id === 'string' ? event.source.id : '';
+    const sourceIdentity = parseEditorOfficeHostClientIdentity(sourceUrl);
+    const connectedIdentity = editorResourceBroker?.connectionState.identity ?? null;
+    const trusted =
+      unbind &&
+      sourceClientId &&
+      event.ports.length === 0 &&
+      sourceIdentity?.releaseId === unbind.releaseId &&
+      sourceIdentity.sessionId === unbind.sessionId &&
+      connectedIdentity?.releaseId === unbind.releaseId &&
+      connectedIdentity.sessionId === unbind.sessionId &&
+      editorClientIdentities?.unbindHost(sourceClientId, unbind);
+    if (trusted) editorResourceBroker?.disconnect();
   } else if (
     isIsolatedEditorHost &&
     event.data?.protocol === RESOURCE_BROKER_PROTOCOL &&

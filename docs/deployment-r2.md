@@ -260,7 +260,7 @@ pnpm release:build
 
 node scripts/verify-release-publication.mjs \
   --release-root .onlyoffice-release \
-  --expected-package-version 0.5.7 \
+  --expected-package-version 0.5.8 \
   --fastcdc-evidence-mode forbid
 
 rclone copy .onlyoffice-release/blobs \
@@ -276,7 +276,7 @@ rclone copy dist r2:onlyoffice-getpi-work \
 
 node scripts/verify-release-publication.mjs \
   --release-root .onlyoffice-release \
-  --expected-package-version 0.5.7 \
+  --expected-package-version 0.5.8 \
   --fastcdc-evidence-mode forbid \
   --remote r2:onlyoffice-getpi-work
 
@@ -289,7 +289,7 @@ npx wrangler deploy --var "ASSET_VERSION:${ASSET_VERSION}"
 
 node scripts/verify-release-http.mjs \
   --release-root .onlyoffice-release \
-  --expected-package-version 0.5.7 \
+  --expected-package-version 0.5.8 \
   --fastcdc-evidence-mode forbid
 
 mkdir -p .onlyoffice-recovery
@@ -306,7 +306,7 @@ rclone cat r2:onlyoffice-getpi-work/channels/stable.json |
 
 node scripts/verify-release-http.mjs \
   --release-root .onlyoffice-release \
-  --expected-package-version 0.5.7 \
+  --expected-package-version 0.5.8 \
   --fastcdc-evidence-mode forbid
 ```
 

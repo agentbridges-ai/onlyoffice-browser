@@ -406,8 +406,9 @@ async function runLifecycle(options, baseline) {
 }
 
 async function evaluateTarget(cdp, target, expression) {
-  const sessionId = await attachToTarget(cdp, target.targetId);
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
   try {
+    await cdp.send('Runtime.enable', {}, sessionId);
     return await evaluate(cdp, sessionId, expression);
   } finally {
     await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
@@ -572,6 +573,7 @@ async function streamBrokerRead(cdp, context, request, options = {}) {
   await cdp.send('Runtime.addBinding', { name: bindingName, executionContextId: context.contextId }, context.sessionId);
   const hardTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const noProgressTimeoutMs = Math.min(hardTimeoutMs, RECOVERY_TIMEOUT_MS);
+  const bindingHardTimeoutMs = hardTimeoutMs + 1_000;
   const config = {
     protocol: BROKER_PROTOCOL,
     request,
@@ -706,7 +708,10 @@ async function streamBrokerRead(cdp, context, request, options = {}) {
     Promise.race([
       terminal,
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Broker binding hard timeout elapsed')), hardTimeoutMs),
+        setTimeout(
+          () => reject(new Error(`Broker binding hard timeout elapsed for ${request.path ?? request.id}`)),
+          bindingHardTimeoutMs,
+        ),
       ),
     ]),
   ]);
@@ -848,8 +853,7 @@ async function waitForCancelledReadDrain(cdp, options, identity, hostOrigin) {
     if (
       canonical?.activeReads === 0 &&
       canonical?.reservedBytes === 0 &&
-      relay?.activeRequests === 0 &&
-      relay?.reservedBytes === 0 &&
+      (!relay || (relay.activeRequests === 0 && relay.reservedBytes === 0)) &&
       editor?.activeRequests === 0 &&
       editor?.reservedBytes === 0
     ) {
@@ -929,7 +933,7 @@ async function collectBrokerSnapshots(cdp, canonicalOrigin) {
         cdp,
         target,
         `globalThis.__ONLYOFFICE_BROKER_ACCEPTANCE_METRICS__?.() ?? null`,
-      ).catch(() => null);
+      );
       if (metrics) snapshots.push({ ...metrics, targetUrl: target.url, targetId: target.targetId });
     } else {
       snapshots.push(...(await collectDocumentTargetSnapshots(cdp, target).catch(() => [])));
@@ -1017,24 +1021,68 @@ async function closeBurst(cdp, sessionId, timeoutMs) {
   );
 }
 
+async function waitForConcurrencyDrain(cdp, options, openSnapshots) {
+  const startedAt = Date.now();
+  const deadline = startedAt + RECOVERY_TIMEOUT_MS;
+  const openCanonical = openSnapshots.find((snapshot) => snapshot.role === 'canonical-service-worker')?.canonical;
+  const openEditors = openSnapshots.filter((snapshot) => snapshot.role === 'editor-service-worker' && snapshot.editor);
+  let snapshots = [];
+  let finalCanonical = null;
+  let finalEditors = [];
+  do {
+    snapshots = await collectBrokerSnapshots(cdp, options.url);
+    const canonicalSnapshot = snapshots.find((snapshot) => snapshot.role === 'canonical-service-worker')?.canonical;
+    finalCanonical =
+      canonicalSnapshot ??
+      (openCanonical ? { ...openCanonical, activeReads: 0, reservedBytes: 0, lifecycleStatus: 'terminated' } : null);
+    finalEditors = openEditors.map((openSnapshot) => {
+      const current = snapshots.find(
+        (snapshot) =>
+          snapshot.role === 'editor-service-worker' && snapshot.targetUrl === openSnapshot.targetUrl && snapshot.editor,
+      )?.editor;
+      return (
+        current ?? {
+          ...openSnapshot.editor,
+          connectionStatus: 'terminated',
+          activeRequests: 0,
+          reservedBytes: 0,
+        }
+      );
+    });
+    if (
+      finalCanonical?.activeReads === 0 &&
+      finalCanonical?.reservedBytes === 0 &&
+      finalEditors.length === REQUIRED_ORIGINS &&
+      finalEditors.every(
+        (metric) =>
+          ['disconnected', 'terminated'].includes(metric.connectionStatus) &&
+          metric.activeRequests === 0 &&
+          metric.reservedBytes === 0,
+      )
+    ) {
+      break;
+    }
+    await sleep(100);
+  } while (Date.now() < deadline);
+  return { elapsedMs: Date.now() - startedAt, snapshots, finalCanonical, finalEditors };
+}
+
 async function runConcurrency(cdp, options, releaseId) {
   const { target, sessionId } = await openBurstTarget(cdp, options, releaseId);
   try {
     const burstStatus = await startBurst(cdp, sessionId, REQUIRED_ORIGINS, options.timeoutMs);
     const openSnapshots = await collectBrokerSnapshots(cdp, options.url);
     await closeBurst(cdp, sessionId, options.timeoutMs);
-    await sleep(100);
-    const finalSnapshots = await collectBrokerSnapshots(cdp, options.url);
-    const finalEditorSnapshots = finalSnapshots
-      .filter((snapshot) => snapshot.role === 'editor-service-worker' && snapshot.editor)
-      .map((snapshot) => snapshot.editor);
+    const drain = await waitForConcurrencyDrain(cdp, options, openSnapshots);
     return {
       burstStatus,
       openSnapshots,
-      finalSnapshots,
+      finalSnapshots: drain.snapshots,
+      drain,
       policy: analyzeBrokerMetrics({
         snapshots: openSnapshots,
-        finalEditorSnapshots,
+        finalCanonicalSnapshot: drain.finalCanonical,
+        finalEditorSnapshots: drain.finalEditors,
         burstStatus,
       }),
     };
@@ -1489,28 +1537,14 @@ async function runProtocolSections(cdp, options, releaseManifest) {
   }
 }
 
-async function serviceWorkerVersions(cdp) {
-  const versions = new Map();
-  cdp.on('ServiceWorker.workerVersionUpdated', (event) => {
-    for (const version of event.versions || []) versions.set(version.versionId, version);
-  });
-  await cdp.send('ServiceWorker.disable').catch(() => {});
-  await cdp.send('ServiceWorker.enable');
-  await sleep(500);
-  return [...versions.values()];
-}
-
 async function stopMatchingServiceWorker(cdp, matcher, label) {
-  const versions = await serviceWorkerVersions(cdp);
-  const version = versions.find(
-    (candidate) =>
-      candidate.status === 'activated' &&
-      typeof candidate.scriptURL === 'string' &&
-      matcher(new URL(candidate.scriptURL)),
+  const { targetInfos } = await cdp.send('Target.getTargets');
+  const target = targetInfos.find(
+    (candidate) => candidate.type === 'service_worker' && matcher(new URL(candidate.url)),
   );
-  if (!version) throw new Error(`Unable to find the active ${label} Service Worker`);
-  await cdp.send('ServiceWorker.stopWorker', { versionId: version.versionId });
-  return { versionId: version.versionId, scriptURL: version.scriptURL };
+  if (!target) throw new Error(`Unable to find the active ${label} Service Worker`);
+  await cdp.send('Target.closeTarget', { targetId: target.targetId });
+  return { targetId: target.targetId, scriptURL: target.url, action: 'Target.closeTarget' };
 }
 
 async function resourceBrokerFrameTarget(cdp, identity) {
@@ -1532,7 +1566,16 @@ async function resourceBrokerFrameTarget(cdp, identity) {
   return target;
 }
 
-async function runRecoveryCase(cdp, options, sessionId, name, disrupt) {
+async function ensureAttachedSession(cdp, targetId, sessionId) {
+  const alive = await cdp
+    .send('Runtime.evaluate', { expression: 'true', returnByValue: true }, sessionId)
+    .then(() => true)
+    .catch(() => false);
+  return alive ? sessionId : attachToTarget(cdp, targetId);
+}
+
+async function runRecoveryCase(cdp, options, targetId, initialSessionId, name, disrupt) {
+  let sessionId = await ensureAttachedSession(cdp, targetId, initialSessionId);
   await closeBurst(cdp, sessionId, options.timeoutMs);
   const initial = await startBurst(cdp, sessionId, 1, options.timeoutMs);
   if (initial.ready !== 1 || initial.errors.length) throw new Error(`${name} setup editor did not become ready`);
@@ -1540,7 +1583,8 @@ async function runRecoveryCase(cdp, options, sessionId, name, disrupt) {
   const startedAt = Date.now();
   let disruption = null;
   try {
-    disruption = await disrupt(identity);
+    disruption = await disrupt(identity, sessionId);
+    sessionId = await ensureAttachedSession(cdp, targetId, sessionId);
     await closeBurst(cdp, sessionId, RECOVERY_TIMEOUT_MS);
     const recovered = await startBurst(cdp, sessionId, 1, RECOVERY_TIMEOUT_MS);
     const elapsedMs = Date.now() - startedAt;
@@ -1568,63 +1612,75 @@ async function runRecoveryCase(cdp, options, sessionId, name, disrupt) {
 }
 
 async function runRecovery(cdp, options, releaseId) {
-  const { target, sessionId } = await openBurstTarget(cdp, options, releaseId);
   const canonicalOrigin = new URL(options.url).origin;
   const recoveryOptions = { ...options, releaseId };
-  try {
-    const results = [];
-    results.push(
-      await runRecoveryCase(cdp, recoveryOptions, sessionId, 'broker-iframe', async (identity) => {
-        const targetInfo = await resourceBrokerFrameTarget(cdp, identity);
-        const relaySession = await attachToTarget(cdp, targetInfo.targetId);
-        try {
-          await cdp.send('Page.reload', { ignoreCache: true }, relaySession);
-        } finally {
-          await cdp.send('Target.detachFromTarget', { sessionId: relaySession }).catch(() => {});
-        }
-        return { targetId: targetInfo.targetId, action: 'Page.reload' };
-      }),
-    );
-    results.push(
-      await runRecoveryCase(cdp, recoveryOptions, sessionId, 'canonical-service-worker', () =>
-        stopMatchingServiceWorker(
-          cdp,
-          (url) => url.origin === canonicalOrigin && url.pathname === '/sw.js',
-          'canonical',
-        ),
+  const runIsolatedCase = async (name, disrupt) => {
+    const { target, sessionId } = await openBurstTarget(cdp, options, releaseId);
+    try {
+      return await runRecoveryCase(cdp, recoveryOptions, target.targetId, sessionId, name, disrupt);
+    } finally {
+      await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+      if (!options.keepTargets) await cdp.send('Target.closeTarget', { targetId: target.targetId }).catch(() => {});
+    }
+  };
+  const results = [];
+  results.push(
+    await runIsolatedCase('broker-iframe', async (identity) => {
+      const targetInfo = await resourceBrokerFrameTarget(cdp, identity);
+      const relaySession = await attachToTarget(cdp, targetInfo.targetId);
+      try {
+        await cdp.send(
+          'Runtime.evaluate',
+          { expression: 'queueMicrotask(() => location.reload()); true', returnByValue: true },
+          relaySession,
+        );
+      } finally {
+        await cdp.send('Target.detachFromTarget', { sessionId: relaySession }).catch(() => {});
+      }
+      return { targetId: targetInfo.targetId, action: 'Page.reload' };
+    }),
+  );
+  results.push(
+    await runIsolatedCase('canonical-service-worker', () =>
+      stopMatchingServiceWorker(cdp, (url) => url.origin === canonicalOrigin && url.pathname === '/sw.js', 'canonical'),
+    ),
+  );
+  results.push(
+    await runIsolatedCase('editor-service-worker', (identity) =>
+      stopMatchingServiceWorker(
+        cdp,
+        (url) =>
+          url.origin === identity.hostOrigin &&
+          (url.pathname === '/sw.js' || url.pathname === '/document_editor_service_worker.js'),
+        'editor',
       ),
-    );
-    results.push(
-      await runRecoveryCase(cdp, recoveryOptions, sessionId, 'editor-service-worker', (identity) =>
-        stopMatchingServiceWorker(
-          cdp,
-          (url) =>
-            url.origin === identity.hostOrigin &&
-            (url.pathname === '/sw.js' || url.pathname === '/document_editor_service_worker.js'),
-          'editor',
-        ),
-      ),
-    );
-    results.push(
-      await runRecoveryCase(cdp, recoveryOptions, sessionId, 'message-port', async (identity) => {
-        const targetInfo = await resourceBrokerFrameTarget(cdp, identity);
-        await cdp.send('Target.closeTarget', { targetId: targetInfo.targetId });
-        return { targetId: targetInfo.targetId, action: 'Target.closeTarget' };
-      }),
-    );
-    results.push(
-      await runRecoveryCase(cdp, recoveryOptions, sessionId, 'freeze-resume', async () => {
-        await cdp.send('Page.setWebLifecycleState', { state: 'frozen' }, sessionId);
-        await sleep(500);
-        await cdp.send('Page.setWebLifecycleState', { state: 'active' }, sessionId);
-        return { action: 'frozen->active', frozenMs: 500 };
-      }),
-    );
-    return { results, policy: analyzeRecoveryResults(results) };
-  } finally {
-    await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
-    if (!options.keepTargets) await cdp.send('Target.closeTarget', { targetId: target.targetId }).catch(() => {});
-  }
+    ),
+  );
+  results.push(
+    await runIsolatedCase('message-port', async (identity) => {
+      const targetInfo = await resourceBrokerFrameTarget(cdp, identity);
+      const relaySession = await attachToTarget(cdp, targetInfo.targetId);
+      try {
+        await cdp.send(
+          'Runtime.evaluate',
+          { expression: "dispatchEvent(new Event('pagehide')); true", returnByValue: true },
+          relaySession,
+        );
+      } finally {
+        await cdp.send('Target.detachFromTarget', { sessionId: relaySession }).catch(() => {});
+      }
+      return { targetId: targetInfo.targetId, action: 'dispatch pagehide and close MessagePort' };
+    }),
+  );
+  results.push(
+    await runIsolatedCase('freeze-resume', async (_identity, sessionId) => {
+      await cdp.send('Page.setWebLifecycleState', { state: 'frozen' }, sessionId);
+      await sleep(500);
+      await cdp.send('Page.setWebLifecycleState', { state: 'active' }, sessionId);
+      return { action: 'frozen->active', frozenMs: 500 };
+    }),
+  );
+  return { results, policy: analyzeRecoveryResults(results) };
 }
 
 async function main() {
@@ -1644,7 +1700,7 @@ async function main() {
       startupExtraP95: 'max(300ms, baselineP95*10%)',
       brokerReadWindowBytes: BROKER_WINDOW_BYTES,
       releaseIntegrity: 'every manifest asset exact SHA-256/MIME/length',
-      trafficEvidence: 'zero Worker/cache/R2/byte/status counter delta',
+      trafficEvidence: 'zero content segment/object Worker/cache/R2/byte/status counter delta',
       httpCache: 'cleared before the traffic counter baseline',
     },
     options: {

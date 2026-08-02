@@ -27,6 +27,7 @@ import {
   EDITOR_RESOURCE_BROKER_BIND_ERROR_TYPE,
   EDITOR_RESOURCE_BROKER_BIND_TYPE,
   EDITOR_RESOURCE_BROKER_BOUND_TYPE,
+  EDITOR_RESOURCE_BROKER_UNBIND_TYPE,
 } from './lib/editor-resource-broker';
 import {
   RESOURCE_BROKER_CANONICAL_ORIGIN,
@@ -238,6 +239,18 @@ function closeResourceBrokerFrame(): void {
 function disposeResourceBroker(): void {
   if (resourceBrokerDisposed) return;
   resourceBrokerDisposed = true;
+  if (releaseId && sessionId) {
+    try {
+      navigator.serviceWorker.controller?.postMessage({
+        protocol: RESOURCE_BROKER_PROTOCOL,
+        type: EDITOR_RESOURCE_BROKER_UNBIND_TYPE,
+        releaseId,
+        sessionId,
+      });
+    } catch {
+      // The page is already unloading; frame removal still closes the relay side.
+    }
+  }
   closeResourceBrokerFrame();
   resourceBrokerBindPromise = null;
 }
