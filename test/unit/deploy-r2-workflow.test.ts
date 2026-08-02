@@ -3,6 +3,17 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('R2 release workflow', () => {
+  it('bounds and atomically commits every R2 metadata read', () => {
+    const reader = fs.readFileSync(path.resolve('scripts/rclone-read-metadata.sh'), 'utf8');
+
+    expect(reader).toContain('for attempt in 1 2 3');
+    expect(reader).toContain('timeout 60s rclone cat "${source_object}"');
+    expect(reader).toContain('--low-level-retries 3');
+    expect(reader).toContain('> "${temporary}"');
+    expect(reader).toContain('mv "${temporary}" "${destination}"');
+    expect(reader).toContain('trap cleanup EXIT');
+  });
+
   it('hydrates a pinned immutable font release instead of regenerating its own output', () => {
     const workflow = fs.readFileSync(path.resolve('.github/workflows/deploy-r2.yml'), 'utf8');
 
@@ -108,16 +119,17 @@ describe('R2 release workflow', () => {
     expect(freezeStart).toBeGreaterThanOrEqual(0);
     expect(activationStart).toBeGreaterThan(freezeStart);
     expect(verificationStart).toBeGreaterThan(activationStart);
-    expect(freeze).toContain('rclone_cat_to_file \\');
+    expect(freeze).toContain('scripts/rclone-read-metadata.sh \\');
     expect(freeze).toContain('r2:onlyoffice-getpi-work/channels/stable.json');
-    expect(freeze).toContain('timeout 60s rclone cat "${source}"');
     expect(freeze).toContain("'releases/'+pointer.releaseId+'/manifest.json'");
     expect(freeze).toContain('((pointer.manifestUrl === undefined) !== (pointer.manifestSha256 === undefined))');
     expect(freeze).toContain('manifest.version !== 4');
     expect(activation).not.toContain('channels/stable.json');
     expect(activation).toContain('r2:onlyoffice-getpi-work/channels/stable-v5.json');
-    expect(activation).toContain('cmp --silent .onlyoffice-release/channels/stable-v5.json -');
-    expect(verification).toContain('cmp --silent "${RUNNER_TEMP}/onlyoffice-legacy-stable.json" -');
+    expect(activation).toContain('scripts/rclone-read-metadata.sh');
+    expect(activation).toContain('"${RUNNER_TEMP}/onlyoffice-stable-v5-r2.json"');
+    expect(verification).toContain('scripts/rclone-read-metadata.sh');
+    expect(verification).toContain('"${RUNNER_TEMP}/onlyoffice-legacy-stable-final.json"');
     expect(verification).toContain("await verify('stable-v5.json', expectedV5, 5, attempt)");
     expect(verification).toContain("await verify('stable.json', expectedLegacy, 4, attempt)");
     expect(workflow).not.toMatch(/rclone_copyto_with_outer_retry[\s\S]*?\.onlyoffice-release\/channels\/stable\.json/);
