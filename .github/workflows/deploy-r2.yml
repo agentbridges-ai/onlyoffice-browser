@@ -66,6 +66,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes rclone
       - run: pnpm install --frozen-lockfile
+      - name: Install the pinned Chromium runtime for the production matrix
+        run: pnpm exec playwright install --with-deps chromium
       - name: Verify runtime
         run: |
           pnpm test
