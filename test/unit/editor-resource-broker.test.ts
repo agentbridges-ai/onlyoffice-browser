@@ -3,8 +3,10 @@ import {
   EDITOR_RESOURCE_BROKER_BIND_ERROR_TYPE,
   EDITOR_RESOURCE_BROKER_BIND_TYPE,
   EDITOR_RESOURCE_BROKER_BOUND_TYPE,
+  EDITOR_RESOURCE_BROKER_UNBIND_TYPE,
   EditorResourceBrokerClient,
   parseEditorResourceBrokerBindMessage,
+  parseEditorResourceBrokerUnbindMessage,
   type EditorResourceBrokerIdentity,
   type EditorResourceBrokerPort,
 } from '../../src/lib/editor-resource-broker';
@@ -70,6 +72,12 @@ const identityB: EditorResourceBrokerIdentity = {
 const bindMessage = (identity: EditorResourceBrokerIdentity = identityA) => ({
   protocol: RESOURCE_BROKER_PROTOCOL,
   type: EDITOR_RESOURCE_BROKER_BIND_TYPE,
+  ...identity,
+});
+
+const unbindMessage = (identity: EditorResourceBrokerIdentity = identityA) => ({
+  protocol: RESOURCE_BROKER_PROTOCOL,
+  type: EDITOR_RESOURCE_BROKER_UNBIND_TYPE,
   ...identity,
 });
 
@@ -200,6 +208,9 @@ describe('EditorResourceBrokerClient binding', () => {
     expect(parseEditorResourceBrokerBindMessage(bindMessage())).toEqual(bindMessage());
     expect(parseEditorResourceBrokerBindMessage({ ...bindMessage(), extra: true })).toBeNull();
     expect(parseEditorResourceBrokerBindMessage({ ...bindMessage(), protocol: 'old' })).toBeNull();
+    expect(parseEditorResourceBrokerUnbindMessage(unbindMessage())).toEqual(unbindMessage());
+    expect(parseEditorResourceBrokerUnbindMessage({ ...unbindMessage(), extra: true })).toBeNull();
+    expect(parseEditorResourceBrokerUnbindMessage({ ...unbindMessage(), sessionId: '../session' })).toBeNull();
 
     const client = new EditorResourceBrokerClient();
     const broker = new FakePort();

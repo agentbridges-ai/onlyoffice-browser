@@ -94,6 +94,8 @@ describe('canonical Broker production acceptance policy', () => {
       burstStatus: { ready: 3, uniqueOrigins: 3, errors: [] },
     };
     expect(analyzeBrokerMetrics(input).pass).toBe(true);
+    input.finalEditorSnapshots[0].connectionStatus = 'terminated';
+    expect(analyzeBrokerMetrics(input).pass).toBe(true);
     canonical.canonical.peakReservedBytes = 64 * 1024 * 1024;
     expect(analyzeBrokerMetrics(input).pass).toBe(false);
   });
@@ -216,6 +218,18 @@ describe('canonical Broker production acceptance policy', () => {
       },
     };
     expect(analyzeReleaseIntegrity(input).pass).toBe(true);
+    (input.samples.cancellation.drain as { relay: { activeRequests: number; reservedBytes: number } | null }).relay =
+      null;
+    expect(analyzeReleaseIntegrity(input).pass).toBe(true);
+    (input.samples.cancellation.drain as { relay: { activeRequests: number; reservedBytes: number } | null }).relay = {
+      activeRequests: 1,
+      reservedBytes: 1,
+    };
+    expect(analyzeReleaseIntegrity(input).pass).toBe(false);
+    (input.samples.cancellation.drain as { relay: { activeRequests: number; reservedBytes: number } | null }).relay = {
+      activeRequests: 0,
+      reservedBytes: 0,
+    };
     asset.sha256 = 'b'.repeat(64);
     expect(analyzeReleaseIntegrity(input).pass).toBe(false);
   });
@@ -250,7 +264,7 @@ describe('canonical Broker production acceptance policy', () => {
     expect(analyzeSecurityProbes(input).pass).toBe(false);
   });
 
-  it('fails closed without complete HTTP/R2 evidence and rejects every nonzero counter delta', () => {
+  it('fails closed without complete HTTP/R2 evidence and rejects content traffic while retaining shell activity', () => {
     const counter = {
       workerRequests: 2,
       cacheHits: 1,
@@ -272,6 +286,17 @@ describe('canonical Broker production acceptance policy', () => {
     expect(
       analyzeTrafficEvidence({ evidenceUrl: 'https://metrics.example/counters', before, after: before }).pass,
     ).toBe(true);
+    const shellActivity = structuredClone(before);
+    shellActivity.routes.all.workerRequests += 1;
+    shellActivity.routes.all.completed += 1;
+    shellActivity.routes.all.statuses['200'] += 1;
+    const shellResult = analyzeTrafficEvidence({
+      evidenceUrl: 'https://metrics.example/counters',
+      before,
+      after: shellActivity,
+    });
+    expect(shellResult.pass).toBe(true);
+    expect(shellResult.routeActivity).toHaveLength(3);
     const after = structuredClone(before);
     after.segments.all.r2Gets += 1;
     expect(analyzeTrafficEvidence({ evidenceUrl: 'https://metrics.example/counters', before, after }).pass).toBe(false);

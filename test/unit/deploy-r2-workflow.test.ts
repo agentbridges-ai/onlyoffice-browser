@@ -51,7 +51,7 @@ describe('R2 release workflow', () => {
     expect(workflow).toContain('--fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"');
     expect(workflow).toContain('git ls-files --error-unmatch "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}"');
     expect(workflow).toContain('--package-version "$(node -p "require(\'./package.json\').version")"');
-    expect(workflow).toContain('--expected-package-version 0.5.7');
+    expect(workflow).toContain('--expected-package-version 0.5.8');
     expect(workflow).toContain('--remote r2:onlyoffice-getpi-work');
     expect(workflow).toContain('partial success is not verification');
     expect(workflow).not.toMatch(/\brclone\s+sync\b/);

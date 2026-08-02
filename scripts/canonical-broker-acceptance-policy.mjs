@@ -173,7 +173,7 @@ export function analyzeBrokerMetrics(input, overrides = {}) {
     Math.max(0, ...canonicalMetrics.map((metric) => metric.peakReservedBytes)) +
     editorMetrics.reduce((total, metric) => total + metric.peakReservedBytes, 0) +
     relayMetrics.reduce((total, metric) => total + metric.peakReservedBytes, 0);
-  const finalCanonical = canonicalMetrics.at(-1) ?? null;
+  const finalCanonical = input?.finalCanonicalSnapshot ?? canonicalMetrics.at(-1) ?? null;
   const finalEditors = input?.finalEditorSnapshots || editorMetrics;
   const burst = input?.burstStatus;
   const checks = [
@@ -214,11 +214,13 @@ export function analyzeBrokerMetrics(input, overrides = {}) {
     check(
       'editor-reads-drained',
       finalEditors,
-      'every editor is disconnected with activeRequests=0 and reservedBytes=0',
+      'every editor is disconnected or terminated with activeRequests=0 and reservedBytes=0',
       finalEditors.length >= thresholds.requiredConcurrentOrigins &&
         finalEditors.every(
           (metric) =>
-            metric.connectionStatus === 'disconnected' && metric.activeRequests === 0 && metric.reservedBytes === 0,
+            ['disconnected', 'terminated'].includes(metric.connectionStatus) &&
+            metric.activeRequests === 0 &&
+            metric.reservedBytes === 0,
         ),
     ),
   ];
@@ -428,8 +430,8 @@ export function analyzeReleaseIntegrity(input) {
         cancellation.drain.elapsedMs <= 30_000 &&
         cancellation.drain.canonical?.activeReads === 0 &&
         cancellation.drain.canonical?.reservedBytes === 0 &&
-        cancellation.drain.relay?.activeRequests === 0 &&
-        cancellation.drain.relay?.reservedBytes === 0 &&
+        (!cancellation.drain.relay ||
+          (cancellation.drain.relay.activeRequests === 0 && cancellation.drain.relay.reservedBytes === 0)) &&
         cancellation.drain.editor?.activeRequests === 0 &&
         cancellation.drain.editor?.reservedBytes === 0 &&
         cancellation?.protocolRecovery?.status === 206 &&
@@ -536,6 +538,7 @@ const TRAFFIC_COUNTER_FIELDS = Object.freeze([
   'failed',
 ]);
 const TRAFFIC_COUNTER_GROUPS = Object.freeze(['segments', 'objects', 'routes']);
+const GATED_TRAFFIC_COUNTER_GROUPS = new Set(['segments', 'objects']);
 
 function parseTrafficSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
@@ -569,6 +572,7 @@ export function analyzeTrafficEvidence(input) {
   const evidenceUrl = input?.evidenceUrl;
   const delta = {};
   const nonzero = [];
+  const routeActivity = [];
   const checks = [
     check(
       'traffic-evidence-interface-present',
@@ -588,20 +592,26 @@ export function analyzeTrafficEvidence(input) {
         const beforeCounter = before[group][key];
         const afterCounter = after[group][key];
         if (!beforeCounter || !afterCounter) {
-          nonzero.push({
+          const activity = {
             group,
             key,
             field: 'counter-presence',
             before: beforeCounter ?? null,
             after: afterCounter ?? null,
-          });
+          };
+          (GATED_TRAFFIC_COUNTER_GROUPS.has(group) ? nonzero : routeActivity).push(activity);
           continue;
         }
         const counterDelta = {};
         for (const field of TRAFFIC_COUNTER_FIELDS) {
           counterDelta[field] = afterCounter[field] - beforeCounter[field];
           if (counterDelta[field] !== 0) {
-            nonzero.push({ group, key, field, delta: counterDelta[field] });
+            (GATED_TRAFFIC_COUNTER_GROUPS.has(group) ? nonzero : routeActivity).push({
+              group,
+              key,
+              field,
+              delta: counterDelta[field],
+            });
           }
         }
         counterDelta.statuses = {};
@@ -610,7 +620,12 @@ export function analyzeTrafficEvidence(input) {
           const statusDelta = (afterCounter.statuses[status] ?? 0) - (beforeCounter.statuses[status] ?? 0);
           counterDelta.statuses[status] = statusDelta;
           if (statusDelta !== 0) {
-            nonzero.push({ group, key, field: `statuses.${status}`, delta: statusDelta });
+            (GATED_TRAFFIC_COUNTER_GROUPS.has(group) ? nonzero : routeActivity).push({
+              group,
+              key,
+              field: `statuses.${status}`,
+              delta: statusDelta,
+            });
           }
         }
         delta[group][key] = counterDelta;
@@ -620,13 +635,13 @@ export function analyzeTrafficEvidence(input) {
 
   checks.push(
     check(
-      'zero-worker-and-r2-delta',
+      'zero-content-worker-and-r2-delta',
       nonzero,
-      'all Worker, cache, R2, byte, completion, failure, and status counter deltas equal zero',
+      'all content segment/object Worker, cache, R2, byte, completion, failure, and status counter deltas equal zero',
       before !== null && after !== null && nonzero.length === 0,
     ),
   );
-  return { pass: checks.every((item) => item.pass), checks, delta, nonzero };
+  return { pass: checks.every((item) => item.pass), checks, delta, nonzero, routeActivity };
 }
 
 export function combineAcceptanceSections(sections) {

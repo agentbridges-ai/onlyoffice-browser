@@ -163,6 +163,9 @@ describe('SW fetch routing', () => {
     expect(sw).toContain('sourceIdentity.sessionId === bind.sessionId');
     expect(sw).toContain('editorResourceBroker.handleBindMessage(bind, ports, commitHostIdentity)');
     expect(sw).toContain('if (hostAuthorized) editorClientIdentities.bindHost(sourceClientId, bind)');
+    expect(sw).toContain('parseEditorResourceBrokerUnbindMessage(event.data)');
+    expect(sw).toContain('editorClientIdentities?.unbindHost(sourceClientId, unbind)');
+    expect(sw).toContain('if (trusted) editorResourceBroker?.disconnect()');
     expect(sw).toContain("type: 'ONLYOFFICE_BROKER_NEEDED'");
     expect(sw).toContain('candidate?.releaseId === identity.releaseId');
     expect(sw).toContain('candidate.sessionId === identity.sessionId');

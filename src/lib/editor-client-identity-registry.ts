@@ -91,6 +91,17 @@ export class EditorClientIdentityRegistry {
     this.#clients.set(clientId, { ...identity });
   }
 
+  unbindHost(clientId: string, identity: EditorClientIdentity): boolean {
+    if (!clientId || !isIdentity(identity)) return false;
+    const boundClient = this.#clients.get(clientId);
+    if (!boundClient || !sameIdentity(boundClient, identity)) return false;
+    for (const [candidateClientId, candidateIdentity] of this.#clients) {
+      if (sameIdentity(candidateIdentity, identity)) this.#clients.delete(candidateClientId);
+    }
+    if (this.#boundIdentity && sameIdentity(this.#boundIdentity, identity)) this.#boundIdentity = null;
+    return true;
+  }
+
   resolve(options: ResolveEditorClientIdentityOptions): EditorClientIdentity | null {
     if (!options.clientId) return null;
     let identity = options.exactSourceIdentity;

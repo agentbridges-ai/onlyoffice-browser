@@ -16,6 +16,7 @@ import {
 } from './resource-broker-protocol';
 
 export const EDITOR_RESOURCE_BROKER_BIND_TYPE = 'ONLYOFFICE_BIND_BROKER' as const;
+export const EDITOR_RESOURCE_BROKER_UNBIND_TYPE = 'ONLYOFFICE_UNBIND_BROKER' as const;
 export const EDITOR_RESOURCE_BROKER_BOUND_TYPE = 'ONLYOFFICE_BROKER_BOUND' as const;
 export const EDITOR_RESOURCE_BROKER_BIND_ERROR_TYPE = 'ONLYOFFICE_BROKER_BIND_ERROR' as const;
 export const EDITOR_RESOURCE_BROKER_REQUEST_TIMEOUT_MS = 30_000;
@@ -30,6 +31,11 @@ export interface EditorResourceBrokerIdentity {
 export interface EditorResourceBrokerBindMessage extends EditorResourceBrokerIdentity {
   protocol: typeof RESOURCE_BROKER_PROTOCOL;
   type: typeof EDITOR_RESOURCE_BROKER_BIND_TYPE;
+}
+
+export interface EditorResourceBrokerUnbindMessage extends EditorResourceBrokerIdentity {
+  protocol: typeof RESOURCE_BROKER_PROTOCOL;
+  type: typeof EDITOR_RESOURCE_BROKER_UNBIND_TYPE;
 }
 
 export interface EditorResourceBrokerBoundMessage extends EditorResourceBrokerIdentity {
@@ -192,6 +198,25 @@ export function parseEditorResourceBrokerBindMessage(value: unknown): EditorReso
   return {
     protocol: RESOURCE_BROKER_PROTOCOL,
     type: EDITOR_RESOURCE_BROKER_BIND_TYPE,
+    releaseId: value.releaseId,
+    sessionId: value.sessionId,
+  };
+}
+
+export function parseEditorResourceBrokerUnbindMessage(value: unknown): EditorResourceBrokerUnbindMessage | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['protocol', 'type', 'releaseId', 'sessionId']) ||
+    value.protocol !== RESOURCE_BROKER_PROTOCOL ||
+    value.type !== EDITOR_RESOURCE_BROKER_UNBIND_TYPE ||
+    !isResourceBrokerReleaseId(value.releaseId) ||
+    !isResourceBrokerSessionId(value.sessionId)
+  ) {
+    return null;
+  }
+  return {
+    protocol: RESOURCE_BROKER_PROTOCOL,
+    type: EDITOR_RESOURCE_BROKER_UNBIND_TYPE,
     releaseId: value.releaseId,
     sessionId: value.sessionId,
   };

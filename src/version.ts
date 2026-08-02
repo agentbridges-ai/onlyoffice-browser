@@ -1,4 +1,4 @@
 declare const __ONLYOFFICE_BROWSER_VERSION__: string;
 
 export const ONLYOFFICE_BROWSER_VERSION =
-  typeof __ONLYOFFICE_BROWSER_VERSION__ === 'string' ? __ONLYOFFICE_BROWSER_VERSION__ : '0.5.7';
+  typeof __ONLYOFFICE_BROWSER_VERSION__ === 'string' ? __ONLYOFFICE_BROWSER_VERSION__ : '0.5.8';
