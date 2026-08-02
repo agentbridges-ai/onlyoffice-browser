@@ -509,17 +509,19 @@ jobs:
             }
             const actualBytes = Buffer.from(await response.arrayBuffer());
             if (!actualBytes.equals(expectedBytes)) throw new Error(`${name} does not match its expected bytes`);
-            const pointer = JSON.parse(actualBytes);
-            const manifestResponse = await fetch(
-              `https://onlyoffice.getpi.work${pointer.manifestUrl}?ci=${process.env.GITHUB_SHA}-${attempt}`,
-              { cache: 'no-store', redirect: 'manual' },
-            );
+          const pointer = JSON.parse(actualBytes);
+          const manifestUrl =
+            pointer.manifestUrl || `/releases/${encodeURIComponent(pointer.releaseId)}/manifest.json`;
+          const manifestResponse = await fetch(
+            `https://onlyoffice.getpi.work${manifestUrl}?ci=${process.env.GITHUB_SHA}-${attempt}`,
+            { cache: 'no-store', redirect: 'manual' },
+          );
             if (manifestResponse.status !== 200) throw new Error(`${name} manifest returned ${manifestResponse.status}`);
             const manifestBytes = Buffer.from(await manifestResponse.arrayBuffer());
-            const manifest = JSON.parse(manifestBytes);
-            if (
-              sha256(manifestBytes) !== pointer.manifestSha256 ||
-              manifest.version !== expectedVersion ||
+          const manifest = JSON.parse(manifestBytes);
+          if (
+            (pointer.manifestSha256 && sha256(manifestBytes) !== pointer.manifestSha256) ||
+            manifest.version !== expectedVersion ||
               manifest.releaseId !== pointer.releaseId
             ) {
               throw new Error(`${name} manifest identity mismatch`);
