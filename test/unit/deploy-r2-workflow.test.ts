@@ -130,6 +130,10 @@ describe('R2 release workflow', () => {
     expect(activation).toContain('"${RUNNER_TEMP}/onlyoffice-stable-v5-r2.json"');
     expect(verification).toContain('scripts/rclone-read-metadata.sh');
     expect(verification).toContain('"${RUNNER_TEMP}/onlyoffice-legacy-stable-final.json"');
+    expect(verification).toContain(
+      'pointer.manifestUrl || `/releases/${encodeURIComponent(pointer.releaseId)}/manifest.json`',
+    );
+    expect(verification).toContain('(pointer.manifestSha256 && sha256(manifestBytes) !== pointer.manifestSha256)');
     expect(verification).toContain("await verify('stable-v5.json', expectedV5, 5, attempt)");
     expect(verification).toContain("await verify('stable.json', expectedLegacy, 4, attempt)");
     expect(workflow).not.toMatch(/rclone_copyto_with_outer_retry[\s\S]*?\.onlyoffice-release\/channels\/stable\.json/);
