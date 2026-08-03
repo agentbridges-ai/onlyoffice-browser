@@ -674,6 +674,78 @@ test('Release v5 routes reproduce production MIME, cache, range, CAS, and immuta
   expect(contentObject.headers['x-content-sha256']).toBe(contentAsset!.sha256);
   expect(contentObject.headers['cache-control']).toContain('immutable');
 
+  // Exercise a complete multi-megabyte content-object stream in a real
+  // Chromium page. The range probe above can pass even when a streamed 200
+  // response advertises the wrong length or terminates early.
+  const largeContentObject = manifestResult.body.assets.find(
+    (asset) => asset.bytes > 8 * 1024 * 1024 && asset.representations?.whole?.sha256 === asset.sha256,
+  );
+  if (largeContentObject) {
+    const largeRead = await page.evaluate(
+      async ({ target, expectedBytes }) => {
+        const response = await fetch(target, { cache: 'no-store', credentials: 'omit' });
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+          .map((value) => value.toString(16).padStart(2, '0'))
+          .join('');
+        return {
+          status: response.status,
+          bytes: bytes.byteLength,
+          contentLength: response.headers.get('content-length'),
+          digest,
+          expectedBytes,
+        };
+      },
+      {
+        target: `${canonicalOrigin}/objects/${releaseId}/sha256/${largeContentObject.sha256}`,
+        expectedBytes: largeContentObject.bytes,
+      },
+    );
+    expect(largeRead).toEqual({
+      status: 200,
+      bytes: largeContentObject.bytes,
+      contentLength: String(largeContentObject.bytes),
+      digest: largeContentObject.sha256,
+      expectedBytes: largeContentObject.bytes,
+    });
+  }
+
+  const largePackageSegment = manifestResult.body.package.segments.find(
+    (candidate) => candidate.bytes > 8 * 1024 * 1024,
+  );
+  if (largePackageSegment) {
+    const packageRead = await page.evaluate(
+      async ({ target, expectedBytes, expectedSha256 }) => {
+        const response = await fetch(target, { cache: 'no-store', credentials: 'omit' });
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
+          .map((value) => value.toString(16).padStart(2, '0'))
+          .join('');
+        return {
+          status: response.status,
+          bytes: bytes.byteLength,
+          contentLength: response.headers.get('content-length'),
+          digest,
+          expectedBytes,
+          expectedSha256,
+        };
+      },
+      {
+        target: `${canonicalOrigin}/objects/${releaseId}/sha256/${largePackageSegment.sha256}`,
+        expectedBytes: largePackageSegment.bytes,
+        expectedSha256: largePackageSegment.sha256,
+      },
+    );
+    expect(packageRead).toEqual({
+      status: 200,
+      bytes: largePackageSegment.bytes,
+      contentLength: String(largePackageSegment.bytes),
+      digest: largePackageSegment.sha256,
+      expectedBytes: largePackageSegment.bytes,
+      expectedSha256: largePackageSegment.sha256,
+    });
+  }
+
   const host = await browserFetch<string>(page, `${editorOrigin}/r/${releaseId}/office-host.html`, { method: 'HEAD' });
   expect(host.status).toBe(200);
   expect(host.headers['content-type']).toBe('text/html; charset=utf-8');

@@ -808,7 +808,11 @@ export class CanonicalResourceInstaller implements OfficeRuntimeResourceInstalle
           this.attemptInterruption = 'timeout';
           attempt.abort();
         });
-        await this.store.installAndActivate(release.model, attempt.signal, packageTransport);
+        // A failed large HTTP/2 stream can leave an intermediary-specific
+        // connection state behind. Keep the first URL canonical, then add a
+        // deterministic retry query on subsequent installer attempts so the
+        // edge opens a fresh response without creating another CAS key.
+        await this.store.installAndActivate(release.model, attempt.signal, packageTransport, retryIndex);
         this.clearIdleTimeout();
         this.patch({
           phase: 'verifying',

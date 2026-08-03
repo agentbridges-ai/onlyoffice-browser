@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker, {
+  type LocalMatrixCounter,
   type ReleaseManifest,
   type WorkerEnv,
   applyReleaseMime,
@@ -540,6 +541,49 @@ describe('Cloudflare v5 release content object responses', () => {
         statuses: { '200': 1 },
       },
     });
+  });
+
+  it('keeps the production FixedLengthStream pipeline complete while counting R2 bytes', async () => {
+    class TestFixedLengthStream extends TransformStream<Uint8Array, Uint8Array> {
+      constructor(expectedBytes: number) {
+        let receivedBytes = 0;
+        super({
+          transform(chunk, controller) {
+            receivedBytes += chunk.byteLength;
+            if (receivedBytes > expectedBytes) throw new Error('too many bytes');
+            controller.enqueue(chunk);
+          },
+          flush() {
+            if (receivedBytes !== expectedBytes) throw new Error('too few bytes');
+          },
+        });
+      }
+    }
+    vi.stubGlobal('FixedLengthStream', TestFixedLengthStream);
+    const { env } = testEnvironment();
+    const url = `https://onlyoffice.getpi.work/objects/${releaseId}/sha256/${sha256}`;
+    const beforeCounters = await fetchWorker(
+      new Request('https://onlyoffice.getpi.work/__matrix__/object-counters'),
+      env,
+    );
+    const before = ((await beforeCounters.json()) as Record<string, LocalMatrixCounter>)[`${releaseId}:${sha256}`] || {
+      actualBytes: 0,
+      r2Bytes: 0,
+      completed: 0,
+      aborted: 0,
+      failed: 0,
+    };
+    const response = await fetchWorker(new Request(url), env);
+    expect(response.status).toBe(200);
+    expect(Array.from(new Uint8Array(await response.arrayBuffer()))).toEqual(Array.from(objectBytes));
+
+    const counters = await fetchWorker(new Request('https://onlyoffice.getpi.work/__matrix__/object-counters'), env);
+    const after = ((await counters.json()) as Record<string, LocalMatrixCounter>)[`${releaseId}:${sha256}`];
+    expect(after.completed - before.completed).toBe(1);
+    expect(after.aborted - before.aborted).toBe(0);
+    expect(after.failed - before.failed).toBe(0);
+    expect(after.actualBytes - before.actualBytes).toBe(objectBytes.byteLength);
+    expect(after.r2Bytes - before.r2Bytes).toBe(objectBytes.byteLength);
   });
 
   it('switches the local v5 pointer only after token, identity, and manifest digest verification', async () => {

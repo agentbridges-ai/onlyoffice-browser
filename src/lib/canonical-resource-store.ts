@@ -20,6 +20,7 @@ export const CANONICAL_CONTENT_DIGEST_HEADER = 'x-onlyoffice-content-sha256';
 export const CANONICAL_CONTENT_BYTES_HEADER = 'x-onlyoffice-content-bytes';
 
 const DEFAULT_CACHE_KEY_ORIGIN = 'https://onlyoffice.getpi.work';
+const TRANSFER_RETRY_QUERY = '__onlyoffice_transfer_retry';
 const JOURNAL_DATABASE_NAME = 'onlyoffice-content-journal-v2';
 const JOURNAL_DATABASE_VERSION = 1;
 const JOURNAL_LOCK_NAME = 'onlyoffice-content-journal-v2';
@@ -214,6 +215,14 @@ export interface CanonicalPackageTransport {
 
 function cloneDescriptor(object: ContentObjectDescriptor): ContentObjectDescriptor {
   return { ...object };
+}
+
+function transferInputForAttempt(input: RequestInfo | URL, attempt: number): RequestInfo | URL {
+  if (!Number.isSafeInteger(attempt) || attempt <= 0) return input;
+  const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  const url = new URL(href);
+  url.searchParams.set(TRANSFER_RETRY_QUERY, String(attempt));
+  return url;
 }
 
 function cloneRecord(object: ContentObjectRecord): ContentObjectRecord {
@@ -1667,9 +1676,10 @@ export class CanonicalResourceStore {
     model: ReleaseContentModel,
     signal?: AbortSignal,
     packageTransport?: CanonicalPackageTransport,
+    transferAttempt = 0,
   ): Promise<ReleaseTransactionRecord> {
     return withExclusiveLock(`${RELEASE_LOCK_PREFIX}${model.releaseId}`, this.locks, () =>
-      this.prepareReleaseLocked(model, signal, packageTransport),
+      this.prepareReleaseLocked(model, signal, packageTransport, transferAttempt),
     );
   }
 
@@ -1677,9 +1687,10 @@ export class CanonicalResourceStore {
     model: ReleaseContentModel,
     signal?: AbortSignal,
     packageTransport?: CanonicalPackageTransport,
+    transferAttempt = 0,
   ): Promise<ReleaseTransactionRecord> {
     return withExclusiveLock(`${RELEASE_LOCK_PREFIX}${model.releaseId}`, this.locks, async () => {
-      const prepared = await this.prepareReleaseLocked(model, signal, packageTransport);
+      const prepared = await this.prepareReleaseLocked(model, signal, packageTransport, transferAttempt);
       if (prepared.state === 'active') return prepared;
       if (prepared.state === 'retained') {
         return this.journal.reactivateRetainedRelease(model.releaseId);
@@ -1725,6 +1736,7 @@ export class CanonicalResourceStore {
     model: ReleaseContentModel,
     signal?: AbortSignal,
     packageTransport?: CanonicalPackageTransport,
+    transferAttempt = 0,
   ): Promise<ReleaseTransactionRecord> {
     let transaction = await this.journal.getTransaction(model.releaseId);
     try {
@@ -1777,9 +1789,16 @@ export class CanonicalResourceStore {
           },
           transaction.state === 'installing',
           signal,
+          transferAttempt,
         );
       } else {
-        await this.installObjects(transaction.releaseId, missingObjects, transaction.state === 'installing', signal);
+        await this.installObjects(
+          transaction.releaseId,
+          missingObjects,
+          transaction.state === 'installing',
+          signal,
+          transferAttempt,
+        );
       }
 
       transaction = (await this.journal.getTransaction(model.releaseId))!;
@@ -2197,6 +2216,7 @@ export class CanonicalResourceStore {
     plan: Pick<ReleaseContentPlan, 'mappings' | 'missingObjects'>,
     recordInJournal: boolean,
     signal?: AbortSignal,
+    transferAttempt = 0,
   ): Promise<void> {
     if (plan.missingObjects.length === 0) return;
     const ingest = createCanonicalPackageIngestPlan(model, transport, plan);
@@ -2263,11 +2283,14 @@ export class CanonicalResourceStore {
       throwIfAborted();
       let response: Response;
       try {
-        response = await this.fetchImplementation(this.objectUrl(releaseId, descriptor), {
-          cache: 'no-store',
-          credentials: 'omit',
-          signal,
-        });
+        response = await this.fetchImplementation(
+          transferInputForAttempt(this.objectUrl(releaseId, descriptor), transferAttempt),
+          {
+            cache: 'no-store',
+            credentials: 'omit',
+            signal,
+          },
+        );
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') throw error;
         throw new CanonicalResourceStoreError('network', `failed to download package segment ${descriptor.sha256}`, {
@@ -2538,6 +2561,7 @@ export class CanonicalResourceStore {
     object: ContentObjectDescriptor,
     recordInJournal: boolean,
     signal?: AbortSignal,
+    transferAttempt = 0,
   ): Promise<void> {
     assertDigest(object.sha256);
     if (!Number.isSafeInteger(object.bytes) || object.bytes < 0) {
@@ -2551,11 +2575,14 @@ export class CanonicalResourceStore {
 
       let response: Response;
       try {
-        response = await this.fetchImplementation(this.objectUrl(releaseId, object), {
-          cache: 'no-store',
-          credentials: 'omit',
-          signal,
-        });
+        response = await this.fetchImplementation(
+          transferInputForAttempt(this.objectUrl(releaseId, object), transferAttempt),
+          {
+            cache: 'no-store',
+            credentials: 'omit',
+            signal,
+          },
+        );
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') throw error;
         throw new CanonicalResourceStoreError('network', `failed to download object ${object.sha256}`, {
@@ -2666,6 +2693,7 @@ export class CanonicalResourceStore {
     objects: ContentObjectDescriptor[],
     recordInJournal: boolean,
     signal?: AbortSignal,
+    transferAttempt = 0,
   ): Promise<void> {
     if (objects.length === 0) return;
     const controller = new AbortController();
@@ -2682,7 +2710,7 @@ export class CanonicalResourceStore {
         const object = objects[index];
         if (!object) return;
         try {
-          await this.installObject(releaseId, object, recordInJournal, controller.signal);
+          await this.installObject(releaseId, object, recordInJournal, controller.signal, transferAttempt);
         } catch (error) {
           if (firstFailure === undefined) firstFailure = error;
           return;
