@@ -94,6 +94,13 @@ describe('build-onlyoffice-runtime-assets', () => {
     expect(mod.getRuntimeAssetPack('dictionaries/fr_FR/fr_FR.dic')).toBeNull();
     expect(mod.getRuntimeAssetPack('fonts/000.ttf')).toBeNull();
     expect(mod.getRuntimeAssetPack('server/FileConverter/bin/font_selection.bin')).toBeNull();
+    expect(mod.getRuntimeAssetPack('sdkjs/common/libfont/engine/fonts_ie.js')).toBeNull();
+    expect(mod.getRuntimeAssetPack('web-apps/apps/documenteditor/main/ie/app.js')).toBeNull();
+    expect(mod.getRuntimeAssetPack('web-apps/vendor/monaco/monaco-for-ie/min/vs/loader.js')).toBeNull();
+    expect(mod.getRuntimeAssetPack('web-apps/vendor/monaco/monaco/min/vs/loader.js')).toBe('core');
+    expect(mod.getRuntimeAssetPack('web-apps/apps/common/main/lib/util/fix-ie-compat.js')).toBeNull();
+    expect(mod.getRuntimeAssetPack('sdkjs/word/sdk-all.js.br')).toBeNull();
+    expect(mod.getRuntimeAssetPack('sdkjs/word/sdk-all.js.map')).toBeNull();
     expect(
       mod.getRuntimeAssetPack('web-apps/apps/spreadsheeteditor/main/resources/help/en/images/lookup_function.gif'),
     ).toBeNull();
@@ -144,6 +151,11 @@ describe('build-onlyoffice-runtime-assets', () => {
     touch(input, 'web-apps/apps/spreadsheeteditor/main/resources/help/en/images/large.gif');
     touch(input, 'sdkjs/word/sdk-all.js');
     touch(input, 'sdkjs/cell/sdk-all.js');
+    touch(input, 'sdkjs/common/libfont/engine/fonts_ie.js');
+    touch(input, 'web-apps/apps/documenteditor/main/ie/app.js');
+    touch(input, 'web-apps/vendor/monaco/monaco-for-ie/min/vs/loader.js');
+    touch(input, 'sdkjs/word/sdk-all.js.br');
+    touch(input, 'sdkjs/word/sdk-all.js.map');
     touch(input, 'sdkjs/pdf/src/engine/drawingfile.wasm');
     touch(input, 'dictionaries/en_US/en_US.dic');
     touch(input, 'dictionaries/fr_FR/fr_FR.dic');
@@ -176,6 +188,11 @@ describe('build-onlyoffice-runtime-assets', () => {
     expect(exists(input, 'sw.js')).toBe(true);
     expect(manifest.assets.some((asset) => asset.path === 'sw.js')).toBe(false);
     expect(exists(input, 'sdkjs/pdf/src/engine/drawingfile.wasm')).toBe(false);
+    expect(exists(input, 'sdkjs/common/libfont/engine/fonts_ie.js')).toBe(false);
+    expect(exists(input, 'web-apps/apps/documenteditor/main/ie/app.js')).toBe(false);
+    expect(exists(input, 'web-apps/vendor/monaco/monaco-for-ie/min/vs/loader.js')).toBe(false);
+    expect(exists(input, 'sdkjs/word/sdk-all.js.br')).toBe(false);
+    expect(exists(input, 'sdkjs/word/sdk-all.js.map')).toBe(false);
     expect(exists(input, 'dictionaries/fr_FR/fr_FR.dic')).toBe(false);
     expect(exists(input, emptySprite)).toBe(false);
     expect(exists(input, 'web-apps/apps/spreadsheeteditor/main/resources/help/en/images/large.gif')).toBe(false);

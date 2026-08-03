@@ -164,6 +164,19 @@ function isHelpAsset(relativePath) {
   return /\/resources\/help\//.test(relativePath);
 }
 
+// Piwork targets current Chromium/Safari PWA runtimes. These files are only
+// selected by the legacy Internet Explorer branch of the upstream editor and
+// are never requested by the supported Word/Cell/Slide browser paths. Keep
+// modern Monaco (used by macro dialogs), but drop its IE-only copy.
+function isLegacyCompatibilityAsset(relativePath) {
+  return (
+    /(?:^|\/)(?:ie)(?:\/|$)/i.test(relativePath) ||
+    /(?:^|\/)[^/]+_ie\.(?:css|js|wasm)$/i.test(relativePath) ||
+    relativePath === 'web-apps/apps/common/main/lib/util/fix-ie-compat.js' ||
+    relativePath.startsWith('web-apps/vendor/monaco/monaco-for-ie/')
+  );
+}
+
 function dictionaryPack(relativePath, dictionaries) {
   if (!relativePath.startsWith('dictionaries/')) return null;
   const locale = relativePath.slice('dictionaries/'.length).split('/')[0];
@@ -177,6 +190,10 @@ export function getRuntimeAssetPack(relativePath, options = {}) {
   const keepHelp = Boolean(options.keepHelp);
 
   if (!isRuntimeAsset(normalized)) return null;
+  if (isLegacyCompatibilityAsset(normalized)) return null;
+  // The release Worker negotiates compression at the HTTP layer. Never ship
+  // precompressed/source-map copies inside the canonical all-in-one package.
+  if (normalized.endsWith('.br') || normalized.endsWith('.map')) return null;
   if (!keepHelp && isHelpAsset(normalized)) return null;
   if (normalized.startsWith('fonts/')) return null;
   if (normalized.startsWith('server/FileConverter/')) return null;
