@@ -61,7 +61,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Read package release identity
-        run: echo "ONLYOFFICE_PACKAGE_VERSION=$(node -p \"require('./package.json').version\")" >> "${GITHUB_ENV}"
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          echo "ONLYOFFICE_PACKAGE_VERSION=${PACKAGE_VERSION}" >> "${GITHUB_ENV}"
       - name: Initialize reproducible build metadata
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "${GITHUB_ENV}"
       - uses: pnpm/action-setup@v4
