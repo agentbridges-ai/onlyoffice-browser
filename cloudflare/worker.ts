@@ -783,26 +783,28 @@ function countR2Body(
   ).FixedLengthStream;
   if (FixedLengthStreamConstructor) {
     const fixed = new FixedLengthStreamConstructor(expectedBytes);
-    const reader = body.getReader();
-    const writer = fixed.writable.getWriter();
-    void (async () => {
-      try {
-        while (true) {
-          const result = await reader.read();
-          if (result.done) break;
-          const chunk =
-            result.value instanceof Uint8Array ? result.value : new Uint8Array(result.value as unknown as ArrayBuffer);
+    // Keep the source-to-response pump as one stream pipeline. A detached
+    // reader/writer task can outlive the Worker response and intermittently
+    // reset large HTTP/2 streams before the FixedLengthStream reaches its
+    // declared byte count. pipeTo() keeps backpressure and the response body
+    // lifecycle connected while still allowing the matrix counters to observe
+    // every R2 chunk.
+    const counted = body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(value, controller) {
+          const chunk = value instanceof Uint8Array ? value : new Uint8Array(value as unknown as ArrayBuffer);
           recordMatrixBytes(counters, chunk.byteLength);
-          await writer.write(chunk);
-        }
-        await writer.close();
-        completeMatrixRequest(counters, status);
-      } catch {
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+    void counted.pipeTo(fixed.writable).then(
+      () => completeMatrixRequest(counters, status),
+      () => {
         recordMatrixStatus(counters, status);
         for (const counter of counters) counter.aborted += 1;
-        await Promise.allSettled([reader.cancel(), writer.abort()]);
-      }
-    })();
+      },
+    );
     return fixed.readable;
   }
   const reader = body.getReader();

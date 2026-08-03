@@ -254,6 +254,30 @@ describe('canonical resource store', () => {
     });
   });
 
+  it('uses a fresh release-bound URL only after a failed transfer attempt', async () => {
+    const bytes = body('retryable-stream');
+    const target = release('release-retry-url', [{ path: 'sdkjs/word/word.js', bytes }]);
+    const cache = memoryCacheStorage();
+    const journal = new MemoryCanonicalResourceJournal();
+    let calls = 0;
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL) => {
+      calls += 1;
+      const url = new URL(String(input));
+      if (calls === 1) throw new TypeError('simulated HTTP/2 stream reset');
+      expect(url.searchParams.get('__onlyoffice_transfer_retry')).toBe('1');
+      return strictStreamingResponse(bytes, [4]);
+    }) as unknown as typeof fetch;
+    const store = createStore({ cache, journal, fetch: fetchImplementation });
+
+    await expect(store.installAndActivate(target)).rejects.toMatchObject({ code: 'network' });
+    await expect(store.installAndActivate(target, undefined, undefined, 1)).resolves.toMatchObject({
+      releaseId: target.releaseId,
+      state: 'active',
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(cache.entries).toHaveLength(1);
+  });
+
   it('completes a real readiness read without waiting for large Cache Storage cancellation', async () => {
     const bytes = body('persisted-large-object-probe');
     const target = release('release-probe', [{ path: 'sdkjs/word/word.js', bytes }]);

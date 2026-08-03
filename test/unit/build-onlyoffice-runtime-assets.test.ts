@@ -106,6 +106,26 @@ describe('build-onlyoffice-runtime-assets', () => {
     ).toBeNull();
   });
 
+  it('keeps the current OnlyOffice macro editor and its modern Monaco runtime in the core pack', async () => {
+    const mod = await modulePromise;
+    const macroEntry = fs.readFileSync(path.resolve('public/web-apps/apps/documenteditor/main/code.js'), 'utf8');
+
+    // v9.3 switched the macro dialog to Monaco. This is a runtime contract,
+    // not a preference: pruning any of these files makes macros fail only
+    // after the editor has mounted, so keep the check close to the pack policy.
+    expect(macroEntry).toContain('Common.UI.MonacoEditor');
+    for (const relativePath of [
+      'web-apps/vendor/monaco/monaco.js',
+      'web-apps/vendor/monaco/MonacoEditor.html',
+      'web-apps/vendor/monaco/MonacoEditor.js',
+      'web-apps/vendor/monaco/MonacoEditorCode.js',
+      'web-apps/vendor/monaco/monaco/min/vs/loader.js',
+      'web-apps/vendor/monaco/monaco/min/vs/editor/editor.main.js',
+    ]) {
+      expect(mod.getRuntimeAssetPack(relativePath), relativePath).toBe('core');
+    }
+  });
+
   it('allows selected dictionaries and help resources when explicitly requested', async () => {
     const mod = await modulePromise;
 
