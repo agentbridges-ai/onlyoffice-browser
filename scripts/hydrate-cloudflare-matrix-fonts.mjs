@@ -15,14 +15,19 @@ const localFontRoot = process.env.ONLYOFFICE_MATRIX_FONT_ASSETS_DIR
   ? path.resolve(process.env.ONLYOFFICE_MATRIX_FONT_ASSETS_DIR)
   : '';
 const fontProfiles = new Set(['fonts-basic', 'fonts-office-compat']);
+const DEFAULT_FONT_DOWNLOAD_CONCURRENCY = 3;
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
-export async function fetchWithRetry(url, consume = (response) => response, retryDelays = [1_000, 3_000]) {
+export async function fetchWithRetry(
+  url,
+  consume = (response) => response,
+  retryDelays = [1_000, 3_000, 10_000, 30_000],
+) {
   let lastError;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);
     try {
@@ -39,6 +44,12 @@ export async function fetchWithRetry(url, consume = (response) => response, retr
     }
   }
   throw new Error(`Unable to download ${url}: ${lastError}`);
+}
+
+function fontDownloadConcurrency() {
+  const parsed = Number.parseInt(process.env.ONLYOFFICE_MATRIX_FONT_CONCURRENCY || '', 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return DEFAULT_FONT_DOWNLOAD_CONCURRENCY;
+  return Math.min(parsed, 6);
 }
 
 async function readRelease() {
@@ -110,8 +121,9 @@ async function downloadAsset(releaseId, asset) {
 async function hydrateCache(releaseId, assets) {
   let cursor = 0;
   let downloaded = 0;
+  const concurrency = Math.min(fontDownloadConcurrency(), assets.length);
   await Promise.all(
-    Array.from({ length: 6 }, async () => {
+    Array.from({ length: concurrency }, async () => {
       while (cursor < assets.length) {
         const asset = assets[cursor++];
         if (await downloadAsset(releaseId, asset)) downloaded += 1;
