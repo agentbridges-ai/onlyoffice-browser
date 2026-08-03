@@ -436,12 +436,126 @@ export function inspectRcloneObject(remote, object, { rcloneBinary = 'rclone', s
   });
 }
 
+/**
+ * Read the remote object index without transferring object bodies.  R2 object
+ * names are immutable CAS identities, so the incremental verifier can use a
+ * pre-upload inventory to distinguish objects that were already verified in a
+ * previous publication from objects introduced by this release.
+ */
+export function inspectRcloneInventory(remote, { rcloneBinary = 'rclone', spawnImpl = spawn } = {}) {
+  if (typeof remote !== 'string' || !remote.includes(':')) throw new TypeError('Invalid rclone remote');
+  const target = remote.replace(/\/+$/, '');
+  return new Promise((resolve, reject) => {
+    const child = spawnImpl(rcloneBinary, ['lsjson', target, '--recursive', '--files-only', '--no-modtime'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk) => {
+      if (stderr.length < 16 * 1024) stderr += chunk.toString('utf8');
+    });
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (code !== 0) {
+        reject(new Error(`rclone lsjson failed (${signal || code}): ${stderr.trim() || 'no diagnostic'}`));
+        return;
+      }
+      try {
+        const entries = JSON.parse(stdout || '[]');
+        if (!Array.isArray(entries)) throw new Error('rclone lsjson returned a non-array payload');
+        const inventory = new Map();
+        for (const entry of entries) {
+          const key = typeof entry?.Path === 'string' ? entry.Path : typeof entry?.Name === 'string' ? entry.Name : '';
+          if (!key || entry?.IsDir === true) continue;
+          if (!Number.isSafeInteger(entry?.Size) || entry.Size < 0) {
+            throw new Error(`rclone lsjson returned an invalid size for ${key}`);
+          }
+          inventory.set(key.replace(/^\/+/, ''), { bytes: entry.Size });
+        }
+        resolve(inventory);
+      } catch (error) {
+        reject(
+          new Error(`rclone lsjson returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`),
+        );
+      }
+    });
+  });
+}
+
+/**
+ * Validate the post-upload inventory and return only objects whose bodies
+ * need a SHA-256 transfer.  Existing CAS objects are still checked for
+ * presence and exact size; their bodies are audited by the periodic full mode.
+ */
+export function planIncrementalRemoteVerification(objects, beforeInventory, afterInventory) {
+  const toHash = [];
+  let reusedObjects = 0;
+  let reusedBytes = 0;
+  for (const object of objects) {
+    const after = afterInventory.get(object.key);
+    if (!after) fail(`Remote immutable object is missing from the inventory: ${object.key}`);
+    if (after.bytes !== object.bytes) {
+      fail(
+        `Remote immutable object has the wrong size for ${object.key}: expected ${object.bytes}, received ${after.bytes}`,
+      );
+    }
+    const before = beforeInventory.get(object.key);
+    if (before && before.bytes === object.bytes) {
+      reusedObjects += 1;
+      reusedBytes += object.bytes;
+    } else {
+      toHash.push(object);
+    }
+  }
+  return { toHash, reusedObjects, reusedBytes };
+}
+
 export async function verifyRemoteRelease(publication, remote, options = {}) {
   if (typeof remote !== 'string' || !remote.includes(':')) throw new TypeError('Invalid rclone remote');
-  return verifyObjects(publication.objects, (object) => inspectRcloneObject(remote, object, options), {
+  const mode = options.remoteVerificationMode || 'full';
+  if (mode !== 'full' && mode !== 'incremental') {
+    throw new TypeError(`Unknown remote verification mode: ${mode}`);
+  }
+  if (mode === 'full') {
+    return verifyObjects(publication.objects, (object) => inspectRcloneObject(remote, object, options), {
+      concurrency: options.concurrency || 4,
+      label: 'Remote immutable object',
+    });
+  }
+  if (typeof options.remoteInventoryPath !== 'string' || !options.remoteInventoryPath) {
+    throw new TypeError('Incremental remote verification requires --remote-inventory');
+  }
+  const beforeBytes = fs.readFileSync(options.remoteInventoryPath, 'utf8');
+  let beforeEntries;
+  try {
+    beforeEntries = JSON.parse(beforeBytes || '[]');
+  } catch (error) {
+    throw new Error(
+      `Incremental remote inventory is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!Array.isArray(beforeEntries)) throw new TypeError('Incremental remote inventory must be an array');
+  const beforeInventory = new Map(
+    beforeEntries
+      .filter((entry) => typeof entry?.Path === 'string' && Number.isSafeInteger(entry?.Size) && entry.Size >= 0)
+      .map((entry) => [entry.Path.replace(/^\/+/, ''), { bytes: entry.Size }]),
+  );
+  const afterInventory = await inspectRcloneInventory(remote, options);
+  const plan = planIncrementalRemoteVerification(publication.objects, beforeInventory, afterInventory);
+  const result = await verifyObjects(plan.toHash, (object) => inspectRcloneObject(remote, object, options), {
     concurrency: options.concurrency || 4,
     label: 'Remote immutable object',
   });
+  return {
+    objects: publication.objects.length,
+    bytes: result.bytes + plan.reusedBytes,
+    verifiedObjects: result.objects,
+    reusedObjects: plan.reusedObjects,
+    reusedBytes: plan.reusedBytes,
+  };
 }
 
 function option(name, fallback) {
@@ -465,9 +579,14 @@ if (isMain) {
     const remoteResult = await verifyRemoteRelease(publication, remote, {
       concurrency,
       rcloneBinary: option('--rclone-bin', 'rclone'),
+      remoteVerificationMode: option('--remote-verification-mode', 'full'),
+      remoteInventoryPath: option('--remote-inventory'),
     });
     console.log(
-      `Verified ${remoteResult.objects} remote immutable objects (${remoteResult.bytes} bytes) for ${publication.releaseId}`,
+      `Verified ${remoteResult.objects} remote immutable objects (${remoteResult.bytes} bytes) for ${publication.releaseId}` +
+        (remoteResult.reusedObjects === undefined
+          ? ''
+          : `; hashed ${remoteResult.verifiedObjects} new/replaced objects, reused ${remoteResult.reusedObjects}`),
     );
   }
 }

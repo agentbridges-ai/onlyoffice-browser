@@ -11,7 +11,8 @@ import * as publicationVerifier from '../../scripts/verify-release-publication.m
 // @ts-expect-error JavaScript verification script has no declaration output.
 import { verifyReleaseHttp } from '../../scripts/verify-release-http.mjs';
 
-const { hashFile, loadReleasePublication, verifyLocalRelease, verifyObjects } = publicationVerifier;
+const { hashFile, loadReleasePublication, planIncrementalRemoteVerification, verifyLocalRelease, verifyObjects } =
+  publicationVerifier;
 
 const temporaryDirectories: string[] = [];
 
@@ -111,6 +112,46 @@ describe('Release Manifest v5 publication verification', () => {
       }),
     ).rejects.toThrow(/Remote immutable object verification failed/);
     expect(inspect).toHaveBeenCalled();
+  });
+
+  it('hashes only new CAS objects while checking reused objects by inventory and size', () => {
+    const { output } = fixture();
+    const publication = loadReleasePublication(output, {
+      expectedPackageVersion: '0.5.7',
+      fastCdcEvidenceMode: 'forbid',
+    });
+    const beforeInventory = new Map(
+      publication.objects.map((object: { key: string; bytes: number }) => [object.key, { bytes: object.bytes }]),
+    );
+    const changed = publication.objects[0];
+    beforeInventory.delete(changed.key);
+    const afterInventory = new Map(
+      publication.objects.map((object: { key: string; bytes: number }) => [object.key, { bytes: object.bytes }]),
+    );
+
+    const plan = planIncrementalRemoteVerification(publication.objects, beforeInventory, afterInventory);
+    expect(plan.toHash).toEqual([changed]);
+    expect(plan.reusedObjects).toBe(publication.objects.length - 1);
+    expect(plan.reusedBytes).toBe(
+      publication.objects.reduce((total: number, object: { bytes: number }) => total + object.bytes, 0) - changed.bytes,
+    );
+  });
+
+  it('fails closed when the post-upload inventory is missing or has a wrong size', () => {
+    const { output } = fixture();
+    const publication = loadReleasePublication(output, {
+      expectedPackageVersion: '0.5.7',
+      fastCdcEvidenceMode: 'forbid',
+    });
+    const beforeInventory = new Map();
+    const afterInventory = new Map(
+      publication.objects.map((object: { key: string; bytes: number }) => [object.key, { bytes: object.bytes }]),
+    );
+    afterInventory.set(publication.objects[0].key, { bytes: publication.objects[0].bytes + 1 });
+
+    expect(() => planIncrementalRemoteVerification(publication.objects, beforeInventory, afterInventory)).toThrow(
+      /wrong size/,
+    );
   });
 
   it('fails closed if a small whole-file CAS asset is unnecessarily FastCDC chunked', () => {

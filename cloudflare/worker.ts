@@ -49,11 +49,13 @@ export type LocalMatrixCounter = {
   completed: number;
   aborted: number;
   failed: number;
+  stalled: number;
   statuses: Record<string, number>;
 };
 const localMatrixSegmentCounters = new Map<string, LocalMatrixCounter>();
 const localMatrixObjectCounters = new Map<string, LocalMatrixCounter>();
 const localMatrixRouteCounters = new Map<string, LocalMatrixCounter>();
+const localMatrixStalledObjects = new Set<string>();
 
 type R2ObjectLike = {
   body?: ReadableStream;
@@ -130,6 +132,10 @@ export type WorkerEnv = {
   LOCAL_MATRIX_PORT?: string;
   LOCAL_MATRIX_CONTROL_TOKEN?: string;
   LOCAL_MATRIX_R2_DELAY_MS?: string;
+  LOCAL_MATRIX_R2_STALL_KEY?: string;
+  LOCAL_MATRIX_R2_STALL_AFTER_BYTES?: string;
+  LOCAL_MATRIX_R2_STALL_MS?: string;
+  LOCAL_MATRIX_R2_STALL_ONCE?: string;
 };
 
 type WorkerExecutionContext = {
@@ -732,6 +738,7 @@ function localMatrixCounter(counters: Map<string, LocalMatrixCounter>, key: stri
       completed: 0,
       aborted: 0,
       failed: 0,
+      stalled: 0,
       statuses: {},
     };
     counters.set(key, counter);
@@ -836,6 +843,50 @@ function countR2Body(
         for (const counter of counters) counter.aborted += 1;
       }
       await reader.cancel(reason);
+    },
+  });
+}
+
+function maybeStallLocalMatrixBody(
+  body: ReadableStream,
+  env: WorkerEnv,
+  objectKey: string,
+  counters: LocalMatrixCounter[],
+): ReadableStream {
+  if (env.LOCAL_MATRIX_MODE !== '1') return body;
+  const configuredKey = env.LOCAL_MATRIX_R2_STALL_KEY?.trim() || '';
+  const keyMatches =
+    configuredKey === '*' || configuredKey === objectKey || objectKey.endsWith(`/sha256/${configuredKey}`);
+  if (!configuredKey || !keyMatches) return body;
+  const afterBytes = Number.parseInt(env.LOCAL_MATRIX_R2_STALL_AFTER_BYTES || '1', 10);
+  const stallMs = Number.parseInt(env.LOCAL_MATRIX_R2_STALL_MS || '0', 10);
+  if (!Number.isSafeInteger(afterBytes) || afterBytes <= 0 || !Number.isSafeInteger(stallMs) || stallMs <= 0)
+    return body;
+  const once = env.LOCAL_MATRIX_R2_STALL_ONCE === '1';
+  const stallToken = `${objectKey}:${configuredKey}:${afterBytes}:${stallMs}`;
+  if (once && localMatrixStalledObjects.has(stallToken)) return body;
+  if (once) localMatrixStalledObjects.add(stallToken);
+  for (const counter of counters) counter.stalled += 1;
+  const reader = body.getReader();
+  let seenBytes = 0;
+  let stalled = false;
+  return new ReadableStream({
+    async pull(controller) {
+      const result = await reader.read();
+      if (result.done) {
+        controller.close();
+        return;
+      }
+      const value = result.value instanceof Uint8Array ? result.value : new Uint8Array(result.value as ArrayBuffer);
+      seenBytes += value.byteLength;
+      controller.enqueue(value);
+      if (!stalled && seenBytes >= afterBytes) {
+        stalled = true;
+        await new Promise((resolve) => setTimeout(resolve, stallMs));
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
     },
   });
 }
@@ -1036,7 +1087,15 @@ async function serveAsset(
   } else {
     headers.set('Content-Length', String(publicSize));
   }
-  const response = new Response(countR2Body(object.body, matrixCounters, status, declaredBytes), { status, headers });
+  const response = new Response(
+    countR2Body(
+      maybeStallLocalMatrixBody(object.body, env, key, matrixCounters),
+      matrixCounters,
+      status,
+      declaredBytes,
+    ),
+    { status, headers },
+  );
   if (cacheable) ctx.waitUntil(cache.put(cacheKey, response.clone()).catch(() => undefined));
   return response;
 }
