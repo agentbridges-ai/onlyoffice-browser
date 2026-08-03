@@ -379,6 +379,44 @@ describe('Release Manifest v4 Office Pack', () => {
     });
   });
 
+  it('cancels and retries a package segment whose body stops yielding bytes', async () => {
+    const release = packageManifest('v0.5.0-stalled-segment');
+    const fallback = packageFetch(release);
+    let segmentAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (!url.pathname.startsWith('/segments/sha256/')) return fallback(input, init);
+      segmentAttempts += 1;
+      if (segmentAttempts === 1) {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(packBody.slice(0, 1));
+          },
+        });
+        return new Response(stream, {
+          headers: { 'Content-Length': String(packBody.byteLength) },
+        });
+      }
+      return fallback(input, init);
+    });
+    const installer = new TransactionalResourceInstaller({
+      assetBaseUrl: 'https://onlyoffice.example.test',
+      fetch: fetchMock as unknown as typeof fetch,
+      journal: new MemoryInstallationJournal(),
+      storageMode: 'http-cache',
+      timeoutMs: 20,
+      retryDelaysMs: [1],
+    });
+    await installer.initialize();
+    await installer.apply(await installer.plan({ scope: 'all' }));
+    expect(installer.getInstallerSnapshot()).toMatchObject({
+      readiness: 'ready',
+      downloadedBytes: packBody.byteLength,
+      verifiedBytes: packBody.byteLength,
+    });
+    expect(segmentAttempts).toBe(2);
+  });
+
   it.each(['cache-storage', 'http-cache'] as const)(
     'reuses unchanged content-addressed segments across releases in %s mode',
     async (storageMode) => {
