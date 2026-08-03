@@ -668,6 +668,20 @@ async function main() {
       ...(process.env.ONLYOFFICE_CF_MATRIX_R2_DELAY_MS
         ? ['--var', `LOCAL_MATRIX_R2_DELAY_MS:${process.env.ONLYOFFICE_CF_MATRIX_R2_DELAY_MS}`]
         : []),
+      ...(process.env.ONLYOFFICE_CF_MATRIX_STALL_TEST === '1' || process.env.ONLYOFFICE_CF_MATRIX_STALL_SEGMENT
+        ? [
+            '--var',
+            `LOCAL_MATRIX_R2_STALL_KEY:${
+              process.env.ONLYOFFICE_CF_MATRIX_STALL_SEGMENT || releaseManifest.package.segments[0].sha256
+            }`,
+            '--var',
+            `LOCAL_MATRIX_R2_STALL_AFTER_BYTES:${process.env.ONLYOFFICE_CF_MATRIX_STALL_AFTER_BYTES || '1'}`,
+            '--var',
+            `LOCAL_MATRIX_R2_STALL_MS:${process.env.ONLYOFFICE_CF_MATRIX_STALL_MS || '5000'}`,
+            '--var',
+            `LOCAL_MATRIX_R2_STALL_ONCE:${process.env.ONLYOFFICE_CF_MATRIX_STALL_ONCE || '1'}`,
+          ]
+        : []),
     ]),
   );
   await waitForServer(
@@ -757,6 +771,12 @@ async function main() {
       ONLYOFFICE_CF_MATRIX_CONTROL_TOKEN: token,
       ONLYOFFICE_CF_MATRIX_MODE: brokerOnly ? 'synthetic-broker' : 'full-v5',
       ...(process.platform === 'darwin' ? { ONLYOFFICE_CF_MATRIX_BROWSER_CHANNEL: 'chrome' } : {}),
+      ...(process.env.ONLYOFFICE_CF_MATRIX_STALL_TEST === '1'
+        ? {
+            ONLYOFFICE_CF_MATRIX_STALL_SEGMENT:
+              process.env.ONLYOFFICE_CF_MATRIX_STALL_SEGMENT || releaseManifest.package.segments[0].sha256,
+          }
+        : {}),
     },
   });
   await stop(worker);

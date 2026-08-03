@@ -53,6 +53,11 @@ describe('R2 release workflow', () => {
     expect(workflow).toContain('--package-version "$(node -p "require(\'./package.json\').version")"');
     expect(workflow).toContain('--expected-package-version 0.5.11');
     expect(workflow).toContain('--remote r2:onlyoffice-getpi-work');
+    expect(workflow).toContain('--remote-verification-mode "${ONLYOFFICE_REMOTE_VERIFICATION_MODE}"');
+    expect(workflow).toContain('--remote-inventory "${RUNNER_TEMP}/onlyoffice-r2-inventory-before.json"');
+    expect(workflow).toContain('rclone lsjson r2:onlyoffice-getpi-work');
+    expect(workflow).toContain('ONLYOFFICE_REMOTE_VERIFICATION_MODE=incremental');
+    expect(workflow).toContain('ONLYOFFICE_REMOTE_VERIFICATION_MODE=full');
     expect(workflow).toContain('partial success is not verification');
     expect(workflow).not.toMatch(/\brclone\s+sync\b/);
     expect(workflow).not.toMatch(/--delete(?:-after|-before|-during)?\b/);
@@ -64,6 +69,20 @@ describe('R2 release workflow', () => {
     expect(routeVerification).toBeGreaterThan(worker);
     expect(activation).toBeGreaterThan(routeVerification);
     expect(postVerification).toBeGreaterThan(activation);
+  });
+
+  it('runs a real stalled-stream and system-proxy fault pass after the normal matrix', () => {
+    const workflow = fs.readFileSync(path.resolve('.github/workflows/deploy-r2.yml'), 'utf8');
+    const matrix = workflow.indexOf('name: Run mandatory full-v5 local Cloudflare/Broker matrix');
+    const fault = workflow.indexOf('name: Run fault-injected local matrix with the system proxy enabled');
+    const upload = workflow.indexOf('name: Upload additive release and compatibility objects (not verification)');
+
+    expect(fault).toBeGreaterThan(matrix);
+    expect(upload).toBeGreaterThan(fault);
+    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_STALL_TEST=1');
+    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_USE_SYSTEM_PROXY=1');
+    expect(workflow).toContain("ONLYOFFICE_CF_MATRIX_GREP='fault-injected segment stream aborts'");
+    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_REFRESH_STATE=0');
   });
 
   it('requires a non-downgradable full-v5 local matrix and retains source-bound JSON evidence', () => {

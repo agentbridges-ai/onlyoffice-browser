@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_PORT || '8787', 10);
 const canonicalOrigin = `http://onlyoffice.localhost:${port}`;
+const browserArgs = process.env.ONLYOFFICE_CF_MATRIX_USE_SYSTEM_PROXY === '1' ? [] : ['--no-proxy-server'];
 
 export default defineConfig({
   testDir: 'test/cloudflare-e2e',
@@ -18,7 +19,7 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
     launchOptions: {
-      args: ['--no-proxy-server'],
+      args: browserArgs,
     },
   },
   projects: [

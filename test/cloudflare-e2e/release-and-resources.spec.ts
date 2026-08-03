@@ -21,6 +21,7 @@ const packageVersion = process.env.ONLYOFFICE_CF_MATRIX_PACKAGE_VERSION;
 const matrixControlToken = process.env.ONLYOFFICE_CF_MATRIX_CONTROL_TOKEN;
 const matrixMode = process.env.ONLYOFFICE_CF_MATRIX_MODE || 'full-v5';
 const persistentBrowserChannel = process.env.ONLYOFFICE_CF_MATRIX_BROWSER_CHANNEL;
+const stallSegment = process.env.ONLYOFFICE_CF_MATRIX_STALL_SEGMENT;
 const port = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_PORT || '8787', 10);
 const canonicalOrigin = `http://onlyoffice.localhost:${port}`;
 const editorOrigin = `http://aries.localhost:${port}`;
@@ -71,6 +72,7 @@ type ContentCounter = {
   completed: number;
   aborted: number;
   failed: number;
+  stalled: number;
   statuses: Record<string, number>;
 };
 
@@ -85,6 +87,7 @@ const emptyContentCounter = (): ContentCounter => ({
   completed: 0,
   aborted: 0,
   failed: 0,
+  stalled: 0,
   statuses: {},
 });
 
@@ -182,7 +185,7 @@ async function launchPersistentMatrixContext(
 ): Promise<BrowserContext> {
   const context = await chromium.launchPersistentContext(profile, {
     ...(persistentBrowserChannel ? { channel: persistentBrowserChannel as 'chrome' } : {}),
-    args: ['--no-proxy-server'],
+    args: process.env.ONLYOFFICE_CF_MATRIX_USE_SYSTEM_PROXY === '1' ? [] : ['--no-proxy-server'],
     acceptDownloads: true,
     headless: true,
     locale: 'en-US',
@@ -314,6 +317,7 @@ function counterDelta(
     completed: current.completed - initial.completed,
     aborted: current.aborted - initial.aborted,
     failed: current.failed - initial.failed,
+    stalled: current.stalled - initial.stalled,
     statuses,
   };
 }
@@ -694,6 +698,66 @@ test('Release v5 routes reproduce production MIME, cache, range, CAS, and immuta
   const missing = await browserFetch<string>(page, `${editorOrigin}/r/${releaseId}/missing-runtime-object.js`);
   expect(missing.status).toBe(404);
   await context.close();
+});
+
+test('fault-injected segment stream aborts and retries through the local Cloudflare gateway', async ({ browser }) => {
+  test.skip(matrixMode !== 'full-v5' || !stallSegment, 'The fault-injected local matrix is opt-in.');
+  test.setTimeout(30_000);
+  const page = await browser.newPage();
+  try {
+    await page.goto(canonicalOrigin);
+    const manifest = await browserFetch<ReleaseManifest>(
+      page,
+      `${canonicalOrigin}/releases/${releaseId}/manifest.json`,
+    );
+    const segment = manifest.body.package.segments.find(({ sha256 }) => sha256 === stallSegment);
+    expect(segment, 'The injected stall must target a manifest package segment').toBeTruthy();
+    const target = `${canonicalOrigin}/segments/sha256/${stallSegment}?matrix-stall-test=1`;
+    const beforeResult = await browserFetch<{ segments: Record<string, ContentCounter> }>(
+      page,
+      `${canonicalOrigin}/__matrix__/content-counters`,
+      { cache: 'no-store' },
+    );
+    const before = beforeResult.body.segments;
+    const first = await page.evaluate(async (url) => {
+      const controller = new AbortController();
+      const started = performance.now();
+      const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('stalled segment response has no body');
+      const firstRead = await reader.read();
+      const pending = reader.read();
+      window.setTimeout(() => controller.abort(), 100);
+      let aborted = false;
+      try {
+        await pending;
+      } catch {
+        aborted = true;
+      }
+      return { firstBytes: firstRead.value?.byteLength || 0, aborted, elapsedMs: performance.now() - started };
+    }, target);
+    expect(first.firstBytes).toBeGreaterThan(0);
+    expect(first.elapsedMs).toBeLessThan(2_000);
+    expect(first.aborted).toBe(true);
+
+    const second = await page.evaluate(async (url) => {
+      const response = await fetch(url, { cache: 'no-store' });
+      return { status: response.status, bytes: (await response.arrayBuffer()).byteLength };
+    }, target);
+    expect(second).toEqual({ status: 200, bytes: segment!.bytes });
+    const afterResult = await browserFetch<{ segments: Record<string, ContentCounter> }>(
+      page,
+      `${canonicalOrigin}/__matrix__/content-counters`,
+      { cache: 'no-store' },
+    );
+    const after = afterResult.body.segments;
+    const delta = counterDelta(before, after, stallSegment!);
+    expect(delta.r2Gets).toBe(2);
+    expect(delta.stalled).toBe(1);
+    expect(delta.completed).toBeGreaterThanOrEqual(1);
+  } finally {
+    await page.close();
+  }
 });
 
 test('synthetic canonical broker fixture stores one copy and reuses it across three editor origins', async ({
@@ -2280,6 +2344,7 @@ test('production v5 installs once, survives restart with three offline editors, 
       completed: 1,
       aborted: 0,
       failed: 0,
+      stalled: 0,
       statuses: { '200': 1 },
     });
     expect(

@@ -14,7 +14,17 @@ on:
       - "pnpm-lock.yaml"
       - "wrangler.jsonc"
       - ".github/workflows/deploy-r2.yml"
+  schedule:
+    # Re-hash every immutable object weekly; normal releases only hash objects
+    # that were not present before the additive upload.
+    - cron: "17 3 * * 0"
   workflow_dispatch:
+    inputs:
+      full_audit:
+        description: "Re-hash every immutable R2 object instead of the incremental set"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -59,6 +69,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Restore pinned font release cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/onlyoffice-font-release
+          key: onlyoffice-font-release-v0.5.0-648c486d1c558acd-09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
       - name: Install rclone
         run: |
           sudo apt-get update
@@ -77,7 +92,7 @@ jobs:
         env:
           ONLYOFFICE_X2T_VERSION: 9.3.0+2
           ONLYOFFICE_X2T_COMMIT: 1bb9b45a399f87ca162eea0c86abd4660f295469
-          ONLYOFFICE_MATRIX_FONT_CACHE: ${{ runner.temp }}/onlyoffice-font-release
+          ONLYOFFICE_MATRIX_FONT_CACHE: ${{ github.workspace }}/.cache/onlyoffice-font-release
         run: |
           node scripts/hydrate-cloudflare-matrix-fonts.mjs
           pnpm fonts:verify --input dist
@@ -188,6 +203,9 @@ jobs:
           test -z "${ONLYOFFICE_CF_MATRIX_GREP}"
           test "${ONLYOFFICE_CF_MATRIX_REUSE_BUILD}" = "0"
           test "${ONLYOFFICE_CF_MATRIX_KEEP_STATE}" = "0"
+          ONLYOFFICE_CF_MATRIX_REUSE_STATE="${RUNNER_TEMP}/onlyoffice-cloudflare-matrix-state" \
+          ONLYOFFICE_CF_MATRIX_REFRESH_STATE=1 \
+          ONLYOFFICE_CF_MATRIX_KEEP_STATE=1 \
           node scripts/run-cloudflare-local-matrix.mjs
       - name: Record successful full-v5 matrix evidence
         run: |
@@ -276,6 +294,32 @@ jobs:
             release-evidence/full-v5-cloudflare-broker-matrix.json
           if-no-files-found: error
           retention-days: 90
+      - name: Run fault-injected local matrix with the system proxy enabled
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          ONLYOFFICE_CF_MATRIX_REUSE_STATE="${RUNNER_TEMP}/onlyoffice-cloudflare-matrix-state" \
+          ONLYOFFICE_CF_MATRIX_REFRESH_STATE=0 \
+          ONLYOFFICE_CF_MATRIX_KEEP_STATE=0 \
+          ONLYOFFICE_CF_MATRIX_STALL_TEST=1 \
+          ONLYOFFICE_CF_MATRIX_STALL_MS=5000 \
+          ONLYOFFICE_CF_MATRIX_USE_SYSTEM_PROXY=1 \
+          ONLYOFFICE_CF_MATRIX_GREP='fault-injected segment stream aborts' \
+          node scripts/run-cloudflare-local-matrix.mjs
+      - name: Snapshot existing R2 inventory for incremental verification
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event.inputs.full_audit }}" = "true" ]; then
+            echo "ONLYOFFICE_REMOTE_VERIFICATION_MODE=full" >> "${GITHUB_ENV}"
+          else
+            echo "ONLYOFFICE_REMOTE_VERIFICATION_MODE=incremental" >> "${GITHUB_ENV}"
+          fi
+          rclone lsjson r2:onlyoffice-getpi-work \
+            --recursive \
+            --files-only \
+            --no-modtime \
+            --fast-list \
+            > "${RUNNER_TEMP}/onlyoffice-r2-inventory-before.json"
       - name: Upload additive release and compatibility objects (not verification)
         run: |
           rclone_copy_with_outer_retry() {
@@ -335,9 +379,11 @@ jobs:
           VERIFY_ARGS=(
             --release-root .onlyoffice-release
             --expected-package-version 0.5.11
-            --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
-            --remote r2:onlyoffice-getpi-work
-            --concurrency 4
+          --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
+          --remote r2:onlyoffice-getpi-work
+          --concurrency 4
+          --remote-verification-mode "${ONLYOFFICE_REMOTE_VERIFICATION_MODE}"
+          --remote-inventory "${RUNNER_TEMP}/onlyoffice-r2-inventory-before.json"
           )
           if [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "required" ]; then
             VERIFY_ARGS+=(--fastcdc-evidence "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}")
