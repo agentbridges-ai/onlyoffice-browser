@@ -700,22 +700,55 @@ async function main() {
     worker,
   );
   if (routeOnly) {
-    const pointerBody = Buffer.from(`${JSON.stringify(releasePointer, null, 2)}\n`);
-    const resetResponse = await request({
-      port: workerInternalPort,
-      method: 'POST',
-      pathname: '/__matrix__/stable-v5',
-      headers: {
-        Host: 'onlyoffice.getpi.work',
-        'X-OnlyOffice-Matrix-Host': 'onlyoffice.localhost',
-        'X-OnlyOffice-Matrix-Control-Token': token,
-        'Content-Type': 'application/json',
-        'Content-Length': String(pointerBody.byteLength),
-      },
-      body: pointerBody,
-    });
-    if (resetResponse.status !== 200) {
-      throw new Error(`Could not reset the local stable-v5 pointer: ${resetResponse.status} ${resetResponse.body}`);
+    const pointerHeaders = {
+      Host: 'onlyoffice.getpi.work',
+      'X-OnlyOffice-Matrix-Host': 'onlyoffice.localhost',
+      'Cache-Control': 'no-store',
+    };
+    if (reusedPersistDirectory && !refreshReusedState) {
+      // A reused Wrangler/R2 state already contains the pointer written by the
+      // seeding run. Do not mutate it with the new worker's one-run token: the
+      // fault-injection pass only needs to verify that the retained pointer is
+      // the release under test, not exercise the control-plane write again.
+      const existingResponse = await request({
+        port: workerInternalPort,
+        pathname: '/channels/stable-v5.json',
+        headers: pointerHeaders,
+      });
+      if (existingResponse.status !== 200) {
+        throw new Error(
+          `Could not read the retained local stable-v5 pointer: ${existingResponse.status} ${existingResponse.body}`,
+        );
+      }
+      let existingPointer;
+      try {
+        existingPointer = JSON.parse(existingResponse.body.toString('utf8'));
+      } catch {
+        throw new Error('Retained local stable-v5 pointer is not valid JSON');
+      }
+      if (
+        existingPointer?.releaseId !== releasePointer.releaseId ||
+        existingPointer?.manifestSha256 !== releasePointer.manifestSha256
+      ) {
+        throw new Error('Retained local stable-v5 pointer does not match the release under test');
+      }
+    } else {
+      const pointerBody = Buffer.from(`${JSON.stringify(releasePointer, null, 2)}\n`);
+      const resetResponse = await request({
+        port: workerInternalPort,
+        method: 'POST',
+        pathname: '/__matrix__/stable-v5',
+        headers: {
+          ...pointerHeaders,
+          'X-OnlyOffice-Matrix-Control-Token': token,
+          'Content-Type': 'application/json',
+          'Content-Length': String(pointerBody.byteLength),
+        },
+        body: pointerBody,
+      });
+      if (resetResponse.status !== 200) {
+        throw new Error(`Could not reset the local stable-v5 pointer: ${resetResponse.status} ${resetResponse.body}`);
+      }
     }
   }
   await startMatrixGateway();
