@@ -396,6 +396,67 @@ describe('canonical resource installer', () => {
     });
   });
 
+  it('retries a package after a post-200 stream reset without refetching verified chunks', async () => {
+    const target = releaseWithFastCdc('release-fastcdc-stream-retry', 'wasm/runtime.bin', [
+      'fastcdc-chunk-one',
+      'fastcdc-chunk-two',
+    ]);
+    const network = server(target);
+    const cache = memoryCache();
+    const journal = new MemoryCanonicalResourceJournal({ now: () => 100 });
+    const failedSegment = target.manifest.package.segments[1].sha256;
+    let failOnce = true;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await network.fetch(input, init);
+      const url = new URL(String(input));
+      if (!failOnce || !url.pathname.endsWith(`/sha256/${failedSegment}`) || !response.body) return response;
+      failOnce = false;
+      const reader = response.body.getReader();
+      let first = true;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          const next = await reader.read();
+          if (next.done) {
+            controller.close();
+            return;
+          }
+          if (!first) {
+            await reader.cancel();
+            controller.error(new TypeError('ERR_HTTP2_PROTOCOL_ERROR'));
+            return;
+          }
+          first = false;
+          controller.enqueue(next.value);
+        },
+        async cancel(reason) {
+          await reader.cancel(reason);
+        },
+      });
+      return new Response(body, { status: response.status, headers: response.headers });
+    }) as unknown as typeof globalThis.fetch;
+    const installer = new CanonicalResourceInstaller({
+      assetBaseUrl: 'https://onlyoffice.example.test/',
+      fetch,
+      cacheStorage: cache.cacheStorage,
+      journal,
+      retryDelaysMs: [0],
+      timeoutMs: 1_000,
+      now: () => 100,
+    });
+
+    const plan = await installer.plan({ scope: 'all' });
+    await installer.apply(plan);
+
+    expect(network.objectRequests.filter((request) => request.endsWith(failedSegment))).toHaveLength(2);
+    expect(cache.entries).toHaveLength(target.manifest.assets[0].representations.fastcdc!.chunks.length);
+    expect(installer.getInstallerSnapshot()).toMatchObject({
+      readiness: 'ready',
+      phase: 'idle',
+      errorCode: null,
+      failedResources: [],
+    });
+  });
+
   it('reuses unchanged content across releases and downloads only the changed object', async () => {
     const releaseA = release('release-a', [
       { path: 'shared.js', value: 'shared' },
