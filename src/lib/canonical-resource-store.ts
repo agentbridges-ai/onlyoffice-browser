@@ -2458,8 +2458,23 @@ export class CanonicalResourceStore {
             await this.onObjectVerified?.({ releaseId, object: cloneDescriptor(object) });
           } catch (error) {
             await cache.delete(cacheKey).catch(() => undefined);
-            if (streamFailure instanceof CanonicalResourceStoreError) throw streamFailure;
-            if (streamFailure instanceof DOMException && streamFailure.name === 'AbortError') throw streamFailure;
+            // A response can be accepted with HTTP 200 and still fail while
+            // its body is being consumed (for example an HTTP/2 stream reset
+            // from the edge). Cache.put() reports that as a storage
+            // NetworkError, which would otherwise disable the installer's
+            // network retry path. Preserve integrity/abort failures, but
+            // classify an underlying body-stream failure as retryable network.
+            if (streamFailure !== undefined) {
+              if (streamFailure instanceof CanonicalResourceStoreError) throw streamFailure;
+              if (streamFailure instanceof DOMException && streamFailure.name === 'AbortError') {
+                throw streamFailure;
+              }
+              throw new CanonicalResourceStoreError(
+                'network',
+                `package segment ${current?.descriptor.sha256 || 'unknown'} stream failed`,
+                { cause: streamFailure },
+              );
+            }
             if (error instanceof CanonicalResourceStoreError) throw error;
             if (error instanceof DOMException && error.name === 'AbortError') throw error;
             throw new CanonicalResourceStoreError('storage', `failed to persist package object ${object.sha256}`, {
@@ -2529,6 +2544,7 @@ export class CanonicalResourceStore {
 
       const digest = sha256.create();
       let receivedBytes = 0;
+      let streamFailure: unknown;
       const source =
         response.body ||
         new ReadableStream<Uint8Array>({
@@ -2539,19 +2555,27 @@ export class CanonicalResourceStore {
       const verifiedStream = source.pipeThrough(
         new TransformStream<Uint8Array, Uint8Array>({
           transform: async (chunk, controller) => {
-            if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
-            digest.update(chunk);
-            receivedBytes += chunk.byteLength;
-            if (receivedBytes > object.bytes) {
-              throw new CanonicalResourceStoreError('integrity', `object ${object.sha256} exceeded its declared size`);
+            try {
+              if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+              digest.update(chunk);
+              receivedBytes += chunk.byteLength;
+              if (receivedBytes > object.bytes) {
+                throw new CanonicalResourceStoreError(
+                  'integrity',
+                  `object ${object.sha256} exceeded its declared size`,
+                );
+              }
+              await this.onObjectProgress?.({
+                releaseId,
+                object: cloneDescriptor(object),
+                chunkBytes: chunk.byteLength,
+                loadedBytes: receivedBytes,
+              });
+              controller.enqueue(chunk);
+            } catch (error) {
+              streamFailure = error;
+              throw error;
             }
-            await this.onObjectProgress?.({
-              releaseId,
-              object: cloneDescriptor(object),
-              chunkBytes: chunk.byteLength,
-              loadedBytes: receivedBytes,
-            });
-            controller.enqueue(chunk);
           },
         }),
       );
@@ -2585,6 +2609,13 @@ export class CanonicalResourceStore {
         await this.onObjectVerified?.({ releaseId, object: cloneDescriptor(object) });
       } catch (error) {
         await cache.delete(cacheKey).catch(() => undefined);
+        if (streamFailure !== undefined) {
+          if (streamFailure instanceof CanonicalResourceStoreError) throw streamFailure;
+          if (streamFailure instanceof DOMException && streamFailure.name === 'AbortError') throw streamFailure;
+          throw new CanonicalResourceStoreError('network', `object ${object.sha256} response stream failed`, {
+            cause: streamFailure,
+          });
+        }
         if (error instanceof CanonicalResourceStoreError) throw error;
         if (error instanceof DOMException && error.name === 'AbortError') throw error;
         throw new CanonicalResourceStoreError('storage', `failed to persist object ${object.sha256}`, {
