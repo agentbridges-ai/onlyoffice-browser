@@ -133,6 +133,7 @@ function defaultAssets(suffix = 'a'): FixtureAsset[] {
 function releaseFixture(
   releaseId: string,
   assets = defaultAssets(),
+  manifestContentType = 'application/json',
 ): {
   fetch: ReturnType<typeof vi.fn>;
   assets: Map<string, FixtureAsset>;
@@ -164,7 +165,9 @@ function releaseFixture(
       return new Response(manifestText, {
         headers: {
           'content-length': String(Buffer.byteLength(manifestText)),
-          'content-type': 'application/json; charset=utf-8',
+          // Match the production Cloudflare/R2 response, which omits the
+          // optional charset parameter on JSON manifests.
+          'content-type': manifestContentType,
         },
       });
     }
@@ -272,6 +275,34 @@ describe('editor shell cache', () => {
       cachedPaths: expect.arrayContaining(['office-host.html', 'editor-shell-prime.html']),
     });
     expect(storage.caches.size).toBe(0);
+  });
+
+  it('accepts a UTF-8 charset when a manifest explicitly includes one', async () => {
+    const storage = new MemoryCacheStorage();
+    const fixture = releaseFixture('release-json-charset', defaultAssets(), 'application/json; charset=utf-8');
+    await expect(
+      primeEditorShell({
+        releaseId: 'release-json-charset',
+        origin: 'https://aries.getpi.work',
+        manifestOrigin: 'https://onlyoffice.getpi.work',
+        cacheStorage: storage as unknown as CacheStorage,
+        fetch: fixture.fetch as typeof fetch,
+      }),
+    ).resolves.toMatchObject({ releaseId: 'release-json-charset' });
+  });
+
+  it('rejects a non-JSON release manifest content type', async () => {
+    const storage = new MemoryCacheStorage();
+    const fixture = releaseFixture('release-invalid-json-mime', defaultAssets(), 'text/plain; charset=utf-8');
+    await expect(
+      primeEditorShell({
+        releaseId: 'release-invalid-json-mime',
+        origin: 'https://aries.getpi.work',
+        manifestOrigin: 'https://onlyoffice.getpi.work',
+        cacheStorage: storage as unknown as CacheStorage,
+        fetch: fixture.fetch as typeof fetch,
+      }),
+    ).rejects.toThrow(/invalid content type/);
   });
 
   it.each(['UnknownError', 'NotAllowedError'])('falls back when Cache.put is rejected with %s', async (name) => {

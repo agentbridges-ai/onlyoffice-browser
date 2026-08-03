@@ -69,6 +69,11 @@ function normalizedMime(value: string | null): string {
     .join('; ');
 }
 
+function isJsonContentType(value: string | null): boolean {
+  const normalized = normalizedMime(value);
+  return normalized === 'application/json' || normalized === 'application/json; charset=utf-8';
+}
+
 function isSafeManifestPath(path: string): boolean {
   if (
     path.length === 0 ||
@@ -307,7 +312,11 @@ async function readReleaseManifest(
   manifestSha256: string;
   assets: Map<string, unknown>;
 }> {
-  if (normalizedMime(response.headers.get('content-type')) !== 'application/json; charset=utf-8') {
+  // Cloudflare R2/Workers commonly emit `application/json` without an
+  // explicit charset. Both forms are valid JSON responses; only accept the
+  // JSON media type (and UTF-8 when a charset is present), never arbitrary
+  // text that could be interpreted as a release manifest.
+  if (!isJsonContentType(response.headers.get('content-type'))) {
     await response.body?.cancel().catch(() => undefined);
     throw new TypeError('Release manifest has an invalid content type');
   }
