@@ -442,45 +442,78 @@ export function inspectRcloneObject(remote, object, { rcloneBinary = 'rclone', s
  * pre-upload inventory to distinguish objects that were already verified in a
  * previous publication from objects introduced by this release.
  */
-export function inspectRcloneInventory(remote, { rcloneBinary = 'rclone', spawnImpl = spawn } = {}) {
+export function inspectRcloneInventory(
+  remote,
+  { rcloneBinary = 'rclone', spawnImpl = spawn, timeoutMs = 15 * 60 * 1000 } = {},
+) {
   if (typeof remote !== 'string' || !remote.includes(':')) throw new TypeError('Invalid rclone remote');
   const target = remote.replace(/\/+$/, '');
   return new Promise((resolve, reject) => {
-    const child = spawnImpl(rcloneBinary, ['lsjson', target, '--recursive', '--files-only', '--no-modtime'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
+    // `lsjson --fast-list` builds one large in-memory response and can stall
+    // on a bucket containing years of immutable CAS objects. `lsf` with
+    // ListR disabled streams one object per line, so the inventory remains
+    // bounded and emits progress while R2 paginates.
+    const child = spawnImpl(
+      rcloneBinary,
+      ['lsf', target, '--recursive', '--files-only', '--format', 'ps', '--separator', '\t', '--disable', 'ListR'],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    const inventory = new Map();
     let stderr = '';
+    let pending = '';
+    let listed = 0;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const timeout =
+      Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? setTimeout(() => {
+            child.kill?.('SIGTERM');
+            fail(new Error(`rclone lsf inventory timed out after ${timeoutMs}ms`));
+          }, timeoutMs)
+        : null;
+    timeout?.unref?.();
+    const consumeLine = (line) => {
+      if (!line) return;
+      const separator = line.lastIndexOf('\t');
+      const key = separator >= 0 ? line.slice(0, separator) : '';
+      const rawSize = separator >= 0 ? line.slice(separator + 1) : '';
+      if (!key || !rawSize || key.endsWith('/')) return;
+      const size = Number(rawSize);
+      if (!Number.isSafeInteger(size) || size < 0) {
+        fail(new Error(`rclone lsf returned an invalid size for ${key}`));
+        return;
+      }
+      inventory.set(key.replace(/^\/+/, ''), { bytes: size });
+      listed += 1;
+      if (listed % 1000 === 0) console.log(`R2 inventory: ${listed} objects`);
+    };
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString('utf8');
+      if (settled) return;
+      pending += chunk.toString('utf8');
+      const lines = pending.split('\n');
+      pending = lines.pop() || '';
+      for (const line of lines) consumeLine(line.replace(/\r$/, ''));
     });
     child.stderr.on('data', (chunk) => {
       if (stderr.length < 16 * 1024) stderr += chunk.toString('utf8');
     });
-    child.on('error', reject);
+    child.on('error', (error) => fail(error));
     child.on('close', (code, signal) => {
+      if (timeout) clearTimeout(timeout);
+      if (settled) return;
       if (code !== 0) {
-        reject(new Error(`rclone lsjson failed (${signal || code}): ${stderr.trim() || 'no diagnostic'}`));
+        fail(new Error(`rclone lsf failed (${signal || code}): ${stderr.trim() || 'no diagnostic'}`));
         return;
       }
-      try {
-        const entries = JSON.parse(stdout || '[]');
-        if (!Array.isArray(entries)) throw new Error('rclone lsjson returned a non-array payload');
-        const inventory = new Map();
-        for (const entry of entries) {
-          const key = typeof entry?.Path === 'string' ? entry.Path : typeof entry?.Name === 'string' ? entry.Name : '';
-          if (!key || entry?.IsDir === true) continue;
-          if (!Number.isSafeInteger(entry?.Size) || entry.Size < 0) {
-            throw new Error(`rclone lsjson returned an invalid size for ${key}`);
-          }
-          inventory.set(key.replace(/^\/+/, ''), { bytes: entry.Size });
-        }
-        resolve(inventory);
-      } catch (error) {
-        reject(
-          new Error(`rclone lsjson returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`),
-        );
-      }
+      consumeLine(pending.replace(/\r$/, ''));
+      settled = true;
+      resolve(inventory);
     });
   });
 }

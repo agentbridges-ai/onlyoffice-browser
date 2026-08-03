@@ -55,7 +55,8 @@ describe('R2 release workflow', () => {
     expect(workflow).toContain('--remote r2:onlyoffice-getpi-work');
     expect(workflow).toContain('--remote-verification-mode "${ONLYOFFICE_REMOTE_VERIFICATION_MODE}"');
     expect(workflow).toContain('--remote-inventory "${RUNNER_TEMP}/onlyoffice-r2-inventory-before.json"');
-    expect(workflow).toContain('rclone lsjson r2:onlyoffice-getpi-work');
+    expect(workflow).toContain('node scripts/snapshot-r2-inventory.mjs');
+    expect(workflow).toContain('timeout --signal=TERM --kill-after=30s 15m');
     expect(workflow).toContain('ONLYOFFICE_REMOTE_VERIFICATION_MODE=incremental');
     expect(workflow).toContain('ONLYOFFICE_REMOTE_VERIFICATION_MODE=full');
     expect(workflow).toContain('partial success is not verification');

@@ -320,12 +320,10 @@ jobs:
           else
             echo "ONLYOFFICE_REMOTE_VERIFICATION_MODE=incremental" >> "${GITHUB_ENV}"
           fi
-          rclone lsjson r2:onlyoffice-getpi-work \
-            --recursive \
-            --files-only \
-            --no-modtime \
-            --fast-list \
-            > "${RUNNER_TEMP}/onlyoffice-r2-inventory-before.json"
+          timeout --signal=TERM --kill-after=30s 15m \
+            node scripts/snapshot-r2-inventory.mjs \
+            r2:onlyoffice-getpi-work \
+            "${RUNNER_TEMP}/onlyoffice-r2-inventory-before.json"
       - name: Upload additive release and compatibility objects (not verification)
         run: |
           rclone_copy_with_outer_retry() {
