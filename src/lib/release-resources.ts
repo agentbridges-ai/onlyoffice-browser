@@ -903,10 +903,43 @@ async function readAndVerifySegment(
     await onDownload(bytes);
     length = bytes.byteLength;
   } else {
+    const readWithAbort = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+      if (signal.aborted) {
+        void reader.cancel(signal.reason).catch(() => undefined);
+        throw new ResourceInstallerError('aborted');
+      }
+      return new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+        let settled = false;
+        let onAbort: () => void;
+        const cleanup = () => signal.removeEventListener('abort', onAbort);
+        onAbort = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          void reader.cancel(signal.reason).catch(() => undefined);
+          reject(new ResourceInstallerError('aborted'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        reader.read().then(
+          (result) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(result);
+          },
+          (error: unknown) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(error);
+          },
+        );
+      });
+    };
     while (true) {
       await waitIfPaused();
       if (signal.aborted) throw new ResourceInstallerError('aborted');
-      const next = await reader.read();
+      const next = await readWithAbort();
       if (next.done) break;
       digest.update(next.value);
       chunks.push(next.value);
