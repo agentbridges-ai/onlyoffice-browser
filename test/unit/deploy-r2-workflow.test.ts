@@ -83,6 +83,8 @@ describe('R2 release workflow', () => {
     expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_USE_SYSTEM_PROXY=1');
     expect(workflow).toContain("ONLYOFFICE_CF_MATRIX_GREP='fault-injected segment stream aborts'");
     expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_REFRESH_STATE=0');
+    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_PORT=8887');
+    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_INTERNAL_PORT=8888');
   });
 
   it('requires a non-downgradable full-v5 local matrix and retains source-bound JSON evidence', () => {
