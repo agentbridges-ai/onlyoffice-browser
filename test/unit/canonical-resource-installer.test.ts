@@ -208,6 +208,9 @@ function memoryCache(): MemoryCache {
         headers: new Headers(entry.headers),
       });
     },
+    async keys() {
+      return [...entries.keys()].map((key) => new Request(key));
+    },
     async delete(input: RequestInfo | URL) {
       return entries.delete(requestKey(input));
     },
@@ -626,7 +629,7 @@ describe('canonical resource installer', () => {
     await cache.delete(canonicalContentCacheKey(missingDigest, 'https://onlyoffice.example.test'));
     network.objectRequests.length = 0;
 
-    await installer.checkHealth();
+    await installer.checkHealth({ deep: true });
 
     expect(installer.getInstallerSnapshot()).toMatchObject({
       readiness: 'repair-needed',

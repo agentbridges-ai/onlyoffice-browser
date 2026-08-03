@@ -5,6 +5,7 @@ import {
   EDITOR_SHELL_MAX_ASSET_BYTES,
   EDITOR_SHELL_MAX_TOTAL_BYTES,
   extractEditorShellDependencies,
+  isEditorShellStorageAvailabilityError,
   matchEditorShell,
   primeEditorShell,
   releaseIdFromEditorShellPath,
@@ -22,8 +23,10 @@ class MemoryCache {
   readonly responses = new Map<string, StoredResponse>();
   failNextMatch = false;
   failNextPut = false;
+  putError: Error | null = null;
 
   async put(request: RequestInfo | URL, response: Response): Promise<void> {
+    if (this.putError) throw this.putError;
     if (this.failNextPut) {
       this.failNextPut = false;
       throw new Error('simulated pointer commit failure');
@@ -59,8 +62,10 @@ class MemoryCache {
 
 class MemoryCacheStorage {
   readonly caches = new Map<string, MemoryCache>();
+  failOpen = false;
 
   async open(name: string): Promise<MemoryCache> {
+    if (this.failOpen) throw new DOMException('simulated browser storage quota', 'QuotaExceededError');
     let cache = this.caches.get(name);
     if (!cache) {
       cache = new MemoryCache();
@@ -179,6 +184,13 @@ function releaseFixture(
 }
 
 describe('editor shell cache', () => {
+  it.each(['QuotaExceededError', 'UnknownError', 'NotAllowedError'])(
+    'classifies browser Cache Storage availability error %s',
+    (name) => {
+      expect(isEditorShellStorageAvailabilityError(new DOMException('simulated', name))).toBe(true);
+    },
+  );
+
   it('extracts only deterministic Vite JavaScript and CSS dependencies', () => {
     expect(
       extractEditorShellDependencies(`
@@ -240,6 +252,46 @@ describe('editor shell cache', () => {
         cacheStorage: storage as unknown as CacheStorage,
       }),
     ).resolves.toEqual(result);
+  });
+
+  it('falls back to immutable network shell delivery when third-party Cache Storage is unavailable', async () => {
+    const storage = new MemoryCacheStorage();
+    storage.failOpen = true;
+    const fixture = releaseFixture('release-network-shell');
+    await expect(
+      primeEditorShell({
+        releaseId: 'release-network-shell',
+        origin: 'https://aries.getpi.work',
+        manifestOrigin: 'https://onlyoffice.getpi.work',
+        cacheStorage: storage as unknown as CacheStorage,
+        fetch: fixture.fetch as typeof fetch,
+      }),
+    ).resolves.toMatchObject({
+      releaseId: 'release-network-shell',
+      storageMode: 'network',
+      cachedPaths: expect.arrayContaining(['office-host.html', 'editor-shell-prime.html']),
+    });
+    expect(storage.caches.size).toBe(0);
+  });
+
+  it.each(['UnknownError', 'NotAllowedError'])('falls back when Cache.put is rejected with %s', async (name) => {
+    const storage = new MemoryCacheStorage();
+    const fixture = releaseFixture(`release-put-${name.toLowerCase()}`);
+    const staging = await storage.open(
+      `${EDITOR_SHELL_CACHE_NAME}:generation:${`release-put-${name.toLowerCase()}`}:${'0'.repeat(32)}`,
+    );
+    staging.putError = new DOMException('simulated Cache Storage write failure', name);
+    await expect(
+      primeEditorShell({
+        releaseId: `release-put-${name.toLowerCase()}`,
+        origin: 'https://aries.getpi.work',
+        manifestOrigin: 'https://onlyoffice.getpi.work',
+        cacheStorage: storage as unknown as CacheStorage,
+        fetch: fixture.fetch as typeof fetch,
+        createGenerationId: () => '0'.repeat(32),
+      }),
+    ).resolves.toMatchObject({ storageMode: 'network' });
+    expect(storage.generationNames(`release-put-${name.toLowerCase()}`)).toEqual([]);
   });
 
   it('rematerializes a persisted shell response with actual decoded length', async () => {

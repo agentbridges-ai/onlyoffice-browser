@@ -475,9 +475,9 @@ export class CanonicalResourceInstaller implements OfficeRuntimeResourceInstalle
     }
   }
 
-  async checkHealth(): Promise<void> {
+  async checkHealth(options: { deep?: boolean } = {}): Promise<void> {
     try {
-      await this.refreshHealth(true);
+      await this.refreshHealth(true, options.deep === true);
     } catch (error) {
       this.setFailure(error, undefined, 1);
       throw this.asInstallerError(error);
@@ -734,6 +734,18 @@ export class CanonicalResourceInstaller implements OfficeRuntimeResourceInstalle
       const verification = await this.store.verifyReleaseIntegrity({
         releaseId: active.releaseId,
         signal: attempt.signal,
+        onProgress: ({ checkedBytes, verifiedBytes }) => {
+          this.patch({
+            phase: 'repairing',
+            // During a deep repair this field represents bytes read and
+            // hashed, not bytes downloaded. Keeping the existing snapshot
+            // field lets the panel render live verification progress without
+            // introducing a second, incompatible progress protocol.
+            verifiedBytes: Math.min(this.snapshot.verifyBytes, Math.max(checkedBytes, verifiedBytes)),
+            verifyBytes,
+            canPause: true,
+          });
+        },
       });
       this.attemptController = null;
       const attemptInterruption = this.attemptInterruption;
@@ -1024,9 +1036,9 @@ export class CanonicalResourceInstaller implements OfficeRuntimeResourceInstalle
     return release;
   }
 
-  private async refreshHealth(probe: boolean): Promise<void> {
+  private async refreshHealth(probe: boolean, deep = false): Promise<void> {
     const active = await this.journal.getActiveRelease();
-    const health = await this.store.checkHealth({ releaseId: active?.releaseId, probe });
+    const health = await this.store.checkHealth({ releaseId: active?.releaseId, probe, deep });
     if (!active) {
       this.installedPaths.clear();
       this.patch({

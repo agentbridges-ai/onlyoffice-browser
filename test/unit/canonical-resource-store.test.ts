@@ -84,6 +84,7 @@ type MemoryCacheHarness = {
   putChunkSizes: number[][];
   open: ReturnType<typeof vi.fn>;
   match: ReturnType<typeof vi.fn>;
+  keys: ReturnType<typeof vi.fn>;
   delete: ReturnType<typeof vi.fn>;
   globalMatch: ReturnType<typeof vi.fn>;
 };
@@ -104,6 +105,7 @@ function memoryCacheStorage(): MemoryCacheHarness {
     });
   });
   const deleteCached = vi.fn(async (input: RequestInfo | URL) => entries.delete(cacheKey(input)));
+  const keys = vi.fn(async () => [...entries.keys()].map((key) => new Request(key)));
   const cache = {
     put: vi.fn(async (input: RequestInfo | URL, response: Response) => {
       const reader = response.body?.getReader();
@@ -129,6 +131,7 @@ function memoryCacheStorage(): MemoryCacheHarness {
       entries.set(cacheKey(input), { bytes, headers: new Headers(response.headers) });
     }),
     match,
+    keys,
     delete: deleteCached,
   };
   const open = vi.fn(async (name: string) => {
@@ -147,6 +150,7 @@ function memoryCacheStorage(): MemoryCacheHarness {
     putChunkSizes,
     open,
     match,
+    keys,
     delete: deleteCached,
     globalMatch,
   };
@@ -313,6 +317,47 @@ describe('canonical resource store', () => {
       probeSucceeded: true,
     });
     expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses a key-only cache inventory and one metadata/byte probe without hashing every object', async () => {
+    const objectBodies = [body('fast-health-probe'), body('cell-object'), body('wasm-object')];
+    const target = release('release-fast-health', [
+      { path: 'sdkjs/word/word.js', bytes: objectBodies[0] },
+      { path: 'sdkjs/cell/cell.js', bytes: objectBodies[1] },
+      { path: 'wasm/x2t/x2t.wasm', bytes: objectBodies[2] },
+    ]);
+    const objectBytes = new Map(target.objects.map((object, index) => [object.sha256, objectBodies[index]]));
+    const cache = memoryCacheStorage();
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL) => {
+      const digest = new URL(String(input)).pathname.split('/').at(-1)!;
+      return strictStreamingResponse(objectBytes.get(digest)!, [4]);
+    });
+    const journal = new MemoryCanonicalResourceJournal();
+    const store = createStore({ cache, journal, fetch: fetchImplementation as unknown as typeof fetch });
+    await store.installAndActivate(target);
+    const readView = vi.spyOn(journal, 'getReleaseReadView');
+    cache.match.mockClear();
+    cache.keys.mockClear();
+    fetchImplementation.mockClear();
+    const arrayBuffer = vi.spyOn(Response.prototype, 'arrayBuffer');
+    const text = vi.spyOn(Response.prototype, 'text');
+    try {
+      await expect(store.checkHealth({ deep: false, probe: true })).resolves.toMatchObject({
+        releaseId: target.releaseId,
+        ready: true,
+        missingObjects: [],
+        probeSucceeded: true,
+      });
+      expect(cache.match).toHaveBeenCalledTimes(1);
+      expect(cache.keys).toHaveBeenCalledTimes(1);
+      expect(readView).toHaveBeenCalledTimes(1);
+      expect(fetchImplementation).not.toHaveBeenCalled();
+      expect(arrayBuffer).not.toHaveBeenCalled();
+      expect(text).not.toHaveBeenCalled();
+    } finally {
+      arrayBuffer.mockRestore();
+      text.mockRestore();
+    }
   });
 
   it('removes an integrity failure and never writes it to the verified ledger', async () => {
@@ -551,8 +596,9 @@ describe('canonical resource store', () => {
     expect(cached.headers.get(CANONICAL_CONTENT_BYTES_HEADER)).toBe(String(corruptedObject.bytes));
     await expect(store.checkHealth()).resolves.toMatchObject({ ready: true, missingObjects: [] });
     cache.delete.mockClear();
+    const progress = vi.fn();
 
-    await expect(store.verifyReleaseIntegrity()).resolves.toMatchObject({
+    await expect(store.verifyReleaseIntegrity({ onProgress: progress })).resolves.toMatchObject({
       releaseId: target.releaseId,
       state: 'active',
       status: 'complete',
@@ -570,13 +616,17 @@ describe('canonical resource store', () => {
         },
       ],
     });
+    expect(progress).toHaveBeenCalled();
+    expect(Math.max(...progress.mock.calls.map(([entry]) => entry.checkedBytes))).toBe(
+      corruptedObject.bytes + healthyBytes.byteLength,
+    );
     expect(cache.delete).toHaveBeenCalledTimes(1);
     expect(cache.delete).toHaveBeenCalledWith(corruptedKey);
     expect(cache.entries.has(corruptedKey)).toBe(false);
     expect(
       cache.entries.has(canonicalContentCacheKey(target.objects[0].sha256, 'https://onlyoffice.example.test')),
     ).toBe(true);
-    await expect(store.checkHealth()).resolves.toMatchObject({
+    await expect(store.checkHealth({ deep: true })).resolves.toMatchObject({
       ready: false,
       missingObjects: [corruptedObject],
     });
@@ -750,7 +800,9 @@ describe('canonical resource store', () => {
       cacheKeyOrigin: 'https://onlyoffice.example.test',
     });
 
-    await expect(store.checkHealth({ releaseId: transaction.releaseId, probe: true })).resolves.toMatchObject({
+    await expect(
+      store.checkHealth({ releaseId: transaction.releaseId, probe: true, deep: true }),
+    ).resolves.toMatchObject({
       ready: true,
       missingObjects: [],
       probeSucceeded: true,

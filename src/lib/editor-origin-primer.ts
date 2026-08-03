@@ -24,6 +24,7 @@ export type EditorOriginPrimeResult = {
   serviceWorkerVersion: string;
   cachedPaths: string[];
   cachedBytes: number;
+  storageMode: 'cache' | 'network';
 };
 
 export type EditorOriginPrimeProgress = (result: EditorOriginPrimeResult) => void;
@@ -40,7 +41,7 @@ type EditorOriginPrimeFailureMessage = {
   releaseId: string;
   sessionId: string;
   code: 'identity' | 'storage' | 'timeout' | 'cancelled';
-  stage: 'service-worker' | 'shell-cache' | 'shell-route' | 'broker-probe' | 'unknown';
+  stage: 'service-worker' | 'shell-cache' | 'shell-route' | 'broker-probe';
   detail?: string;
 };
 
@@ -99,14 +100,14 @@ function parsePrimeResult(
     isResourceBrokerReleaseId(value.releaseId) &&
     isResourceBrokerSessionId(value.sessionId) &&
     ['identity', 'storage', 'timeout', 'cancelled'].includes(String(value.code)) &&
-    ['service-worker', 'shell-cache', 'shell-route', 'broker-probe', 'unknown'].includes(String(value.stage)) &&
+    ['service-worker', 'shell-cache', 'shell-route', 'broker-probe'].includes(String(value.stage)) &&
     (value.detail === undefined || (typeof value.detail === 'string' && value.detail.length <= 200))
   ) {
     return value as EditorOriginPrimeFailureMessage;
   }
   if (
     !isRecord(value) ||
-    Object.keys(value).length !== 10 ||
+    Object.keys(value).length !== 11 ||
     value.protocol !== RESOURCE_BROKER_PROTOCOL ||
     value.type !== 'ONLYOFFICE_EDITOR_SHELL_PRIMED' ||
     typeof value.origin !== 'string' ||
@@ -124,7 +125,8 @@ function parsePrimeResult(
     !value.cachedPaths.every((path) => typeof path === 'string' && isEditorShellAssetPath(path)) ||
     !Number.isSafeInteger(value.cachedBytes) ||
     Number(value.cachedBytes) <= 0 ||
-    Number(value.cachedBytes) > EDITOR_SHELL_MAX_TOTAL_BYTES
+    Number(value.cachedBytes) > EDITOR_SHELL_MAX_TOTAL_BYTES ||
+    (value.storageMode !== 'cache' && value.storageMode !== 'network')
   ) {
     return null;
   }
@@ -246,7 +248,11 @@ export class EditorOriginPrimer {
 
     return new Promise<EditorOriginPrimeResult>((resolve, reject) => {
       let settled = false;
-      let lastStage: EditorOriginPrimeFailureMessage['stage'] = 'unknown';
+      // No progress message means the prime document never reached the
+      // controlled Service Worker (for example a waiting worker without a
+      // controllerchange). Attribute the timeout to that first stage rather
+      // than leaking an unhelpful `unknown/timeout` path to the UI.
+      let lastStage: EditorOriginPrimeFailureMessage['stage'] = 'service-worker';
       const finish = (callback: () => void) => {
         if (settled) return;
         settled = true;
@@ -302,6 +308,7 @@ export class EditorOriginPrimer {
             serviceWorkerVersion: message.serviceWorkerVersion,
             cachedPaths: [...message.cachedPaths],
             cachedBytes: message.cachedBytes,
+            storageMode: message.storageMode,
           }),
         );
       };

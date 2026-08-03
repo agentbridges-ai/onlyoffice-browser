@@ -18,10 +18,10 @@ import {
   parseResourceBrokerClientMessage,
 } from './lib/resource-broker-protocol';
 import {
-  EDITOR_SHELL_CACHE_NAME,
   EDITOR_SHELL_HOST_PATH,
   EDITOR_SHELL_PRIME_INSTALL_QUERY,
   EDITOR_SHELL_PRIME_PATH,
+  isEditorShellStorageAvailabilityError,
   matchEditorShell,
   primeEditorShell,
   releaseIdFromEditorShellPath,
@@ -196,12 +196,6 @@ setCacheNameDetails({
   suffix: '',
 });
 const pwaShellManifest = self.__WB_MANIFEST || [];
-const editorBootstrapAssetPaths = new Set(
-  pwaShellManifest
-    .map((entry) => (typeof entry === 'string' ? entry : entry.url))
-    .map((value) => new URL(value, self.location.origin).pathname)
-    .filter((pathname) => pathname.startsWith('/assets/')),
-);
 if (isCanonicalPwaHost) {
   precacheAndRoute(pwaShellManifest);
   cleanupOutdatedCaches();
@@ -335,7 +329,9 @@ const parseEditorReleaseAssetPath = (pathname) => {
 };
 
 const isEditorShellAssetPath = (path) =>
-  path === EDITOR_SHELL_HOST_PATH || path === EDITOR_SHELL_PRIME_PATH || /^assets\/[a-zA-Z0-9._+-]+$/.test(path);
+  path === EDITOR_SHELL_HOST_PATH ||
+  path === EDITOR_SHELL_PRIME_PATH ||
+  /^assets\/[a-zA-Z0-9._+-]+\.(?:css|js)$/.test(path);
 
 const isEditorDirectOriginBoundPath = (url) => {
   if (
@@ -749,13 +745,28 @@ self.addEventListener('message', (event) => {
         void prepare.then(clearPrime, clearPrime);
       }
     } else {
-      prepare = (existingPrime ?? Promise.resolve()).then(() =>
-        verifyEditorShell({
-          releaseId: event.data.releaseId,
-          origin: self.location.origin,
-          cacheStorage: caches,
-        }),
-      );
+      prepare = (existingPrime ?? Promise.resolve()).then(async () => {
+        try {
+          return await verifyEditorShell({
+            releaseId: event.data.releaseId,
+            origin: self.location.origin,
+            cacheStorage: caches,
+          });
+        } catch (error) {
+          // A third-party editor origin may lose Cache Storage while the
+          // canonical release remains valid. Re-run the bounded shell prime
+          // so the immutable network fallback can prove the shell without
+          // turning a local cache denial into a canonical-resource failure.
+          if (!isEditorShellStorageAvailabilityError(error)) throw error;
+          return primeEditorShell({
+            releaseId: event.data.releaseId,
+            origin: self.location.origin,
+            manifestOrigin: canonicalOrigin,
+            cacheStorage: caches,
+            fetch: (...args) => fetch(...args),
+          });
+        }
+      });
     }
     event.waitUntil(
       prepare
@@ -768,6 +779,7 @@ self.addEventListener('message', (event) => {
             serviceWorkerVersion: SERVICE_WORKER_VERSION,
             cachedPaths: result.cachedPaths,
             cachedBytes: result.cachedBytes,
+            storageMode: result.storageMode,
           });
         })
         .catch((error) => {
@@ -880,7 +892,7 @@ const editorShellRouteMatcher = ({ sameOrigin, url }) => {
   );
 };
 
-const editorShellRouteHandler = async ({ event, request, url }) => {
+const editorShellRouteHandler = async ({ request, url }) => {
   const releaseAsset = parseEditorReleaseAssetPath(url.pathname);
   const cached = releaseAsset && (await matchEditorShell(request, releaseAsset.releaseId, caches));
   if (cached) return cached;
@@ -890,38 +902,44 @@ const editorShellRouteHandler = async ({ event, request, url }) => {
       headers: { 'cache-control': 'no-store' },
     });
   }
-  if (releaseAsset.path === EDITOR_SHELL_HOST_PATH || releaseAsset.path === EDITOR_SHELL_PRIME_PATH) {
-    let detail = '';
-    if (isLocalEditorHost) {
-      try {
-        await verifyEditorShell({
-          releaseId: releaseAsset.releaseId,
-          origin: self.location.origin,
-          cacheStorage: caches,
-        });
-        detail = ' (verified generation did not match the request)';
-      } catch (error) {
-        detail = ` (${error instanceof Error ? error.message : String(error)})`.slice(0, 220);
-      }
-    }
-    return new Response(`Editor shell is not prepared${detail}`, {
-      status: 503,
-      headers: { 'cache-control': 'no-store', 'retry-after': '1' },
-    });
+  // Cache Storage is an optimization for the tiny editor shell only. Chrome
+  // can deny third-party Cache Storage (or evict an old generation) while the
+  // canonical Office CAS remains healthy. In that case serve the immutable
+  // release shell directly from the origin instead of blocking the entire
+  // resource installation. SDK/WASM/fonts continue through the canonical
+  // Broker and never take this path.
+  const canonicalUrl = new URL(url.href);
+  if (isLocalEditorHost) {
+    canonicalUrl.hostname = LOCAL_CANONICAL_OFFICE_HOST;
+  } else {
+    canonicalUrl.protocol = 'https:';
+    canonicalUrl.hostname = CANONICAL_OFFICE_HOST;
+    canonicalUrl.port = '';
   }
-  if (editorBootstrapAssetPaths.has(`/${releaseAsset.path}`)) {
-    const response = await fetch(request, {
+  const response = await fetch(
+    new Request(canonicalUrl.href, {
+      method: request.method,
+      headers: request.headers,
       cache: 'no-store',
       credentials: 'omit',
       redirect: 'error',
+    }),
+  );
+  if (!response.ok || response.status !== 200) return response;
+  const responseRelease = response.headers.get('x-onlyoffice-asset-version');
+  if (responseRelease !== null && responseRelease !== releaseAsset.releaseId) {
+    await response.body?.cancel().catch(() => undefined);
+    return new Response('Editor shell release identity mismatch', {
+      status: 502,
+      headers: { 'cache-control': 'no-store' },
     });
-    if (response.ok && response.status === 200) {
-      const cache = await caches.open(EDITOR_SHELL_CACHE_NAME);
-      event.waitUntil(cache.put(url.href, response.clone()));
-    }
-    return response;
   }
-  return fetchEditorBrokerAsset(event, request, url);
+  const headers = new Headers(response.headers);
+  headers.set('x-onlyoffice-editor-shell-storage', 'network');
+  if (request.method === 'HEAD') {
+    return new Response(null, { status: response.status, statusText: response.statusText, headers });
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 };
 
 registerRoute(editorShellRouteMatcher, editorShellRouteHandler, 'GET');

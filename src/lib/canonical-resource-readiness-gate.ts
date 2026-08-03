@@ -24,6 +24,11 @@ import {
 
 const READINESS_PROOF_CHANNEL = 'onlyoffice-canonical-readiness-v1';
 const READINESS_PROOF_PROTOCOL = 'onlyoffice-canonical-readiness-proof-v1';
+// A successful readiness probe is an immutable release proof. Re-running all
+// 12 editor-origin shell checks on every settings-panel refresh only adds
+// latency and can re-trigger third-party storage failures. Revalidate on a
+// bounded heartbeat instead; explicit updates and mutations always bypass it.
+const READINESS_PROOF_MAX_AGE_MS = 10 * 60 * 1000;
 
 export type CanonicalReleaseReadinessProbe = (
   releaseId: string,
@@ -109,7 +114,8 @@ function validateProbeResults(
       !result.cachedPaths.includes(EDITOR_SHELL_PRIME_PATH) ||
       !Number.isSafeInteger(result.cachedBytes) ||
       result.cachedBytes <= 0 ||
-      result.cachedBytes > EDITOR_SHELL_MAX_TOTAL_BYTES
+      result.cachedBytes > EDITOR_SHELL_MAX_TOTAL_BYTES ||
+      (result.storageMode !== 'cache' && result.storageMode !== 'network')
     ) {
       throw new ResourceInstallerError('storage', `editor-origins/${result.origin}`);
     }
@@ -138,6 +144,7 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
   #rawSnapshot: ResourceInstallerSnapshot;
   #validatedRelease: string | null = null;
   #peerValidatedRelease: string | null = null;
+  #validatedAt = 0;
   #gateFailure: GateFailure | null = null;
   #gateRelease: string | null = null;
   #gateMode: 'prime' | 'verify' | null = null;
@@ -184,6 +191,7 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
         this.#peerValidatedRelease = value.releaseId;
         if (this.#rawSnapshot.installedRelease === value.releaseId) {
           this.#validatedRelease = value.releaseId;
+          this.#validatedAt = Date.now();
           this.#gateFailure = null;
           this.#publish();
         }
@@ -236,6 +244,15 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
   async checkHealth(options?: { deep?: false }): Promise<void> {
     await this.#installer.checkHealth(options);
     this.#rawSnapshot = cloneSnapshot(this.#installer.getInstallerSnapshot());
+    const releaseId = this.#rawSnapshot.installedRelease;
+    if (
+      releaseId &&
+      this.#validatedRelease === releaseId &&
+      Date.now() - this.#validatedAt < READINESS_PROOF_MAX_AGE_MS
+    ) {
+      this.#publish();
+      return;
+    }
     this.#invalidateReadinessProof();
     await this.#ensureReady('verify');
   }
@@ -320,6 +337,7 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
           throw new ResourceInstallerError('incompatible', 'release/changed-during-readiness-probe');
         }
         this.#validatedRelease = releaseId;
+        this.#validatedAt = Date.now();
         this.#gateFailure = null;
         this.#peerValidatedRelease = releaseId;
         this.#proofChannel?.postMessage({
@@ -353,6 +371,7 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
   #invalidateReadinessProof(): void {
     this.#validatedRelease = null;
     this.#peerValidatedRelease = null;
+    this.#validatedAt = 0;
     this.#gateFailure = null;
     this.#publish();
   }

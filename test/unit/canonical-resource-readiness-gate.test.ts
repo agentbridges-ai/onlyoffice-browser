@@ -57,6 +57,7 @@ function primeResults(releaseId: string) {
     serviceWorkerVersion: 'sw-test',
     cachedPaths: ['office-host.html', 'editor-shell-prime.html', 'assets/officeHost.js'],
     cachedBytes: 100,
+    storageMode: 'cache' as const,
   }));
 }
 
@@ -272,21 +273,20 @@ describe('CanonicalResourceReadinessGate', () => {
     });
   });
 
-  it('revalidates the active release for every explicit health and update check', async () => {
+  it('keeps routine health checks fast while explicit update checks revalidate all origins', async () => {
     const installer = new FakeInstaller();
     const probe = vi.fn(async (releaseId: string) => primeResults(releaseId));
     const gate = new CanonicalResourceReadinessGate({ installer, probeRelease: probe });
     await gate.initialize();
     await gate.checkHealth();
     await gate.checkForUpdates();
-    expect(probe).toHaveBeenCalledTimes(3);
+    expect(probe).toHaveBeenCalledTimes(2);
     expect(probe).toHaveBeenNthCalledWith(1, 'release-a', expect.any(Function));
     expect(probe).toHaveBeenNthCalledWith(2, 'release-a', expect.any(Function));
-    expect(probe).toHaveBeenNthCalledWith(3, 'release-a', expect.any(Function));
 
     installer.publish(readySnapshot('release-b'));
     await gate.checkHealth();
-    expect(probe).toHaveBeenNthCalledWith(4, 'release-b', expect.any(Function));
+    expect(probe).toHaveBeenNthCalledWith(3, 'release-b', expect.any(Function));
     expect(gate.getInstallerSnapshot()).toMatchObject({
       installedRelease: 'release-b',
       readiness: 'ready',
@@ -307,7 +307,7 @@ describe('CanonicalResourceReadinessGate', () => {
     expect(gate.getInstallerSnapshot().readiness).toBe('ready');
 
     healthy = false;
-    await expect(gate.checkHealth()).rejects.toMatchObject({
+    await expect(gate.checkForUpdates()).rejects.toMatchObject({
       code: 'storage',
       path: 'editor-origins/https://aries.getpi.work',
     });

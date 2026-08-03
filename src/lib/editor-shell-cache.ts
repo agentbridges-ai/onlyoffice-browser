@@ -45,6 +45,13 @@ export type EditorShellPrimeResult = {
   releaseId: string;
   cachedPaths: string[];
   cachedBytes: number;
+  /**
+   * Shell assets are deliberately small and may fall back to the immutable
+   * network representation when a browser blocks Cache Storage in a
+   * third-party editor origin. Office SDK/WASM/font objects never use this
+   * fallback; they remain canonical Broker resources.
+   */
+  storageMode: 'cache' | 'network';
 };
 
 function expectedMime(path: string): string | null {
@@ -489,7 +496,14 @@ async function verifyGeneration(
     releaseId: pointer.releaseId,
     cachedPaths: storedPaths,
     cachedBytes: pointer.cachedBytes,
+    storageMode: 'cache',
   };
+}
+
+export function isEditorShellStorageAvailabilityError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = 'name' in error && typeof error.name === 'string' ? error.name : '';
+  return ['QuotaExceededError', 'UnknownError', 'InvalidStateError', 'NotAllowedError'].includes(name);
 }
 
 export async function primeEditorShell(options: {
@@ -547,9 +561,21 @@ export async function primeEditorShell(options: {
     ...dependencies.map((path) => parseManifestDescriptor(manifest.assets.get(path), path)),
   ].sort((left, right) => left.path.localeCompare(right.path));
   const cachedBytes = validateDescriptorSet(options.releaseId, descriptors);
+  const networkFallback = (): EditorShellPrimeResult => ({
+    releaseId: options.releaseId,
+    cachedPaths: descriptors.map((descriptor) => descriptor.path),
+    cachedBytes,
+    storageMode: 'network',
+  });
   const generationId = (options.createGenerationId ?? randomGenerationId)();
   const cacheName = generationCacheName(options.releaseId, generationId);
-  const staging = await options.cacheStorage.open(cacheName);
+  let staging: Cache;
+  try {
+    staging = await options.cacheStorage.open(cacheName);
+  } catch (error) {
+    if (isEditorShellStorageAvailabilityError(error)) return networkFallback();
+    throw error;
+  }
   let committed = false;
 
   try {
@@ -568,13 +594,18 @@ export async function primeEditorShell(options: {
           options.releaseId,
           `Editor shell dependency ${descriptor.path}`,
         ));
-      await staging.put(
-        url,
-        new Response(responseBody(asset.bytes), {
-          status: 200,
-          headers: asset.headers,
-        }),
-      );
+      try {
+        await staging.put(
+          url,
+          new Response(responseBody(asset.bytes), {
+            status: 200,
+            headers: asset.headers,
+          }),
+        );
+      } catch (error) {
+        if (isEditorShellStorageAvailabilityError(error)) return networkFallback();
+        throw error;
+      }
     }
 
     const pointer: EditorShellPointer = {
@@ -593,21 +624,32 @@ export async function primeEditorShell(options: {
     } catch {
       // Legacy, corrupt and absent pointers are never trusted for cleanup.
     }
-    const metadata = await options.cacheStorage.open(EDITOR_SHELL_CACHE_NAME);
+    let metadata: Cache;
+    try {
+      metadata = await options.cacheStorage.open(EDITOR_SHELL_CACHE_NAME);
+    } catch (error) {
+      if (isEditorShellStorageAvailabilityError(error)) return networkFallback();
+      throw error;
+    }
     const pointerBytes = serializePointer(pointer);
     if (pointerBytes.byteLength > EDITOR_SHELL_MAX_POINTER_BYTES) {
       throw new Error('Editor shell pointer exceeds its bounded size');
     }
-    await metadata.put(
-      editorShellPointerUrl(options.origin, options.releaseId),
-      new Response(responseBody(pointerBytes), {
-        status: 200,
-        headers: {
-          'content-length': String(pointerBytes.byteLength),
-          'content-type': 'application/json; charset=utf-8',
-        },
-      }),
-    );
+    try {
+      await metadata.put(
+        editorShellPointerUrl(options.origin, options.releaseId),
+        new Response(responseBody(pointerBytes), {
+          status: 200,
+          headers: {
+            'content-length': String(pointerBytes.byteLength),
+            'content-type': 'application/json; charset=utf-8',
+          },
+        }),
+      );
+    } catch (error) {
+      if (isEditorShellStorageAvailabilityError(error)) return networkFallback();
+      throw error;
+    }
     committed = true;
     if (previous && previous.cacheName !== cacheName) {
       await options.cacheStorage.delete(previous.cacheName).catch(() => undefined);
@@ -616,6 +658,7 @@ export async function primeEditorShell(options: {
       releaseId: options.releaseId,
       cachedPaths: descriptors.map((descriptor) => descriptor.path),
       cachedBytes,
+      storageMode: 'cache',
     };
   } finally {
     if (!committed) await options.cacheStorage.delete(cacheName).catch(() => undefined);

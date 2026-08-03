@@ -196,7 +196,7 @@ export interface OfficeRuntimeResourceInstaller {
   plan(request: ResourcePlanRequest): Promise<ResourcePlan>;
   apply(plan: ResourcePlan): Promise<void>;
   checkForUpdates(): Promise<void>;
-  checkHealth(options?: { deep?: false }): Promise<void>;
+  checkHealth(options?: { deep?: boolean }): Promise<void>;
   repair(options: { scope: 'required' | 'installed' | 'all' }): Promise<void>;
   pause(): void;
   resume(): Promise<void>;
