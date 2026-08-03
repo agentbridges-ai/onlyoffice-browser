@@ -18,7 +18,7 @@ const SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
 const TIMEOUT_MS = 30_000;
 const SHELL_ROUTE_PROBE_TIMEOUT_MS = 5_000;
 
-async function probeInstalledShellRoute(releaseId: string): Promise<void> {
+async function probeInstalledShellRoute(releaseId: string, storageMode: 'cache' | 'network'): Promise<void> {
   const target = new URL(`/r/${encodeURIComponent(releaseId)}/${EDITOR_SHELL_HOST_PATH}`, location.origin);
   const deadline = Date.now() + SHELL_ROUTE_PROBE_TIMEOUT_MS;
   let delayMs = 25;
@@ -31,8 +31,14 @@ async function probeInstalledShellRoute(releaseId: string): Promise<void> {
     });
     lastStatus = response.status;
     const servedByEditorCache = response.headers.get(EDITOR_SHELL_CACHE_RESPONSE_HEADER) === '1';
+    const servedByNetworkFallback = response.headers.get('x-onlyoffice-editor-shell-storage') === 'network';
     const responseRelease = response.headers.get('x-onlyoffice-asset-version');
-    if (response.ok && response.status === 200 && servedByEditorCache && responseRelease === releaseId) {
+    if (
+      response.ok &&
+      response.status === 200 &&
+      (storageMode === 'cache' ? servedByEditorCache : servedByNetworkFallback) &&
+      responseRelease === releaseId
+    ) {
       await response.body?.cancel().catch(() => undefined);
       return;
     }
@@ -178,7 +184,8 @@ async function prime(): Promise<void> {
     typeof result.serviceWorkerVersion !== 'string' ||
     result.serviceWorkerVersion.length === 0 ||
     !Array.isArray(result.cachedPaths) ||
-    !Number.isSafeInteger(result.cachedBytes)
+    !Number.isSafeInteger(result.cachedBytes) ||
+    (result.storageMode !== 'cache' && result.storageMode !== 'network')
   ) {
     const code = typeof result.code === 'string' ? result.code : 'invalid-response';
     const detail = typeof result.detail === 'string' ? `: ${result.detail}` : '';
@@ -186,7 +193,7 @@ async function prime(): Promise<void> {
   }
 
   progress('shell-route');
-  await probeInstalledShellRoute(identity.releaseId);
+  await probeInstalledShellRoute(identity.releaseId, result.storageMode as 'cache' | 'network');
 
   const broker = new ResourceBrokerFrameClient({
     releaseId: identity.releaseId,
@@ -248,6 +255,7 @@ async function prime(): Promise<void> {
       sessionId: identity.sessionId,
       brokerReady: true,
       occupied: false,
+      storageMode: result.storageMode,
     },
     identity.parentOrigin,
   );
@@ -266,7 +274,7 @@ void prime().catch((error) => {
         ? 'shell-route'
         : /shell|cache/i.test(message)
           ? 'shell-cache'
-          : 'unknown';
+          : 'service-worker';
   const code = /cancelled/i.test(message)
     ? 'cancelled'
     : /timed out/i.test(message)

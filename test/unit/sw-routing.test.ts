@@ -183,8 +183,17 @@ describe('SW fetch routing', () => {
     expect(sw).toContain("registerRoute(editorBrokerRouteMatcher, editorBrokerRouteHandler, 'GET')");
     expect(sw).toContain("registerRoute(editorBrokerRouteMatcher, editorBrokerRouteHandler, 'HEAD')");
     expect(sw).toContain('matchEditorShell(request, releaseAsset.releaseId, caches)');
-    expect(sw).toContain('editorBootstrapAssetPaths.has(`/${releaseAsset.path}`)');
-    expect(sw).toContain('return fetchEditorBrokerAsset(event, request, url)');
+    expect(sw).toContain('const editorShellRouteHandler = async ({ request, url }) =>');
+    expect(sw).toContain('canonicalUrl.hostname = LOCAL_CANONICAL_OFFICE_HOST');
+    expect(sw).toContain('canonicalUrl.hostname = CANONICAL_OFFICE_HOST');
+    expect(sw).toContain('/^assets\\/[a-zA-Z0-9._+-]+\\.(?:css|js)$/');
+    expect(sw).toContain("headers.set('x-onlyoffice-editor-shell-storage', 'network')");
+    expect(sw).toContain('Editor shell release identity mismatch');
+    expect(sw).toContain("redirect: 'error'");
+    expect(sw).not.toContain('editorBootstrapAssetPaths');
+    expect(sw).toContain(
+      'const editorBrokerRouteHandler = ({ event, request, url }) => fetchEditorBrokerAsset(event, request, url)',
+    );
     expect(sw).toContain('status: 503');
     expect(sw).toContain('!isIsolatedEditorHost &&');
     expect(sw).not.toContain('loadCurrentRelease');
@@ -192,7 +201,6 @@ describe('SW fetch routing', () => {
     expect(sw).not.toContain('loadOfficePackSegment');
     expect(sw).not.toContain('fetchSharedAsset');
     expect(sw).not.toContain("cache: 'force-cache'");
-    expect(sw).not.toContain('return fetch(request)');
     expect(sw).toContain('if (isCanonicalPwaHost)');
     expect(sw).toContain('new NetworkFirst');
     expect(sw).toContain('new StaleWhileRevalidate');

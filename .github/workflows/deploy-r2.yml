@@ -60,6 +60,8 @@ jobs:
       ONLYOFFICE_CF_MATRIX_KEEP_STATE: "0"
     steps:
       - uses: actions/checkout@v6
+      - name: Read package release identity
+        run: echo "ONLYOFFICE_PACKAGE_VERSION=$(node -p \"require('./package.json').version\")" >> "${GITHUB_ENV}"
       - name: Initialize reproducible build metadata
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "${GITHUB_ENV}"
       - uses: pnpm/action-setup@v4
@@ -118,7 +120,7 @@ jobs:
           node -e "const fonts=require('./dist/onlyoffice-browser-font-assets.json'); const names=new Set((fonts.fontFamilies||[]).map(({name})=>name)); const hidden=['Wingdings','Wingdings 2','Wingdings 3','Webdings','Symbol','OpenSymbol','Noto Emoji']; if(fonts.fontSet!=='full'||names.size<45||!names.has('Aptos')||!names.has('DengXian')||!names.has('Calibri')||hidden.some(name=>names.has(name))) throw new Error('curated Aptos/DengXian/Calibri font picker matrix is invalid')"
           VERIFY_ARGS=(
             --release-root .onlyoffice-release
-            --expected-package-version 0.5.11
+            --expected-package-version "${ONLYOFFICE_PACKAGE_VERSION}"
             --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
           )
           if [ "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}" = "required" ]; then
@@ -382,7 +384,7 @@ jobs:
         run: |
           VERIFY_ARGS=(
             --release-root .onlyoffice-release
-            --expected-package-version 0.5.11
+            --expected-package-version "${ONLYOFFICE_PACKAGE_VERSION}"
           --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
           --remote r2:onlyoffice-getpi-work
           --concurrency 4
@@ -430,7 +432,7 @@ jobs:
           done
           VERIFY_ARGS=(
             --release-root .onlyoffice-release
-            --expected-package-version 0.5.11
+            --expected-package-version "${ONLYOFFICE_PACKAGE_VERSION}"
             --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
             --cache-bust "${GITHUB_SHA}"
           )
@@ -528,7 +530,7 @@ jobs:
             --manifest-url "https://onlyoffice.getpi.work/onlyoffice-browser-font-assets.json?ci=${GITHUB_SHA}"
           VERIFY_ARGS=(
             --release-root .onlyoffice-release
-            --expected-package-version 0.5.11
+            --expected-package-version "${ONLYOFFICE_PACKAGE_VERSION}"
             --fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"
             --cache-bust "${GITHUB_SHA}"
           )

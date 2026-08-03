@@ -16,6 +16,8 @@ const localFontRoot = process.env.ONLYOFFICE_MATRIX_FONT_ASSETS_DIR
   : '';
 const fontProfiles = new Set(['fonts-basic', 'fonts-office-compat']);
 const DEFAULT_FONT_DOWNLOAD_CONCURRENCY = 3;
+const RANGED_FONT_ASSET_THRESHOLD_BYTES = 8 * 1024 * 1024;
+const DEFAULT_FONT_RANGE_BYTES = 4 * 1024 * 1024;
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
@@ -25,18 +27,19 @@ export async function fetchWithRetry(
   url,
   consume = (response) => response,
   retryDelays = [1_000, 3_000, 10_000, 30_000],
+  requestInit = {},
 ) {
   let lastError;
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);
     try {
-      const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+      const response = await fetch(url, { ...requestInit, cache: 'no-store', signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await consume(response);
     } catch (error) {
       lastError = error;
-      if (attempt < 2) {
+      if (attempt < retryDelays.length) {
         await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt] ?? 0));
       }
     } finally {
@@ -80,11 +83,15 @@ async function readRelease() {
     !assets.some((asset) => asset.path === 'onlyoffice-browser-font-assets.json') ||
     assets.some(
       (asset) =>
-        typeof asset.path !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sha256) || !Number.isSafeInteger(asset.bytes),
+        typeof asset.path !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(asset.sha256) ||
+        !Number.isSafeInteger(asset.bytes) ||
+        asset.bytes < 0,
     )
   ) {
     throw new Error('Cloudflare matrix font release is incomplete');
   }
+  for (const asset of assets) safeAssetPath(cacheRoot, asset.path);
   const fontManifest = assets.find((asset) => asset.path === 'onlyoffice-browser-font-assets.json');
   if (pinnedManifestSha256 && fontManifest.sha256 !== pinnedManifestSha256) {
     throw new Error(
@@ -94,14 +101,132 @@ async function readRelease() {
   return { releaseId, assets };
 }
 
+function safeAssetPath(root, assetPath) {
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, assetPath);
+  const relative = path.relative(resolvedRoot, target);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error(`Font asset path escapes its cache root: ${assetPath}`);
+  }
+  return target;
+}
+
 function validCachedAsset(asset) {
-  const target = path.join(cacheRoot, asset.path);
+  const target = safeAssetPath(cacheRoot, asset.path);
   if (!fs.existsSync(target) || fs.statSync(target).size !== asset.bytes) return false;
   return sha256(fs.readFileSync(target)) === asset.sha256;
 }
 
+function parseContentRange(value, expectedStart, expectedEnd, expectedTotal) {
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value || '');
+  if (!match) return false;
+  return Number(match[1]) === expectedStart && Number(match[2]) === expectedEnd && Number(match[3]) === expectedTotal;
+}
+
+export async function downloadRangedAsset(releaseId, asset, options = {}) {
+  const root = options.root || cacheRoot;
+  const rangeBytes = options.rangeBytes || DEFAULT_FONT_RANGE_BYTES;
+  if (!Number.isSafeInteger(rangeBytes) || rangeBytes <= 0) throw new TypeError('Invalid font range size');
+  const target = safeAssetPath(root, asset.path);
+  const temporary = `${target}.download`;
+  const metadataPath = `${temporary}.json`;
+  const metadata = {
+    releaseId,
+    path: asset.path,
+    bytes: asset.bytes,
+    sha256: asset.sha256,
+  };
+  let offset = 0;
+  let digest = crypto.createHash('sha256');
+  try {
+    if (fs.existsSync(temporary) && fs.existsSync(metadataPath)) {
+      try {
+        const saved = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        const size = fs.statSync(temporary).size;
+        if (
+          saved.releaseId === metadata.releaseId &&
+          saved.path === metadata.path &&
+          saved.bytes === metadata.bytes &&
+          saved.sha256 === metadata.sha256 &&
+          Number.isSafeInteger(size) &&
+          size >= 0 &&
+          size <= asset.bytes
+        ) {
+          const prefix = fs.readFileSync(temporary);
+          digest.update(prefix);
+          offset = prefix.byteLength;
+        } else {
+          fs.rmSync(temporary, { force: true });
+          fs.rmSync(metadataPath, { force: true });
+        }
+      } catch {
+        fs.rmSync(temporary, { force: true });
+        fs.rmSync(metadataPath, { force: true });
+      }
+    }
+
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    if (offset === 0) fs.writeFileSync(temporary, Buffer.alloc(0));
+    fs.writeFileSync(metadataPath, `${JSON.stringify(metadata)}\n`);
+    const file = fs.openSync(temporary, 'a');
+    try {
+      while (offset < asset.bytes) {
+        const end = Math.min(asset.bytes - 1, offset + rangeBytes - 1);
+        const bytes = Buffer.from(
+          await fetchWithRetry(
+            `${sourceOrigin}/r/${encodeURIComponent(releaseId)}/${asset.path}`,
+            async (response) => {
+              if (
+                response.status !== 206 ||
+                !parseContentRange(response.headers.get('content-range'), offset, end, asset.bytes)
+              ) {
+                throw new Error(
+                  `Range response identity mismatch for ${asset.path}: ${response.status} ${response.headers.get('content-range') || 'missing range'}`,
+                );
+              }
+              const body = Buffer.from(await response.arrayBuffer());
+              if (body.byteLength !== end - offset + 1) {
+                throw new Error(`Range response length mismatch for ${asset.path}`);
+              }
+              return body;
+            },
+            options.retryDelays,
+            { headers: { Range: `bytes=${offset}-${end}` } },
+          ),
+        );
+        fs.writeSync(file, bytes);
+        digest.update(bytes);
+        offset += bytes.byteLength;
+        fs.writeFileSync(metadataPath, `${JSON.stringify({ ...metadata, offset })}\n`);
+      }
+    } finally {
+      fs.closeSync(file);
+    }
+    const completeDigest = digest.digest('hex');
+    if (completeDigest !== asset.sha256) {
+      fs.rmSync(temporary, { force: true });
+      fs.rmSync(metadataPath, { force: true });
+      throw new Error(`Font asset integrity mismatch: ${asset.path}`);
+    }
+    fs.renameSync(temporary, target);
+    fs.rmSync(metadataPath, { force: true });
+    return true;
+  } catch (error) {
+    // Keep a verified prefix and its identity sidecar so a later CI retry can
+    // resume at the last completed Range instead of downloading the font from
+    // byte zero again. A digest mismatch is not resumable and must restart.
+    if (fs.existsSync(temporary) && fs.statSync(temporary).size > asset.bytes) {
+      fs.rmSync(temporary, { force: true });
+      fs.rmSync(metadataPath, { force: true });
+    }
+    throw error;
+  }
+}
+
 async function downloadAsset(releaseId, asset) {
+  const target = safeAssetPath(cacheRoot, asset.path);
   if (validCachedAsset(asset)) return false;
+  if (asset.bytes >= RANGED_FONT_ASSET_THRESHOLD_BYTES) return downloadRangedAsset(releaseId, asset);
   const bytes = Buffer.from(
     await fetchWithRetry(`${sourceOrigin}/r/${encodeURIComponent(releaseId)}/${asset.path}`, (response) =>
       response.arrayBuffer(),
@@ -110,7 +235,6 @@ async function downloadAsset(releaseId, asset) {
   if (bytes.byteLength !== asset.bytes || sha256(bytes) !== asset.sha256) {
     throw new Error(`Font asset integrity mismatch: ${asset.path}`);
   }
-  const target = path.join(cacheRoot, asset.path);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const temporary = `${target}.download`;
   fs.writeFileSync(temporary, bytes);
@@ -154,9 +278,9 @@ async function hydrateCache(releaseId, assets) {
 
 function copyToDist(assets) {
   for (const asset of assets) {
-    const source = path.join(cacheRoot, asset.path);
+    const source = safeAssetPath(cacheRoot, asset.path);
     if (!validCachedAsset(asset)) throw new Error(`Font cache verification failed: ${asset.path}`);
-    const destination = path.join(distRoot, asset.path);
+    const destination = safeAssetPath(distRoot, asset.path);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(source, destination);
   }

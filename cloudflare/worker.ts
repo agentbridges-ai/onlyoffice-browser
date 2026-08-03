@@ -1364,7 +1364,12 @@ export default {
     }
     const pinnedReleaseId = releaseIdFromReferrer(request.headers.get('referer'));
     const editorAssetRoute = resolveEditorAssetRoute(url.pathname);
-    if (isolated && shouldShareAsset(editorAssetRoute.pathname, request.headers.get('sec-fetch-dest'))) {
+    const localMatrixFixture = env.LOCAL_MATRIX_MODE === '1' && editorAssetRoute.pathname.startsWith('/__matrix__/');
+    if (
+      isolated &&
+      !localMatrixFixture &&
+      shouldShareAsset(editorAssetRoute.pathname, request.headers.get('sec-fetch-dest'))
+    ) {
       const releaseId = editorAssetRoute.releaseId || pinnedReleaseId || (await stableReleaseId(env));
       if (releaseId) {
         const canonical = new URL(url);

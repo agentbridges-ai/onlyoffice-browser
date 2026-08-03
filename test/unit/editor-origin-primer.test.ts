@@ -78,6 +78,7 @@ function primerHarness(
                     'assets/officeHost.js',
                   ],
                   cachedBytes: options.cachedBytes ?? 42,
+                  storageMode: 'cache',
                 },
           } as unknown as MessageEvent;
           for (const listener of listeners) listener(event);
@@ -220,6 +221,44 @@ describe('EditorOriginPrimer', () => {
       stage: 'broker-probe',
       origin: 'https://aries.getpi.work',
     } satisfies Partial<EditorOriginPrimeError>);
+  });
+
+  it('attributes a missing controllerchange timeout to the Service Worker stage', async () => {
+    vi.useFakeTimers();
+    const harness = primerHarness({});
+    // No message models a registered-but-uncontrolled Service Worker whose
+    // controllerchange event never arrives.
+    harness.browserDocument.body.append = () => undefined;
+    const primer = new EditorOriginPrimer({
+      window: harness.browserWindow,
+      document: harness.browserDocument,
+      timeoutMs: 100,
+      randomUUID: () => 'session-timeout',
+    });
+    const failure = primer.primeRelease('release-timeout', ['aries']);
+    const assertion = expect(failure).rejects.toMatchObject({
+      name: 'EditorOriginPrimeError',
+      code: 'timeout',
+      stage: 'service-worker',
+      origin: 'https://aries.getpi.work',
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    await assertion;
+  });
+
+  it('preserves a shell-cache storage failure stage', async () => {
+    const harness = primerHarness({ failure: { code: 'storage', stage: 'shell-cache' } });
+    const primer = new EditorOriginPrimer({
+      window: harness.browserWindow,
+      document: harness.browserDocument,
+      randomUUID: () => 'session-shell-cache',
+    });
+    await expect(primer.primeRelease('release-shell-cache', ['aries'])).rejects.toMatchObject({
+      name: 'EditorOriginPrimeError',
+      code: 'storage',
+      stage: 'shell-cache',
+      origin: 'https://aries.getpi.work',
+    });
   });
 
   it('rejects an unbounded or unsafe shell-cache result before it reaches readiness', async () => {

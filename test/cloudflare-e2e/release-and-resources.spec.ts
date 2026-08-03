@@ -1456,6 +1456,97 @@ test('synthetic canonical broker fixture stores one copy and reuses it across th
   await context.close();
 });
 
+test('canonical broker editor shell fault matrix keeps three origins explicit and recoverable', async ({ browser }) => {
+  test.skip(
+    matrixMode !== 'synthetic-broker',
+    'The local Cloudflare/R2 fixture is used for this focused fault matrix.',
+  );
+  test.setTimeout(90_000);
+
+  const representativeContext = await freshContext(browser);
+  try {
+    const representativeCases = [
+      { host: 'aries', fault: 'cacheStorageOpenError', expectedMode: 'network' },
+      { host: 'taurus', fault: 'cacheStoragePutError', expectedMode: 'network' },
+      { host: 'gemini', fault: 'none', expectedMode: 'cache' },
+    ] as const;
+    const representativePages = await Promise.all(
+      representativeCases.map(async ({ host, fault }) => {
+        const page = await representativeContext.newPage();
+        await page.goto(`http://${host}.localhost:${port}/__matrix__/editor-shell-fault/index.html?fault=${fault}`);
+        return page;
+      }),
+    );
+    const representativeResults = await Promise.all(
+      representativePages.map((page) =>
+        page.evaluate(
+          () =>
+            (
+              globalThis as typeof globalThis & {
+                __ONLYOFFICE_EDITOR_SHELL_FAULT_RESULT_PROMISE__: Promise<unknown>;
+              }
+            ).__ONLYOFFICE_EDITOR_SHELL_FAULT_RESULT_PROMISE__,
+        ),
+      ),
+    );
+    for (let index = 0; index < representativeResults.length; index += 1) {
+      const result = representativeResults[index] as {
+        ready: boolean;
+        storageMode: string;
+        stages: string[];
+        stage?: string;
+      };
+      expect(result.ready, `${representativeCases[index].fault}: ${JSON.stringify(result)}`).toBe(true);
+      expect(result.storageMode, representativeCases[index].fault).toBe(representativeCases[index].expectedMode);
+      expect(result.stages).toEqual(['service-worker', 'shell-cache', 'shell-route', 'broker-probe']);
+      expect(result.stage).not.toBe('unknown');
+    }
+    const cacheInventory = await Promise.all(representativePages.map((page) => page.evaluate(() => caches.keys())));
+    expect(cacheInventory[0]).not.toContain('onlyoffice-editor-shell-fault-v1');
+    expect(cacheInventory[1]).toContain('onlyoffice-editor-shell-fault-v1');
+    expect(cacheInventory[2]).toContain('onlyoffice-editor-shell-fault-v1');
+    await Promise.all(representativePages.map((page) => page.close()));
+  } finally {
+    await representativeContext.close();
+  }
+
+  const faultCases = [
+    { fault: 'serviceWorkerNoController', stage: 'service-worker', code: 'timeout' },
+    { fault: 'primeDelayMs', stage: 'shell-cache', code: 'timeout' },
+    { fault: 'shellNetwork404', stage: 'shell-route', code: 'network' },
+    { fault: 'shellReleaseMismatch', stage: 'shell-route', code: 'integrity' },
+    { fault: 'brokerProbeTimeout', stage: 'broker-probe', code: 'timeout' },
+    { fault: 'offlineAfterLastObject', stage: 'broker-probe', code: 'offline' },
+    { fault: 'abortAtLastMegabyte', stage: 'broker-probe', code: 'aborted' },
+  ] as const;
+  for (const [index, expected] of faultCases.entries()) {
+    const context = await freshContext(browser);
+    try {
+      const page = await context.newPage();
+      const host = ['aries', 'taurus', 'gemini'][index % 3];
+      await page.goto(
+        `http://${host}.localhost:${port}/__matrix__/editor-shell-fault/index.html?fault=${expected.fault}`,
+      );
+      const result = (await page.evaluate(
+        () =>
+          (
+            globalThis as typeof globalThis & {
+              __ONLYOFFICE_EDITOR_SHELL_FAULT_RESULT_PROMISE__: Promise<unknown>;
+            }
+          ).__ONLYOFFICE_EDITOR_SHELL_FAULT_RESULT_PROMISE__,
+      )) as { ready: boolean; stage: string; code: string; stages: string[] };
+      expect(result.ready, expected.fault).toBe(false);
+      expect(result.stage, expected.fault).toBe(expected.stage);
+      expect(result.code, expected.fault).toBe(expected.code);
+      expect(result.stage, expected.fault).not.toBe('unknown');
+      expect(result.stages[0], expected.fault).toBe('service-worker');
+      await page.close();
+    } finally {
+      await context.close();
+    }
+  }
+});
+
 test('synthetic canonical broker fixture survives a full Chromium restart and serves offline', async () => {
   test.skip(matrixMode !== 'synthetic-broker', 'Covered by the production v5 matrix in full mode.');
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'onlyoffice-broker-restart-'));

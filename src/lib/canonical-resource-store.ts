@@ -30,6 +30,7 @@ const ACTIVE_RELEASE_KEY = 'active-release-id';
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const HEALTH_CHECK_CONCURRENCY = 32;
 const DEEP_VERIFY_CONCURRENCY = 4;
+const INTEGRITY_PROGRESS_INTERVAL_BYTES = 1 * 1024 * 1024;
 const MAX_PACKAGE_INGEST_BYTES = 1_073_741_824;
 const MAX_PACKAGE_INGEST_SEGMENT_BYTES = 64 * 1_024 * 1_024;
 const MAX_PACKAGE_INGEST_ASSET_BYTES = 64 * 1_024 * 1_024;
@@ -159,6 +160,15 @@ export interface CanonicalResourceIntegrityVerificationOptions {
   releaseId?: string;
   objectSha256s?: readonly string[];
   signal?: AbortSignal;
+  onProgress?: (progress: CanonicalResourceIntegrityProgress) => void;
+}
+
+export interface CanonicalResourceIntegrityProgress {
+  releaseId: string;
+  object: ContentObjectDescriptor;
+  loadedBytes: number;
+  checkedBytes: number;
+  verifiedBytes: number;
 }
 
 type CanonicalObjectIntegrityOutcome =
@@ -1821,7 +1831,74 @@ export class CanonicalResourceStore {
     }
   }
 
-  async checkHealth(options: { releaseId?: string; probe?: boolean } = {}): Promise<CanonicalResourceHealth> {
+  async checkHealth(
+    options: { releaseId?: string; probe?: boolean; deep?: boolean } = {},
+  ): Promise<CanonicalResourceHealth> {
+    // The normal settings-panel/readiness path needs the immutable journal
+    // plus a key-only Cache Storage inventory and one tiny Broker/cache probe.
+    // Cache.keys() proves that every canonical object is still present without
+    // opening or hashing hundreds of megabytes of response bodies. Deep
+    // integrity verification remains available to repair and diagnostics.
+    if (!options.deep) {
+      const releaseId = options.releaseId || (await this.journal.getActiveRelease())?.releaseId || null;
+      if (!releaseId) {
+        return {
+          releaseId: null,
+          state: 'missing',
+          ready: false,
+          missingObjects: [],
+          probeSucceeded: false,
+        };
+      }
+      const view = await this.journal.getReleaseReadView(releaseId);
+      const transaction = view.transaction;
+      if (!transaction) {
+        return {
+          releaseId,
+          state: 'missing',
+          ready: false,
+          missingObjects: [],
+          probeSucceeded: false,
+        };
+      }
+      const cache = await this.cacheStorage.open(CANONICAL_CONTENT_CACHE_NAME);
+      const cachedKeys = new Set(
+        (await cache.keys()).map((request) => new URL(request.url).pathname.split('/').at(-1) || ''),
+      );
+      const records = new Map(view.objects.map((record) => [record.sha256, record]));
+      const missingObjects = transaction.requiredObjects
+        .filter((object) => {
+          const record = records.get(object.sha256);
+          return !record || record.bytes !== object.bytes || !cachedKeys.has(object.sha256);
+        })
+        .map(cloneDescriptor);
+      const runtime = runtimeRecord(transaction);
+      const mapping = transaction.committedMappings.find((candidate) => candidate.path === runtime.probePath) || null;
+      const object = mapping?.spans[0] ? records.get(mapping.spans[0].objectSha256) || null : null;
+      const firstSpan = mapping?.spans[0];
+      const identityMatches =
+        Boolean(mapping) &&
+        runtime.probePath === mapping!.path &&
+        runtime.probeAssetBytes === mapping!.assetBytes &&
+        runtime.probeAssetSha256 === mapping!.assetSha256;
+      const objectMatches =
+        Boolean(firstSpan && object) &&
+        firstSpan!.objectSha256 === object!.sha256 &&
+        firstSpan!.objectOffset + firstSpan!.bytes <= object!.bytes;
+      let probeSucceeded = identityMatches && objectMatches;
+      if (options.probe && probeSucceeded && missingObjects.length === 0) {
+        const response = await this.matchObject(object!, object!);
+        probeSucceeded = await this.probeMatchedObject(object!, response);
+      }
+      const completeState = ['prepared', 'active', 'retained'].includes(transaction.state);
+      return {
+        releaseId: transaction.releaseId,
+        state: transaction.state,
+        ready: completeState && missingObjects.length === 0 && identityMatches && objectMatches && probeSucceeded,
+        missingObjects,
+        probeSucceeded,
+      };
+    }
     const view = await this.journal.getReleaseReadView(options.releaseId);
     const transaction = view.transaction;
     if (!transaction) {
@@ -1918,6 +1995,28 @@ export class CanonicalResourceStore {
     });
     let nextIndex = 0;
     let aborted = Boolean(options.signal?.aborted);
+    let checkedBytes = 0;
+    let verifiedBytes = 0;
+    const loadedByDigest = new Map<string, number>();
+    const reportProgress = (object: ContentObjectDescriptor, loadedBytes: number, completed: boolean): void => {
+      const previous = loadedByDigest.get(object.sha256) || 0;
+      const nextLoaded = Math.min(object.bytes, Math.max(previous, loadedBytes));
+      loadedByDigest.set(object.sha256, nextLoaded);
+      checkedBytes += nextLoaded - previous;
+      if (completed && nextLoaded === object.bytes) verifiedBytes += object.bytes;
+      try {
+        options.onProgress?.({
+          releaseId: transaction.releaseId,
+          object: cloneDescriptor(object),
+          loadedBytes: nextLoaded,
+          checkedBytes,
+          verifiedBytes,
+        });
+      } catch {
+        // Progress observers are advisory and must never turn a valid cache
+        // read into an integrity failure.
+      }
+    };
     await Promise.all(
       Array.from({ length: Math.min(DEEP_VERIFY_CONCURRENCY, selectedObjects.length) }, async () => {
         while (!aborted) {
@@ -1941,7 +2040,9 @@ export class CanonicalResourceStore {
             };
             continue;
           }
-          const outcome = await this.verifyCachedObject(cache, object, options.signal);
+          const outcome = await this.verifyCachedObject(cache, object, options.signal, (loadedBytes, completed) =>
+            reportProgress(object, loadedBytes, completed),
+          );
           outcomes[index] = outcome;
           if (outcome.status === 'aborted') aborted = true;
         }
@@ -1950,18 +2051,13 @@ export class CanonicalResourceStore {
 
     const failures: CanonicalResourceIntegrityFailure[] = [];
     let checkedObjects = 0;
-    let checkedBytes = 0;
     let verifiedObjects = 0;
-    let verifiedBytes = 0;
     for (const outcome of outcomes) {
       if (!outcome || outcome.status === 'aborted') continue;
       checkedObjects += 1;
       if (outcome.status === 'verified') {
-        checkedBytes += outcome.bytes;
         verifiedObjects += 1;
-        verifiedBytes += outcome.bytes;
       } else {
-        if (outcome.failure.actualBytes !== undefined) checkedBytes += outcome.failure.actualBytes;
         failures.push({
           ...outcome.failure,
           object: cloneDescriptor(outcome.failure.object),
@@ -2077,6 +2173,7 @@ export class CanonicalResourceStore {
     cache: Cache,
     object: ContentObjectDescriptor,
     signal?: AbortSignal,
+    onProgress?: (loadedBytes: number, completed: boolean) => void,
   ): Promise<CanonicalObjectIntegrityOutcome> {
     const cacheKey = canonicalContentCacheKey(object.sha256, this.cacheKeyOrigin);
     const remove = async (): Promise<boolean> => {
@@ -2119,6 +2216,7 @@ export class CanonicalResourceStore {
         const digest = sha256.create();
         const reader = response.body?.getReader();
         let actualBytes = 0;
+        let lastReportedBytes = 0;
         let fullyRead = true;
         const abortReader = () => {
           void reader?.cancel(signal?.reason).catch(() => undefined);
@@ -2133,6 +2231,13 @@ export class CanonicalResourceStore {
               if (next.done) break;
               digest.update(next.value);
               actualBytes += next.value.byteLength;
+              if (
+                actualBytes === object.bytes ||
+                actualBytes - lastReportedBytes >= INTEGRITY_PROGRESS_INTERVAL_BYTES
+              ) {
+                lastReportedBytes = actualBytes;
+                onProgress?.(Math.min(actualBytes, object.bytes), false);
+              }
               if (actualBytes > object.bytes) {
                 fullyRead = false;
                 await reader.cancel().catch(() => undefined);
@@ -2151,6 +2256,7 @@ export class CanonicalResourceStore {
         if (signal?.aborted) return { status: 'aborted' };
         const actualSha256 = bytesToHex(digest.digest());
         if (!fullyRead || actualBytes !== object.bytes || actualSha256 !== object.sha256) {
+          onProgress?.(Math.min(actualBytes, object.bytes), false);
           return {
             status: 'failed',
             failure: {
@@ -2162,6 +2268,7 @@ export class CanonicalResourceStore {
             },
           };
         }
+        onProgress?.(object.bytes, true);
         return {
           status: 'verified',
           bytes: actualBytes,

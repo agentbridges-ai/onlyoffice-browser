@@ -159,6 +159,7 @@ function memoryCacheStorage() {
       entries.set(String(input), response.clone());
     }),
     match: vi.fn(async (input: RequestInfo | URL) => entries.get(String(input))?.clone()),
+    keys: vi.fn(async () => [...entries.keys()].map((key) => new Request(key))),
     delete: vi.fn(async (input: RequestInfo | URL) => entries.delete(String(input))),
   };
   const storage = {
