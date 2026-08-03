@@ -2223,6 +2223,42 @@ export class CanonicalResourceStore {
     const throwIfAborted = (): void => {
       if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
     };
+    const readWithAbort = async (
+      reader: ReadableStreamDefaultReader<Uint8Array>,
+    ): Promise<ReadableStreamReadResult<Uint8Array>> => {
+      if (!signal) return reader.read();
+      if (signal.aborted) {
+        await reader.cancel(signal.reason).catch(() => undefined);
+        throw new DOMException('The operation was aborted', 'AbortError');
+      }
+      return new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+        let settled = false;
+        let onAbort: () => void;
+        const cleanup = () => signal.removeEventListener('abort', onAbort);
+        onAbort = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          void reader.cancel(signal.reason).catch(() => undefined);
+          reject(new DOMException('The operation was aborted', 'AbortError'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        reader.read().then(
+          (result) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(result);
+          },
+          (error: unknown) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(error);
+          },
+        );
+      });
+    };
     const openSegment = async (descriptor: CanonicalPackageTransportSegment): Promise<void> => {
       throwIfAborted();
       let response: Response;
@@ -2279,7 +2315,7 @@ export class CanonicalResourceStore {
       const active = current;
       if (!active || maximumBytes <= 0) return new Uint8Array();
       if (!active.pending || active.pendingOffset >= active.pending.byteLength) {
-        const next = await active.reader.read();
+        const next = await readWithAbort(active.reader);
         throwIfAborted();
         if (next.done) {
           throw new CanonicalResourceStoreError(
@@ -2322,7 +2358,7 @@ export class CanonicalResourceStore {
       while (active.consumedBytes < active.descriptor.bytes) {
         await readCurrent(active.descriptor.bytes - active.consumedBytes);
       }
-      const overflow = await active.reader.read();
+      const overflow = await readWithAbort(active.reader);
       if (!overflow.done) {
         await active.reader.cancel().catch(() => undefined);
         current = undefined;
