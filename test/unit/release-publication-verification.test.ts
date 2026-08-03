@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -134,6 +135,42 @@ describe('Release Manifest v5 publication verification', () => {
     expect(plan.reusedObjects).toBe(publication.objects.length - 1);
     expect(plan.reusedBytes).toBe(
       publication.objects.reduce((total: number, object: { bytes: number }) => total + object.bytes, 0) - changed.bytes,
+    );
+  });
+
+  it('streams the R2 inventory instead of buffering lsjson output', async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const spawnImpl = vi.fn((_binary: string, args: string[]) => {
+      expect(args).toEqual([
+        'lsf',
+        'r2:test',
+        '--recursive',
+        '--files-only',
+        '--format',
+        'ps',
+        '--separator',
+        '\t',
+        '--disable',
+        'ListR',
+      ]);
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from('blobs/sha256/a\t12\nreleases/r1/manifest.json\t34'));
+        child.emit('close', 0, null);
+      });
+      return child;
+    });
+
+    const inventory = await publicationVerifier.inspectRcloneInventory('r2:test', { spawnImpl });
+    expect(inventory).toEqual(
+      new Map([
+        ['blobs/sha256/a', { bytes: 12 }],
+        ['releases/r1/manifest.json', { bytes: 34 }],
+      ]),
     );
   });
 
