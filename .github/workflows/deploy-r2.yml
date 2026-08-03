@@ -298,6 +298,12 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
+          # Wrangler's workerd child can outlive the first matrix process for
+          # a short period after SIGTERM. Keep the fault pass on an isolated
+          # pair of ports so a lingering process cannot make the retry gate
+          # report a false stream-integrity failure.
+          ONLYOFFICE_CF_MATRIX_PORT=8887 \
+          ONLYOFFICE_CF_MATRIX_INTERNAL_PORT=8888 \
           ONLYOFFICE_CF_MATRIX_REUSE_STATE="${RUNNER_TEMP}/onlyoffice-cloudflare-matrix-state" \
           ONLYOFFICE_CF_MATRIX_REFRESH_STATE=0 \
           ONLYOFFICE_CF_MATRIX_KEEP_STATE=0 \
