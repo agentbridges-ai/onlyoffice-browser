@@ -15,7 +15,7 @@ describe('latest-only R2 cleanup workflow', () => {
     expect(workflow).toContain('legacy.manifestSha256 === undefined');
     expect(workflow).toContain('cmp stable-v5-r2.json stable-v5-public.json');
     expect(workflow).toContain('cmp stable-v5-r2.json stable-v5-after-cleanup.json');
-    expect(workflow).toContain('rclone lsjson r2:onlyoffice-getpi-work');
+    expect(workflow).toContain('scripts/snapshot-r2-inventory.mjs r2:onlyoffice-getpi-work');
     expect(workflow).toContain('--files-from-raw latest-only-delete-list.txt');
   });
 
