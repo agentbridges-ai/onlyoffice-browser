@@ -88,10 +88,10 @@ function inventoryEntries(inventory) {
   const seen = new Set();
   return inventory.flatMap((entry, index) => {
     const rawKey = entry?.Path;
-    // Some S3-compatible list implementations emit a zero-byte root marker or
-    // a leading ./ for legacy objects. The marker is not a deletable object;
-    // normalize the harmless prefix while keeping traversal rejection strict.
-    if ((rawKey === '' || rawKey === '.') && entry?.Size === 0) return [];
+    // Some S3-compatible list implementations emit an empty root marker. The
+    // marker is not a deletable object; keep dot paths in strict validation so
+    // a real `.`/`./` object can never be silently omitted from cleanup.
+    if (rawKey === '') return [];
     const normalizedKey = typeof rawKey === 'string' ? rawKey.replace(/^\.\//, '') : rawKey;
     const key = requireSafeKey(normalizedKey, `inventory entry ${index}.Path`);
     if (seen.has(key)) fail(`R2 inventory contains duplicate key ${key}`);
