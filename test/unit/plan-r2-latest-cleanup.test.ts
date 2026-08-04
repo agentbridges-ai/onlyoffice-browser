@@ -97,6 +97,22 @@ describe('latest-only R2 cleanup planning', () => {
     ).toThrow('not a safe R2 key');
   });
 
+  it('rejects dot paths instead of treating them as root markers', () => {
+    const input = fixture();
+    expect(() =>
+      buildLatestOnlyCleanupPlan({
+        ...input,
+        inventory: [...input.inventory, { Path: '.', Size: 0 }],
+      }),
+    ).toThrow('not a safe R2 key');
+    expect(() =>
+      buildLatestOnlyCleanupPlan({
+        ...input,
+        inventory: [...input.inventory, { Path: './', Size: 0 }],
+      }),
+    ).toThrow('not a safe R2 key');
+  });
+
   it('ignores an S3 root marker and normalizes a harmless leading ./ prefix', () => {
     const input = fixture();
     const plan = buildLatestOnlyCleanupPlan({
