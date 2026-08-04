@@ -13,6 +13,7 @@ import {
   isResourceBrokerSessionId,
   parseResourceBrokerServerMessage,
 } from './lib/resource-broker-protocol';
+import { ensureControlledEditorServiceWorker } from './lib/editor-service-worker-control';
 
 const SERVICE_WORKER_PATH = '/document_editor_service_worker.js';
 const TIMEOUT_MS = 30_000;
@@ -106,24 +107,8 @@ function bootstrap(): {
 }
 
 async function controlledServiceWorker(): Promise<ServiceWorker> {
-  const registration = await navigator.serviceWorker.register(SERVICE_WORKER_PATH, {
-    scope: '/',
-    updateViaCache: 'none',
-  });
-  await navigator.serviceWorker.ready;
-  if (navigator.serviceWorker.controller) return navigator.serviceWorker.controller;
-  return new Promise<ServiceWorker>((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      navigator.serviceWorker.removeEventListener('controllerchange', changed);
-      reject(new Error('Editor Service Worker control timed out'));
-    }, TIMEOUT_MS);
-    const changed = () => {
-      const worker = navigator.serviceWorker.controller ?? registration.active;
-      if (!worker) return;
-      window.clearTimeout(timeout);
-      resolve(worker);
-    };
-    navigator.serviceWorker.addEventListener('controllerchange', changed, { once: true });
+  return ensureControlledEditorServiceWorker(navigator.serviceWorker, SERVICE_WORKER_PATH, {
+    timeoutMs: TIMEOUT_MS,
   });
 }
 
