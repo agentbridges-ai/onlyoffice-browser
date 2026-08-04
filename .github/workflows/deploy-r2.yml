@@ -224,9 +224,18 @@ jobs:
           download_intent() {
             local temporary="${RUNNER_TEMP}/promotion-intent.json"
             rm -f "${temporary}" promotion-intent.json
-            timeout 120 rclone cat "r2:onlyoffice-getpi-work/${INTENT_PATH}" > "${temporary}"
-            test -s "${temporary}"
-            mv "${temporary}" promotion-intent.json
+            if ! timeout 120 rclone cat "r2:onlyoffice-getpi-work/${INTENT_PATH}" > "${temporary}"; then
+              rm -f "${temporary}"
+              return 1
+            fi
+            if ! test -s "${temporary}"; then
+              rm -f "${temporary}"
+              return 1
+            fi
+            if ! mv "${temporary}" promotion-intent.json; then
+              rm -f "${temporary}"
+              return 1
+            fi
           }
           if download_intent 2>/dev/null; then
             echo "Recovering the immutable promotion intent at ${INTENT_PATH}"
