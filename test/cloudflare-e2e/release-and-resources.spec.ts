@@ -60,7 +60,8 @@ type ReleaseManifest = {
   }>;
 };
 
-type BrowserFailure = { source: string; message: string; url?: string };
+type FailurePhase = 'normal' | 'offline-recovery' | 'online-update';
+type BrowserFailure = { source: string; message: string; url?: string; phase?: FailurePhase };
 type ContentCounter = {
   workerRequests: number;
   cacheHits: number;
@@ -120,8 +121,10 @@ async function waitForStableBroadcastCounts(pages: Page[], stableFor = 2_500, ti
   throw new Error(`Resource broadcasts did not settle within ${timeout} ms`);
 }
 
-function collectFailures(page: Page, failures: BrowserFailure[]) {
-  page.on('pageerror', (error) => failures.push({ source: 'pageerror', message: error.message }));
+function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => FailurePhase) {
+  page.on('pageerror', (error) =>
+    failures.push({ source: 'pageerror', message: error.message, ...(phase ? { phase: phase() } : {}) }),
+  );
   page.on('console', (message) => {
     const text = message.text();
     if (
@@ -133,9 +136,27 @@ function collectFailures(page: Page, failures: BrowserFailure[]) {
           )))
     ) {
       const url = message.location().url;
-      failures.push({ source: 'console', message: text, ...(url ? { url } : {}) });
+      failures.push({
+        source: 'console',
+        message: text,
+        ...(url ? { url } : {}),
+        ...(phase ? { phase: phase() } : {}),
+      });
     }
   });
+}
+
+function isExpectedOfflineStablePointerFailure(failure: BrowserFailure): boolean {
+  if (
+    failure.phase !== 'offline-recovery' ||
+    failure.source !== 'console' ||
+    !failure.url ||
+    !/^Failed to load resource: the server responded with a status of 503(?: \([^)]*\))?$/.test(failure.message)
+  ) {
+    return false;
+  }
+  const actual = new URL(failure.url);
+  return actual.origin === canonicalOrigin && actual.pathname === '/channels/stable-v5.json' && !actual.search;
 }
 
 async function freshContext(browser: Browser): Promise<BrowserContext> {
@@ -2009,8 +2030,10 @@ test('production v5 installs once, survives restart with three offline editors, 
   let context = await launchPersistentMatrixContext(profile);
   try {
     const failures: BrowserFailure[] = [];
+    let failurePhase: FailurePhase = 'normal';
+    const collectMatrixFailures = (page: Page) => collectFailures(page, failures, () => failurePhase);
     const bootstrap = await context.newPage();
-    collectFailures(bootstrap, failures);
+    collectMatrixFailures(bootstrap);
     await bootstrap.goto(canonicalOrigin);
     const release = await browserFetch<ReleaseManifest>(
       bootstrap,
@@ -2033,8 +2056,8 @@ test('production v5 installs once, survives restart with three offline editors, 
     )}`;
     const owner = await context.newPage();
     const follower = await context.newPage();
-    collectFailures(owner, failures);
-    collectFailures(follower, failures);
+    collectMatrixFailures(owner);
+    collectMatrixFailures(follower);
     await Promise.all([owner.goto(appUrl), follower.goto(appUrl)]);
     await Promise.all([
       expect(owner.locator('#resource-button')).toBeVisible(),
@@ -2197,7 +2220,7 @@ test('production v5 installs once, survives restart with three offline editors, 
     const documentPages = await Promise.all(
       productionDocumentCases.map(async ({ type, origin }) => {
         const page = await context.newPage();
-        collectFailures(page, failures);
+        collectMatrixFailures(page);
         const query = new URLSearchParams({
           scenario: 'new-document',
           type,
@@ -2317,6 +2340,8 @@ test('production v5 installs once, survives restart with three offline editors, 
       32 * 1024 * 1024,
     );
 
+    const offlineRecoveryFailureStart = failures.length;
+    failurePhase = 'offline-recovery';
     await context.setOffline(true);
     const saved = await Promise.all(
       documentPages.map((page) => page.evaluate(async () => window.__ONLYOFFICE_SAVE_E2E__!.save())),
@@ -2327,6 +2352,11 @@ test('production v5 installs once, survives restart with three offline editors, 
       expect(saved[index].firstBytes.slice(0, 4)).toEqual([0x50, 0x4b, 0x03, 0x04]);
     }
     await context.setOffline(false);
+    await bootstrap.waitForFunction(() => navigator.onLine, undefined, { timeout: 10_000 });
+    await owner.waitForTimeout(1_500);
+    const offlineRecoveryFailures = failures.splice(offlineRecoveryFailureStart);
+    expect(offlineRecoveryFailures.filter((failure) => !isExpectedOfflineStablePointerFailure(failure))).toEqual([]);
+    failurePhase = 'normal';
     expect(await readContentCounters(bootstrap)).toEqual(countersBeforeThreeEditors);
     await Promise.all(
       documentPages.map((page) =>
@@ -2374,6 +2404,7 @@ test('production v5 installs once, survives restart with three offline editors, 
     expect(failedReleaseId).toBeTruthy();
     expect(failedManifestSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(failedChangedSha256).toMatch(/^[a-f0-9]{64}$/);
+    failurePhase = 'online-update';
     const countersBeforeFailedUpdate = await readContentCounters(bootstrap);
     const failuresBeforeFailedUpdate = failures.length;
     await switchStableV5Pointer(bootstrap, {
