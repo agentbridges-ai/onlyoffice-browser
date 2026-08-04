@@ -221,7 +221,14 @@ jobs:
           ASSET_VERSION="$(node scripts/runtime-asset-version.mjs --root candidate-input/dist --font-manifest candidate-input/dist/onlyoffice-browser-font-assets.json)"
           INTENT_PATH="promotion-intents/${RELEASE_ID}/${CANDIDATE}.json"
           export INTENT_PATH
-          if rclone copyto "r2:onlyoffice-getpi-work/${INTENT_PATH}" promotion-intent.json 2>/dev/null; then
+          download_intent() {
+            local temporary="${RUNNER_TEMP}/promotion-intent.json"
+            rm -f "${temporary}" promotion-intent.json
+            timeout 120 rclone cat "r2:onlyoffice-getpi-work/${INTENT_PATH}" > "${temporary}"
+            test -s "${temporary}"
+            mv "${temporary}" promotion-intent.json
+          }
+          if download_intent 2>/dev/null; then
             echo "Recovering the immutable promotion intent at ${INTENT_PATH}"
           else
             PREVIOUS_WORKER_VERSION_ID="$(node - <<'NODE'
@@ -255,7 +262,10 @@ jobs:
           NODE
             retry_rclone copyto promotion-intent-proposed.json "r2:onlyoffice-getpi-work/${INTENT_PATH}" --ignore-existing
           fi
-          retry_rclone copyto "r2:onlyoffice-getpi-work/${INTENT_PATH}" promotion-intent.json
+          if ! test -s promotion-intent.json; then
+            download_intent
+          fi
+          test -s promotion-intent.json
           node <<'NODE'
           const fs=require('node:fs'); const intent=require('./promotion-intent.json'); const current=require('./stable-v5-before-deploy.json'); const envelope=require('./candidate-input/release-evidence/office-release-envelope.json'); const deployment=require('./worker-deployment-before.json');
           const pointer=value=>({version:1,releaseId:value.releaseId,manifestUrl:value.manifestUrl,manifestSha256:value.manifestSha256});

@@ -109,6 +109,9 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('timeout-minutes: 180');
     expect(promotion).toContain('Persist or recover immutable pointer and Worker promotion intent');
     expect(promotion).toContain('promotion-intents/');
+    expect(promotion).toContain('rclone cat "r2:onlyoffice-getpi-work/${INTENT_PATH}"');
+    expect(promotion).toContain('test -s "${temporary}"');
+    expect(promotion).toContain('mv "${temporary}" promotion-intent.json');
     expect(promotion).toContain('stable-v5 is neither the recorded predecessor nor this candidate');
     expect(promotion).toContain('stable-v5 changed during production deployment; refusing activation');
     expect(promotion).toContain('Record immutable promotion receipt after stable-v5 convergence');
