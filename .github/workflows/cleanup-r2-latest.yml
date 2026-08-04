@@ -62,7 +62,9 @@ jobs:
             throw Error('stable-v5 is not the requested release; refusing latest-only cleanup');
           }
           const legacy = JSON.parse(fs.readFileSync('stable-v4-r2.json'));
-          if (legacy.version !== 1 || !/^[a-zA-Z0-9._+-]{1,128}$/.test(legacy.releaseId || '') || legacy.manifestUrl !== `/releases/${legacy.releaseId}/manifest-v4.json` || !/^[a-f0-9]{64}$/.test(legacy.manifestSha256 || '')) {
+          const legacyManifestUrlValid = legacy.manifestUrl === undefined || legacy.manifestUrl === `/releases/${legacy.releaseId}/manifest-v4.json`;
+          const legacyManifestShaValid = legacy.manifestSha256 === undefined || /^[a-f0-9]{64}$/.test(legacy.manifestSha256);
+          if (legacy.version !== 1 || !/^[a-zA-Z0-9._+-]{1,128}$/.test(legacy.releaseId || '') || !legacyManifestUrlValid || !legacyManifestShaValid) {
             throw Error('stable v4 compatibility pointer is invalid');
           }
           fs.writeFileSync('stable-v4-release-before.txt', `${legacy.releaseId}\n`);

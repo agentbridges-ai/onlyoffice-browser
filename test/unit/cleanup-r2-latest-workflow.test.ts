@@ -11,6 +11,8 @@ describe('latest-only R2 cleanup workflow', () => {
     expect(workflow).toContain('default: true');
     expect(workflow).toContain('if: ${{ !inputs.dry_run }}');
     expect(workflow).toContain('plan-r2-latest-cleanup.mjs');
+    expect(workflow).toContain('legacy.manifestUrl === undefined');
+    expect(workflow).toContain('legacy.manifestSha256 === undefined');
     expect(workflow).toContain('cmp stable-v5-r2.json stable-v5-public.json');
     expect(workflow).toContain('cmp stable-v5-r2.json stable-v5-after-cleanup.json');
     expect(workflow).toContain('rclone lsjson r2:onlyoffice-getpi-work');
