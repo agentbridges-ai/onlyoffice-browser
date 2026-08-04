@@ -71,7 +71,35 @@ describe('editor Service Worker control', () => {
       newWorker,
     );
     expect(registration.update).toHaveBeenCalledOnce();
+    expect(container.register).toHaveBeenCalledWith('/document_editor_service_worker.js', {
+      scope: '/',
+      updateViaCache: 'none',
+    });
     expect(newWorker.messages).toEqual([{ type: 'SKIP_WAITING' }]);
+  });
+
+  it('waits for an installing worker to finish before asking it to take over', async () => {
+    const oldWorker = new FakeWorker('/document_editor_service_worker.js', 'activated');
+    const installingWorker = new FakeWorker('/document_editor_service_worker.js', 'installing');
+    const registration = new FakeRegistration();
+    const container = new FakeServiceWorkerContainer(registration);
+    registration.active = oldWorker as unknown as ServiceWorker;
+    container.controller = oldWorker as unknown as ServiceWorker;
+    registration.update.mockImplementation(async () => {
+      registration.installing = installingWorker as unknown as ServiceWorker;
+      window.setTimeout(() => installingWorker.setState('installed'), 0);
+    });
+    installingWorker.onPostMessage = (message) => {
+      if ((message as { type?: string }).type !== 'SKIP_WAITING') return;
+      registration.installing = null;
+      registration.active = installingWorker as unknown as ServiceWorker;
+      container.replaceController(installingWorker);
+    };
+
+    await expect(ensureControlledEditorServiceWorker(container, '/document_editor_service_worker.js')).resolves.toBe(
+      installingWorker,
+    );
+    expect(installingWorker.messages).toEqual([{ type: 'SKIP_WAITING' }]);
   });
 
   it('keeps the active controller usable when an update check fails offline', async () => {
