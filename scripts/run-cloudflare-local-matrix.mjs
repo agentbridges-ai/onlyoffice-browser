@@ -12,6 +12,10 @@ const wranglerVersion = '4.114.0';
 const seederPort = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_SEED_PORT || '8790', 10);
 const workerPort = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_PORT || '8787', 10);
 const workerInternalPort = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_INTERNAL_PORT || '8788', 10);
+const readyTimeoutMs = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_READY_TIMEOUT_MS || '180000', 10);
+if (!Number.isSafeInteger(readyTimeoutMs) || readyTimeoutMs < 30_000 || readyTimeoutMs > 300_000) {
+  throw new Error('ONLYOFFICE_CF_MATRIX_READY_TIMEOUT_MS must be an integer between 30000 and 300000');
+}
 const reusedPersistDirectory = process.env.ONLYOFFICE_CF_MATRIX_REUSE_STATE
   ? path.resolve(process.env.ONLYOFFICE_CF_MATRIX_REUSE_STATE)
   : '';
@@ -168,7 +172,8 @@ function stopServer(server) {
 
 async function waitForServer(check, label, process) {
   let lastError;
-  for (let attempt = 0; attempt < 360; attempt += 1) {
+  const attempts = Math.ceil(readyTimeoutMs / 250);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (process && (process.exitCode !== null || process.signalCode !== null)) {
       throw new Error(
         `${label} exited before becoming ready (${process.signalCode || process.exitCode || 'unknown status'})`,
@@ -182,7 +187,7 @@ async function waitForServer(check, label, process) {
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`${label} did not become ready${lastError ? `: ${lastError}` : ''}`);
+  throw new Error(`${label} did not become ready within ${readyTimeoutMs}ms${lastError ? `: ${lastError}` : ''}`);
 }
 
 function stop(child) {
