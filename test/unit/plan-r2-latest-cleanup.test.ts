@@ -101,7 +101,11 @@ describe('latest-only R2 cleanup planning', () => {
     const input = fixture();
     const plan = buildLatestOnlyCleanupPlan({
       ...input,
-      inventory: [{ Path: '', Size: undefined }, { Path: './channels/stable.json', Size: 100 }, ...input.inventory.slice(1)],
+      inventory: [
+        { Path: '', Size: undefined },
+        { Path: './channels/stable.json', Size: 100 },
+        ...input.inventory.slice(1),
+      ],
     });
 
     expect(plan.inventoryObjects).toBe(input.inventory.length);
