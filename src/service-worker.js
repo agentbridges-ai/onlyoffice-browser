@@ -829,10 +829,34 @@ registerRoute(
   'GET',
 );
 
-// The stable pointer remains network-only and no-store. When Chrome has not
-// yet updated navigator.onLine during an offline restart, convert the failed
-// subrequest into a typed response so the installed release stays usable and
-// the page does not emit ERR_INTERNET_DISCONNECTED console noise.
+// The stable pointer remains network-only and no-store. Keep only the last
+// successful response in the Service Worker process so a short network flap
+// during an online update does not turn into a visible 503 or discard a usable
+// installed release. This is deliberately in-memory: it does not create a
+// persistent pointer cache or make mutable channel state an authority.
+let stablePointerFallback = null;
+const rememberStablePointer = async (response) => {
+  if (!response.ok || !/^application\/json(?:;|$)/i.test(response.headers.get('content-type') || '')) return;
+  try {
+    const body = await response.clone().arrayBuffer();
+    stablePointerFallback = {
+      body,
+      headers: [...response.headers.entries()],
+      status: response.status,
+      statusText: response.statusText,
+    };
+  } catch {
+    // A response body that cannot be cloned must not affect the network path.
+  }
+};
+const readStablePointerFallback = () => {
+  if (!stablePointerFallback) return null;
+  return new Response(stablePointerFallback.body.slice(0), {
+    status: stablePointerFallback.status,
+    statusText: stablePointerFallback.statusText,
+    headers: stablePointerFallback.headers,
+  });
+};
 registerRoute(
   ({ request, sameOrigin, url }) =>
     sameOrigin &&
@@ -842,8 +866,17 @@ registerRoute(
     url.pathname === '/channels/stable-v5.json',
   async ({ request }) => {
     try {
-      return await fetch(request);
+      const response = await fetch(request);
+      if (response.ok) {
+        await rememberStablePointer(response);
+      } else if (response.status >= 500) {
+        const fallback = readStablePointerFallback();
+        if (fallback) return fallback;
+      }
+      return response;
     } catch {
+      const fallback = readStablePointerFallback();
+      if (fallback) return fallback;
       return new Response(JSON.stringify({ code: 'offline' }), {
         status: 503,
         headers: {
