@@ -69,6 +69,15 @@ function requestOrigin(input) {
   }
 }
 
+function isRuntimeManifestRequest(input) {
+  try {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+    return url.pathname.endsWith('/onlyoffice-runtime-assets.json');
+  } catch {
+    return false;
+  }
+}
+
 function workerVersionFetch(fetchImpl, expectedWorkerVersionId, overrideWorkerVersionId, workerVersionOrigin) {
   if (!expectedWorkerVersionId) return fetchImpl;
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(expectedWorkerVersionId)) {
@@ -83,10 +92,11 @@ function workerVersionFetch(fetchImpl, expectedWorkerVersionId, overrideWorkerVe
       headers.set('Cloudflare-Workers-Version-Overrides', `onlyoffice-browser-runtime="${overrideWorkerVersionId}"`);
     }
     const response = await fetchImpl(input, { ...init, headers });
-    // The canonical origin is the Worker-version probe surface. Production
-    // editor origins may redirect shared resources to canonical and Cloudflare
-    // does not guarantee that version metadata is echoed on that edge response.
-    if (!workerVersionOrigin || requestOrigin(input) === workerVersionOrigin) {
+    // The runtime manifest is the explicit Worker-version probe surface. The
+    // version metadata binding is diagnostic and is not guaranteed to survive
+    // Cloudflare's immutable asset cache or an editor-origin redirect for
+    // every response. Asset identity is verified independently below.
+    if ((!workerVersionOrigin || requestOrigin(input) === workerVersionOrigin) && isRuntimeManifestRequest(input)) {
       expectHeader(response, 'x-onlyoffice-worker-version', expectedWorkerVersionId, 'Worker version');
     }
     return response;
