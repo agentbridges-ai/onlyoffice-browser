@@ -7,6 +7,7 @@ import worker, {
   canonicalReleasePathname,
   isIsolatedEditorHost,
   isAssetRevision,
+  isImmutableReleaseReceiptKey,
   isOnlyOfficeHost,
   releaseIdFromReferrer,
   resolveContentSegmentRequest,
@@ -337,6 +338,18 @@ describe('Cloudflare OnlyOffice runtime routing', () => {
     expect(isAssetRevision(null)).toBe(false);
   });
 
+  it('accepts only strictly content-addressed promotion receipt keys as immutable', () => {
+    const candidate = 'a'.repeat(40);
+    const sha256 = 'b'.repeat(64);
+    expect(isImmutableReleaseReceiptKey(`promotions/v0.6.0+receipt/${candidate}-${sha256}.json`)).toBe(true);
+    expect(isImmutableReleaseReceiptKey(`rollbacks/v0.6.0+receipt/${candidate}-${sha256}.json`)).toBe(true);
+    expect(isImmutableReleaseReceiptKey(`promotions/v0.6.0+receipt/${candidate}-${sha256}.JSON`)).toBe(false);
+    expect(isImmutableReleaseReceiptKey(`promotions/v0.6.0+receipt/${candidate.slice(1)}-${sha256}.json`)).toBe(false);
+    expect(isImmutableReleaseReceiptKey(`promotions/v0.6.0+receipt/${candidate}-${sha256.slice(1)}.json`)).toBe(false);
+    expect(isImmutableReleaseReceiptKey(`promotions/v0.6.0+receipt/${candidate}-${sha256}.json/extra`)).toBe(false);
+    expect(isImmutableReleaseReceiptKey(`promotions/${candidate}-${sha256}.json`)).toBe(false);
+  });
+
   it('keeps large Office payloads out of the Worker edge Cache API', () => {
     expect(
       shouldPopulateEdgeCache({ method: 'GET', immutable: true, hasRange: false, publicSize: 8 * 1024 * 1024 }),
@@ -467,6 +480,40 @@ describe('Cloudflare v5 release content object responses', () => {
     vi.unstubAllGlobals();
   });
 
+  it('serves ordinary production assets from an immutable release root and exposes the exact Worker version', async () => {
+    const { env, calls, objects } = testEnvironment();
+    objects.set(
+      'channels/stable-v5.json',
+      new TextEncoder().encode(
+        JSON.stringify({
+          version: 1,
+          releaseId,
+          manifestUrl: `/releases/${releaseId}/manifest.json`,
+          manifestSha256: digest('d'),
+        }),
+      ),
+    );
+    delete env.LOCAL_MATRIX_MODE;
+    env.CF_VERSION_METADATA = {
+      id: 'dc8dcd28-271b-4367-9840-6c244f84cb40',
+      tag: 'candidate',
+      timestamp: '2026-08-04T00:00:00.000Z',
+    };
+
+    const response = await fetchWorker(new Request('https://onlyoffice.getpi.work/sdkjs/word/sdk-all.js'), env);
+
+    expect(response.status).toBe(200);
+    const blobKey = calls.gets.find(({ key }) => key.startsWith('blobs/sha256/'))?.key;
+    expect(blobKey).toBeTruthy();
+    expect(Array.from(new Uint8Array(await response.arrayBuffer()))).toEqual(Array.from(objects.get(blobKey!)!));
+    expect(calls.gets.map(({ key }) => key)).toEqual(
+      expect.arrayContaining(['channels/stable-v5.json', `releases/${releaseId}/manifest.json`, blobKey]),
+    );
+    expect(response.headers.get('x-onlyoffice-worker-version')).toBe(env.CF_VERSION_METADATA.id);
+    expect(response.headers.get('access-control-expose-headers')).toContain('X-OnlyOffice-Worker-Version');
+    expect(response.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate');
+  });
+
   it('serves manifest-bound objects with immutable CORS, 200, 206, HEAD, and 416 semantics', async () => {
     const { env } = testEnvironment();
     const url = `https://onlyoffice.getpi.work/objects/${releaseId}/sha256/${sha256}`;
@@ -541,6 +588,24 @@ describe('Cloudflare v5 release content object responses', () => {
         statuses: { '200': 1 },
       },
     });
+  });
+
+  it('serves only content-addressed promotion receipts with immutable caching', async () => {
+    const { env, objects } = testEnvironment();
+    const candidate = 'a'.repeat(40);
+    const sha256 = 'b'.repeat(64);
+    const validKey = `promotions/v0.6.0+receipt/${candidate}-${sha256}.json`;
+    const invalidKey = `promotions/v0.6.0+receipt/${candidate.slice(1)}-${sha256}.json`;
+    objects.set(validKey, new TextEncoder().encode('{"receipt":true}\n'));
+    objects.set(invalidKey, new TextEncoder().encode('{"receipt":false}\n'));
+
+    const valid = await fetchWorker(new Request(`https://onlyoffice.getpi.work/${validKey}`), env);
+    expect(valid.status).toBe(200);
+    expect(valid.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+
+    const invalid = await fetchWorker(new Request(`https://onlyoffice.getpi.work/${invalidKey}`), env);
+    expect(invalid.status).toBe(200);
+    expect(invalid.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate');
   });
 
   it('keeps the production FixedLengthStream pipeline complete while counting R2 bytes', async () => {

@@ -1,0 +1,119 @@
+name: Stage immutable runtime candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_stage: { description: "Type STAGE", required: true, type: string }
+      candidate_commit: { description: "Candidate source SHA", required: true, type: string }
+      candidate_run_id: { description: "Candidate workflow run ID", required: true, type: string }
+
+permissions: { contents: read, actions: read }
+concurrency: { group: onlyoffice-r2-production, cancel-in-progress: false, queue: max }
+
+jobs:
+  stage:
+    if: inputs.confirm_stage == 'STAGE'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: production
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: https://40a503f1c86c028edfcd6f113c562b5b.r2.cloudflarestorage.com
+      RCLONE_CONFIG_R2_ACL: private
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.candidate_commit }}
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: onlyoffice-runtime-candidate-${{ inputs.candidate_commit }}
+          path: candidate-input
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - name: Require a successful immutable candidate run
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.candidate_commit }}" =~ ^[a-f0-9]{40}$ ]]
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.candidate_run_id }}" > candidate-run.json
+          node -e "const r=require('./candidate-run.json'); if(r.conclusion!=='success'||r.head_sha!==process.env.SHA||!['push','workflow_dispatch'].includes(r.event)||r.head_branch!=='main'||!r.path.endsWith('/candidate-r2.yml'))throw Error('candidate run is not a successful main-branch candidate workflow for this SHA')"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.candidate_commit }}
+      - name: Verify retained candidate identity without rebuilding runtime
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ inputs.candidate_commit }}"
+          test -d candidate-input/dist -a -d candidate-input/.onlyoffice-release -a -f candidate-input/release-evidence/office-release-envelope.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'; import {validateReleaseEnvelope} from './scripts/release-envelope.mjs';
+          validateReleaseEnvelope(JSON.parse(fs.readFileSync('candidate-input/release-evidence/office-release-envelope.json')));
+          NODE
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'; import {bindExistingNpmPublication} from './scripts/release-envelope.mjs';
+          const envelope=JSON.parse(fs.readFileSync('candidate-input/release-evidence/office-release-envelope.json'));
+          const rebound=await bindExistingNpmPublication(envelope);
+          if(rebound.npm.registry.state!=='published') throw Error('candidate npm package must be published with verified provenance before staging');
+          if(envelope.npm.registry.state==='published'&&JSON.stringify(rebound.npm.registry)!==JSON.stringify(envelope.npm.registry)) throw Error('candidate npm registry/SLSA/public API evidence is stale or forged');
+          if(envelope.npm.registry.state==='not-published'&&(rebound.npm.registry.gitHead!==envelope.source.gitCommit||rebound.npm.registry.integrity!==envelope.sourcePackage?.integrity)) throw Error('new npm publication is not the exact candidate commit and source package');
+          fs.writeFileSync('verified-npm-registry.json',JSON.stringify(rebound.npm.registry,null,2)+'\n');
+          NODE
+          node <<'NODE'
+          const fs=require('node:fs'), c=require('node:crypto');
+          const sha=x=>c.createHash('sha256').update(fs.readFileSync(x)).digest('hex');
+          const sri=x=>'sha512-'+c.createHash('sha512').update(fs.readFileSync(x)).digest('base64');
+          const e=require('./candidate-input/release-evidence/office-release-envelope.json');
+          const manifest=require('./candidate-input/.onlyoffice-release/releases/'+e.runtime.releaseId+'/manifest.json');
+          if(e.lifecycle!=='candidate'||e.source.gitCommit!==process.env.CANDIDATE||e.runtime.sourceCommit!==process.env.CANDIDATE||manifest.sourceCommit!==process.env.CANDIDATE||sha('candidate-input/.onlyoffice-release/releases/'+e.runtime.releaseId+'/manifest.json')!==e.runtime.manifestSha256||sha('candidate-input/dist/onlyoffice-runtime-assets.json')!==e.runtime.runtimeManifestSha256||sha('pnpm-lock.yaml')!==e.source.lockfileSha256||e.npm.packageName!=='@agentbridges-ai/onlyoffice-browser'||e.npm.version!==require('./package.json').version||!e.sourcePackage?.tarball||sri('candidate-input/release-evidence/'+e.sourcePackage.tarball)!==e.sourcePackage.integrity) throw Error('candidate envelope, manifest source, or source package integrity mismatch');
+          const source=require('./candidate-input/release-evidence/source-identity.json'); const {identitySha256,...identity}=source;
+          if(identity.gitCommit!==e.source.gitCommit||identity.lockfileSha256!==e.source.lockfileSha256||identity.runtimeManifestSha256!==e.runtime.runtimeManifestSha256||identity.releaseId!==e.runtime.releaseId||identity.releaseManifestSha256!==e.runtime.manifestSha256) throw Error('candidate matrix identity is not bound to the envelope');
+          for (const name of ['full-v5-cloudflare-broker-matrix.json','fault-injected-proxy-matrix.json']) { const matrix=require('./candidate-input/release-evidence/'+name); if(matrix.result!=='passed'||JSON.stringify(matrix.sourceIdentity)!==JSON.stringify(identity)||matrix.sourceIdentitySha256!==identitySha256) throw Error(`candidate matrix evidence mismatch: ${name}`); }
+          NODE
+        env:
+          CANDIDATE: ${{ inputs.candidate_commit }}
+      - name: Install staging transport only
+        run: sudo apt-get update && sudo apt-get install --yes rclone
+      - name: Stage immutable CAS and fully verify remote bytes
+        run: |
+          set -euo pipefail
+          retry_rclone() { local attempt=1; until timeout 180 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
+          retry_rclone copy candidate-input/.onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs --ignore-existing
+          retry_rclone copy candidate-input/.onlyoffice-release/releases r2:onlyoffice-getpi-work/releases --ignore-existing
+          retry_rclone copy candidate-input/.onlyoffice-release/packages r2:onlyoffice-getpi-work/packages --ignore-existing
+          retry_rclone copy candidate-input/.onlyoffice-release/segments r2:onlyoffice-getpi-work/segments --ignore-existing
+          node scripts/verify-release-publication.mjs --release-root candidate-input/.onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --expected-source-commit "${{ inputs.candidate_commit }}" --fastcdc-evidence-mode automatic --remote r2:onlyoffice-getpi-work --remote-verification-mode full
+      - name: Verify staged release against the current production Worker
+        run: |
+          set -euo pipefail
+          node scripts/verify-release-http.mjs --release-root candidate-input/.onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --fastcdc-evidence-mode automatic --cache-bust "stage-${{ inputs.candidate_commit }}-${{ github.run_id }}"
+      - name: Record staged compatibility evidence
+        run: |
+          set -euo pipefail
+          mkdir -p stage-evidence
+          node <<'NODE'
+          const fs=require('node:fs'); const envelope=require('./candidate-input/release-evidence/office-release-envelope.json'); const npmRegistry=require('./verified-npm-registry.json');
+          const id=name=>{const value=Number(process.env[name]);if(!Number.isSafeInteger(value)||value<1)throw Error(`${name} must be a positive safe integer`);return value};
+          const evidence={version:1,kind:'current-production-worker-compatibility',candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},npmRegistry,production:{repository:process.env.GITHUB_REPOSITORY,runId:id('GITHUB_RUN_ID'),runAttempt:id('GITHUB_RUN_ATTEMPT')},checks:['full-r2-cas-verification','current-worker-release-host','current-worker-resource-broker','current-worker-release-bound-object-range']};
+          fs.writeFileSync('stage-evidence/stage-r2.json',JSON.stringify(evidence,null,2)+'\n');
+          NODE
+          {
+            echo "### Staged immutable runtime candidate"
+            echo "- Candidate: \`${{ inputs.candidate_commit }}\` (candidate run \`${{ inputs.candidate_run_id }}\`)"
+            echo "- Release: \`$(node -p "require('./candidate-input/release-evidence/office-release-envelope.json').runtime.releaseId")\`"
+            echo "- R2 CAS: fully re-hashed"
+            echo "- Current production Worker compatibility: Host, Broker, and release-bound object routes passed"
+            echo "- This stage does not deploy the candidate Worker and does not activate a channel."
+          } >> "${GITHUB_STEP_SUMMARY}"
+        env:
+          CANDIDATE: ${{ inputs.candidate_commit }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+      - name: Retain staged compatibility evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: onlyoffice-runtime-stage-${{ inputs.candidate_commit }}-${{ github.run_id }}
+          path: stage-evidence
+          if-no-files-found: error
+          retention-days: 90

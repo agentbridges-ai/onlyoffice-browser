@@ -1,0 +1,250 @@
+name: Roll back stable runtime pointer
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Existing immutable release ID to restore
+        required: true
+        type: string
+      expected_current_release_id:
+        description: Current stable-v5 release ID; prevents a blind concurrent overwrite
+        required: true
+        type: string
+      expected_current_manifest_sha256:
+        description: Exact current stable-v5 manifest SHA-256; prevents same-ID pointer drift
+        required: true
+        type: string
+      expected_manifest_sha256:
+        description: Exact immutable v5 manifest SHA-256 recorded by the original promotion
+        required: true
+        type: string
+      confirm_rollback:
+        description: Type ROLLBACK to update only stable-v5
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: onlyoffice-r2-production
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  rollback:
+    if: inputs.confirm_rollback == 'ROLLBACK'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: production
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: https://40a503f1c86c028edfcd6f113c562b5b.r2.cloudflarestorage.com
+      RCLONE_CONFIG_R2_ACL: private
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Require rollback workflow code from the current main commit
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+      - name: Install rclone
+        run: sudo apt-get update && sudo apt-get install --yes rclone
+      - name: Restore an existing immutable release after compare-before-write
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          EXPECTED_CURRENT_RELEASE_ID: ${{ inputs.expected_current_release_id }}
+          EXPECTED_CURRENT_MANIFEST_SHA256: ${{ inputs.expected_current_manifest_sha256 }}
+          EXPECTED_MANIFEST_SHA256: ${{ inputs.expected_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_ID}" =~ ^[a-zA-Z0-9._+-]{1,128}$ ]]
+          [[ "${EXPECTED_CURRENT_RELEASE_ID}" =~ ^[a-zA-Z0-9._+-]{1,128}$ ]]
+          [[ "${EXPECTED_CURRENT_MANIFEST_SHA256}" =~ ^[a-f0-9]{64}$ ]]
+          [[ "${EXPECTED_MANIFEST_SHA256}" =~ ^[a-f0-9]{64}$ ]]
+          retry_rclone() { local attempt=1; until timeout 120 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
+          retry_rclone_capture() {
+            local destination="$1" attempt=1 temporary
+            shift
+            temporary="${destination}.attempt"
+            until timeout 120 rclone "$@" > "${temporary}"; do
+              rm -f "${temporary}"
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 3))"
+            done
+            mv "${temporary}" "${destination}"
+          }
+          retry_rclone copyto r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-before.json
+          node -e "const p=require('./stable-v5-before.json');if(p.version!==1||p.releaseId!==process.env.EXPECTED_CURRENT_RELEASE_ID||p.manifestUrl!=='/releases/'+p.releaseId+'/manifest.json'||p.manifestSha256!==process.env.EXPECTED_CURRENT_MANIFEST_SHA256)throw Error('current stable-v5 pointer does not match the exact expected identity')"
+          retry_rclone copyto "r2:onlyoffice-getpi-work/releases/${RELEASE_ID}/manifest.json" manifest.json
+          MANIFEST_SHA256="$(shasum -a 256 manifest.json | awk '{print $1}')"
+          test "${MANIFEST_SHA256}" = "${EXPECTED_MANIFEST_SHA256}"
+          node scripts/verify-release-publication.mjs \
+            --v5-manifest manifest.json \
+            --release-id "${RELEASE_ID}" \
+            --expected-manifest-sha256 "${MANIFEST_SHA256}" \
+            --fastcdc-evidence-mode automatic \
+            --remote r2:onlyoffice-getpi-work \
+            --remote-verification-mode full
+          mkdir -p target-promotion-receipts target-production-run-attempts
+          retry_rclone_capture target-promotion-receipt-names.txt lsf "r2:onlyoffice-getpi-work/promotions/${RELEASE_ID}" --files-only
+          test -s target-promotion-receipt-names.txt
+          while IFS= read -r receipt_name; do
+            [[ "${receipt_name}" =~ ^[a-f0-9]{40}-[a-f0-9]{64}\.json$ ]] || { echo "invalid target promotion receipt object name" >&2; exit 1; }
+            retry_rclone copyto \
+              "r2:onlyoffice-getpi-work/promotions/${RELEASE_ID}/${receipt_name}" \
+              "target-promotion-receipts/${receipt_name}"
+          done < target-promotion-receipt-names.txt
+          node <<'NODE'
+          const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:path');
+          const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+          const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+          const positive=value=>Number.isSafeInteger(value)&&value>0;
+          const candidates=[];
+          for(const file of fs.readdirSync('target-promotion-receipts').sort()){
+            const match=/^([a-f0-9]{40})-([a-f0-9]{64})\.json$/.exec(file);
+            if(!match) throw Error('invalid local target promotion receipt name');
+            const bytes=fs.readFileSync(path.join('target-promotion-receipts',file));
+            if(sha(bytes)!==match[2]) throw Error(`target promotion receipt digest mismatch: ${file}`);
+            const receipt=JSON.parse(bytes);
+            if(receipt.version!==1||receipt.trustRoot!=='protected-production-workflow-and-r2-cas'||receipt.channel!=='stable-v5'||receipt.candidate?.commit!==match[1]||!positive(receipt.candidate?.runId)||!positive(receipt.staging?.runId)||!/^[a-f0-9]{40}$/.test(receipt.piwork?.commit||'')||!positive(receipt.piwork?.deepVerifyRunId)||!positive(receipt.piwork?.deepVerifyRunAttempt)||receipt.runtime?.releaseId!==process.env.RELEASE_ID||receipt.runtime?.manifestUrl!==`/releases/${process.env.RELEASE_ID}/manifest.json`||receipt.runtime?.manifestSha256!==process.env.EXPECTED_MANIFEST_SHA256||!/^[a-f0-9]{64}$/.test(receipt.runtime?.runtimeManifestSha256||'')||receipt.runtimeRoot?.mode!=='stable-v5-release-cas'||receipt.worker?.name!=='onlyoffice-browser-runtime'||!uuid.test(receipt.worker?.previousVersionId||'')||!uuid.test(receipt.worker?.candidateVersionId||'')||receipt.worker.previousVersionId===receipt.worker.candidateVersionId||!uuid.test(receipt.worker?.finalDeploymentId||'')||receipt.production?.repository!==process.env.GITHUB_REPOSITORY||!positive(receipt.production?.runId)||!positive(receipt.production?.runAttempt)) throw Error(`invalid target promotion receipt identity: ${file}`);
+            candidates.push({file,sha256:match[2],receipt});
+          }
+          if(!candidates.length) throw Error('rollback target has no digest-bound production promotion receipt');
+          fs.writeFileSync('target-promotion-candidates.json',JSON.stringify(candidates,null,2)+'\n');
+          NODE
+          node -e "for(const {receipt} of require('./target-promotion-candidates.json')) console.log([receipt.production.runId,receipt.production.runAttempt].join('\t'))" |
+            while IFS=$'\t' read -r production_run_id production_run_attempt; do
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${production_run_id}/attempts/${production_run_attempt}" \
+                > "target-production-run-attempts/${production_run_id}-${production_run_attempt}.json"
+            done
+          node <<'NODE'
+          const fs=require('node:fs');
+          const authorized=[];
+          for(const candidate of require('./target-promotion-candidates.json')){
+            const receipt=candidate.receipt;
+            const run=require(`./target-production-run-attempts/${receipt.production.runId}-${receipt.production.runAttempt}.json`);
+            if(run.id===receipt.production.runId&&run.run_attempt===receipt.production.runAttempt&&run.conclusion==='success'&&run.event==='workflow_dispatch'&&run.head_branch==='main'&&run.head_sha===receipt.candidate.commit&&run.path==='.github/workflows/deploy-r2.yml'&&run.repository?.full_name===process.env.GITHUB_REPOSITORY) authorized.push(candidate);
+          }
+          if(!authorized.length) throw Error('rollback target was never activated by a successful exact protected production run attempt');
+          authorized.sort((left,right)=>right.receipt.production.runId-left.receipt.production.runId||right.receipt.production.runAttempt-left.receipt.production.runAttempt||right.file.localeCompare(left.file));
+          fs.writeFileSync('selected-target-promotion.json',JSON.stringify(authorized[0],null,2)+'\n');
+          NODE
+          mkdir -p rollback-release
+          cp manifest.json rollback-release/manifest.json
+          TARGET_HTTP_OBJECT="$(node --input-type=module - "${RELEASE_ID}" "${MANIFEST_SHA256}" <<'NODE'
+          import {loadV5ManifestPublication} from './scripts/verify-release-publication.mjs';
+          const publication=loadV5ManifestPublication('rollback-release/manifest.json',{releaseId:process.argv[2],expectedManifestSha256:process.argv[3],fastCdcEvidenceMode:'automatic'});
+          const object=publication.objects.find(candidate=>['whole','fastcdc','package-segment'].includes(candidate.kind)&&candidate.bytes>=8);
+          if(!object) throw Error('rollback release has no HTTP Range verification object');
+          process.stdout.write(object.key);
+          NODE
+          )"
+          mkdir -p "rollback-release/$(dirname "${TARGET_HTTP_OBJECT}")"
+          retry_rclone copyto "r2:onlyoffice-getpi-work/${TARGET_HTTP_OBJECT}" "rollback-release/${TARGET_HTTP_OBJECT}"
+          npx --yes wrangler@4.114.0 deployments status --json > worker-before-rollback.json
+          read -r CURRENT_WORKER_VERSION_ID CURRENT_WORKER_DEPLOYMENT_ID < <(node - <<'NODE'
+          const deployment=require('./worker-before-rollback.json'); const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+          if(!uuid.test(deployment.id||'')||deployment.versions?.length!==1||deployment.versions[0]?.percentage!==100||!uuid.test(deployment.versions[0]?.version_id||'')) throw Error('rollback requires one valid current Worker deployment at 100 percent');
+          process.stdout.write(`${deployment.versions[0].version_id} ${deployment.id}\n`);
+          NODE
+          )
+          export CURRENT_WORKER_VERSION_ID CURRENT_WORKER_DEPLOYMENT_ID
+          node scripts/verify-release-http.mjs \
+            --v5-manifest rollback-release/manifest.json \
+            --release-id "${RELEASE_ID}" \
+            --expected-manifest-sha256 "${MANIFEST_SHA256}" \
+            --fastcdc-evidence-mode automatic \
+            --expected-worker-version-id "${CURRENT_WORKER_VERSION_ID}" \
+            --cache-bust "rollback-preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          node - <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const releaseId = process.env.RELEASE_ID;
+          const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const v5 = JSON.parse(fs.readFileSync('manifest.json'));
+          if (v5.version !== 5 || v5.releaseId !== releaseId) throw new Error('immutable rollback manifest does not match the requested release');
+          fs.writeFileSync('stable-v5.json', JSON.stringify({ version: 1, releaseId, manifestUrl: `/releases/${releaseId}/manifest.json`, manifestSha256: sha('manifest.json') }, null, 2) + '\n');
+          NODE
+          retry_rclone copyto r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-before-write.json
+          cmp stable-v5-before.json stable-v5-before-write.json || { echo 'stable-v5 changed during rollback verification; refusing activation' >&2; exit 1; }
+          npx --yes wrangler@4.114.0 deployments status --json > worker-before-write.json
+          cmp worker-before-rollback.json worker-before-write.json || { echo 'Worker deployment changed during rollback verification; refusing activation' >&2; exit 1; }
+          retry_rclone copyto stable-v5.json r2:onlyoffice-getpi-work/channels/stable-v5.json
+          retry_rclone copyto r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-readback.json
+          cmp stable-v5.json stable-v5-readback.json
+          CONVERGED=0
+          for attempt in 1 2 3 4 5; do
+            curl --fail --silent --show-error --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 -H 'Cache-Control: no-store' --dump-header stable-v5-http.headers "https://onlyoffice.getpi.work/channels/stable-v5.json?rollback=${RELEASE_ID}&attempt=${attempt}" --output stable-v5-http.json
+            if grep -Eiq '^cache-control:[[:space:]]*no-store([[:space:]]*(,|$))' stable-v5-http.headers && cmp -s stable-v5.json stable-v5-http.json; then
+              MANIFEST_URL="$(node -p "require('./stable-v5.json').manifestUrl")"
+              curl --fail --silent --show-error --retry 2 --retry-all-errors -H 'Cache-Control: no-store' "https://onlyoffice.getpi.work${MANIFEST_URL}?rollback=${RELEASE_ID}&attempt=${attempt}" --output manifest-http.json
+              EXPECTED_SHA="$(node -p "require('./stable-v5.json').manifestSha256")"
+              if [ "$(shasum -a 256 manifest-http.json | awk '{print $1}')" = "${EXPECTED_SHA}" ]; then
+                CONVERGED=1
+                break
+              fi
+            fi
+            test "${attempt}" = 5 && { echo 'stable-v5 rollback did not propagate to its immutable manifest' >&2; exit 1; }
+            sleep "$((attempt * 3))"
+          done
+          test "${CONVERGED}" = 1
+          node scripts/verify-release-http.mjs \
+            --v5-manifest rollback-release/manifest.json \
+            --release-id "${RELEASE_ID}" \
+            --expected-manifest-sha256 "${MANIFEST_SHA256}" \
+            --fastcdc-evidence-mode automatic \
+            --expected-worker-version-id "${CURRENT_WORKER_VERSION_ID}" \
+            --verify-stable-root \
+            --cache-bust "rollback-committed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          npx --yes wrangler@4.114.0 deployments status --json > worker-after-rollback.json
+          cmp worker-before-rollback.json worker-after-rollback.json || { echo 'Worker deployment changed before rollback convergence' >&2; exit 1; }
+          touch .rollback-committed
+          export MANIFEST_SHA256
+          node <<'NODE'
+          const crypto=require('node:crypto'),fs=require('node:fs');
+          const id=name=>{const value=Number(process.env[name]);if(!Number.isSafeInteger(value)||value<1)throw Error(`${name} must be a positive safe integer`);return value};
+          const from=require('./stable-v5-before.json'),target=require('./stable-v5.json'),authorization=require('./selected-target-promotion.json');
+          const receipt={version:1,trustRoot:'protected-production-workflow-and-r2-cas',channel:'stable-v5',from,target,authorization:{kind:'promotion-receipt',path:`promotions/${target.releaseId}/${authorization.file}`,sha256:authorization.sha256,candidate:authorization.receipt.candidate,production:authorization.receipt.production},worker:{name:'onlyoffice-browser-runtime',versionId:process.env.CURRENT_WORKER_VERSION_ID,currentDeploymentId:process.env.CURRENT_WORKER_DEPLOYMENT_ID},rollback:{repository:process.env.GITHUB_REPOSITORY,sourceCommit:process.env.GITHUB_SHA,runId:id('GITHUB_RUN_ID'),runAttempt:id('GITHUB_RUN_ATTEMPT')}};
+          const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n'); const digest=crypto.createHash('sha256').update(bytes).digest('hex');
+          const path=`rollbacks/${target.releaseId}/${process.env.GITHUB_SHA}-${digest}.json`;
+          fs.writeFileSync('rollback-receipt.json',bytes); fs.writeFileSync('rollback-receipt-metadata.json',JSON.stringify({path,digest})+'\n');
+          NODE
+          ROLLBACK_RECEIPT_PATH="$(node -p "require('./rollback-receipt-metadata.json').path")"
+          ROLLBACK_RECEIPT_SHA256="$(node -p "require('./rollback-receipt-metadata.json').digest")"
+          export ROLLBACK_RECEIPT_PATH ROLLBACK_RECEIPT_SHA256
+          retry_rclone copyto rollback-receipt.json "r2:onlyoffice-getpi-work/${ROLLBACK_RECEIPT_PATH}" --ignore-existing
+          retry_rclone copyto "r2:onlyoffice-getpi-work/${ROLLBACK_RECEIPT_PATH}" rollback-receipt-readback.json
+          cmp rollback-receipt.json rollback-receipt-readback.json
+          node <<'NODE'
+          const crypto=require('node:crypto'),fs=require('node:fs');
+          (async()=>{const url=`https://onlyoffice.getpi.work/${process.env.ROLLBACK_RECEIPT_PATH}?rollback-receipt=${process.env.GITHUB_RUN_ID}`;let response,lastError;for(let attempt=1;attempt<=4;attempt++){try{const candidate=await fetch(url,{cache:'no-store',redirect:'manual',headers:{'cache-control':'no-store'},signal:AbortSignal.timeout(30_000)});if(candidate.ok){response=candidate;break}lastError=Error(`${url}: HTTP ${candidate.status}`)}catch(error){lastError=error}if(attempt<4)await new Promise(resolve=>setTimeout(resolve,attempt*2_000))}if(!response)throw lastError;const bytes=Buffer.from(await response.arrayBuffer());const digest=crypto.createHash('sha256').update(bytes).digest('hex');const immutable=(response.headers.get('cache-control')||'').split(',').some(value=>value.trim().toLowerCase()==='immutable');if(!bytes.equals(fs.readFileSync('rollback-receipt.json'))||digest!==process.env.ROLLBACK_RECEIPT_SHA256||!immutable||response.headers.get('x-onlyoffice-worker-version')!==process.env.CURRENT_WORKER_VERSION_ID)throw Error('public rollback receipt bytes, digest, immutable cache policy, or Worker identity mismatch')})().catch(error=>{console.error(error);process.exit(1)});
+          NODE
+          echo "Rollback receipt: ${ROLLBACK_RECEIPT_PATH}" >> "${GITHUB_STEP_SUMMARY}"
+      - name: Restore the original pointer if rollback verification fails
+        if: ${{ failure() || cancelled() }}
+        run: |
+          set -euo pipefail
+          if [ -f .rollback-committed ] || [ ! -f stable-v5-before.json ]; then
+            exit 0
+          fi
+          retry_rclone() { local attempt=1; until timeout 120 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
+          retry_rclone copyto r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-failed-rollback.json
+          if [ -f stable-v5.json ] && cmp -s stable-v5-failed-rollback.json stable-v5.json; then
+            retry_rclone copyto stable-v5-before.json r2:onlyoffice-getpi-work/channels/stable-v5.json
+            retry_rclone copyto r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-restored.json
+            cmp stable-v5-before.json stable-v5-restored.json
+          elif ! cmp -s stable-v5-failed-rollback.json stable-v5-before.json; then
+            echo 'stable-v5 left both sides of the rollback transaction; refusing compensation' >&2
+            exit 1
+          fi

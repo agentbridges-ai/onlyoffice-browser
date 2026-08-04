@@ -45,7 +45,8 @@ function collectPageFailures(page: Page): string[] {
 
 async function getStatus(page: Page): Promise<SaveE2EStatus> {
   return page.evaluate(() => {
-    const api = (window as Window & { __ONLYOFFICE_SAVE_E2E__?: { getStatus: () => SaveE2EStatus } }).__ONLYOFFICE_SAVE_E2E__;
+    const api = (window as Window & { __ONLYOFFICE_SAVE_E2E__?: { getStatus: () => SaveE2EStatus } })
+      .__ONLYOFFICE_SAVE_E2E__;
     if (!api) throw new Error('Save E2E controller is not installed');
     return api.getStatus();
   });
@@ -103,25 +104,23 @@ async function getSaveButtonState(page: Page): Promise<SaveButtonState | null> {
   const button = await findSaveButton(page);
   if (!button) return null;
   const frame = await button.ownerFrame();
-  return button.evaluate(
-    (element, frameUrl) => {
-      const className = typeof element.className === 'string' ? element.className : '';
-      const disabled =
-        (element instanceof HTMLButtonElement && element.disabled) ||
-        element.getAttribute('aria-disabled') === 'true' ||
-        element.hasAttribute('disabled') ||
-        /\b(disabled|disable|inactive)\b/i.test(className) ||
-        Boolean(element.closest('.disabled, .disable, [aria-disabled="true"], [disabled]'));
-      return {
-        disabled,
-        frameUrl,
-        label: element.textContent?.trim() || '',
-        title: element.getAttribute('title') || element.getAttribute('aria-label') || element.getAttribute('data-hint') || '',
-        className,
-      };
-    },
-    frame?.url() || '',
-  );
+  return button.evaluate((element, frameUrl) => {
+    const className = typeof element.className === 'string' ? element.className : '';
+    const disabled =
+      (element instanceof HTMLButtonElement && element.disabled) ||
+      element.getAttribute('aria-disabled') === 'true' ||
+      element.hasAttribute('disabled') ||
+      /\b(disabled|disable|inactive)\b/i.test(className) ||
+      Boolean(element.closest('.disabled, .disable, [aria-disabled="true"], [disabled]'));
+    return {
+      disabled,
+      frameUrl,
+      label: element.textContent?.trim() || '',
+      title:
+        element.getAttribute('title') || element.getAttribute('aria-label') || element.getAttribute('data-hint') || '',
+      className,
+    };
+  }, frame?.url() || '');
 }
 
 async function clickNativeSave(page: Page): Promise<void> {
@@ -137,7 +136,10 @@ async function makeSpreadsheetDirty(page: Page): Promise<void> {
   if (!box) throw new Error('Editor box is not visible');
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    await page.mouse.click(box.x + Math.min(260 + attempt * 28, box.width - 80), box.y + Math.min(220 + attempt * 24, box.height - 80));
+    await page.mouse.click(
+      box.x + Math.min(260 + attempt * 28, box.width - 80),
+      box.y + Math.min(220 + attempt * 24, box.height - 80),
+    );
     await page.keyboard.type(`save-e2e-${Date.now()}-${attempt}`);
     await page.keyboard.press('Enter');
     try {
@@ -162,9 +164,7 @@ test('local xlsx saves through callback without downloads or autosave', async ({
   await waitForReady(page);
 
   await expect(page.locator('#save-e2e-root > button, #save-e2e-root [data-action="save"]')).toHaveCount(0);
-  await expect
-    .poll(() => getSaveButtonState(page).then((state) => state?.disabled), { timeout: 20_000 })
-    .toBe(true);
+  await expect.poll(() => getSaveButtonState(page).then((state) => state?.disabled), { timeout: 20_000 }).toBe(true);
 
   const initial = await getStatus(page);
   expect(initial.writeCount).toBe(0);
@@ -172,9 +172,7 @@ test('local xlsx saves through callback without downloads or autosave', async ({
   expect(initial.lastHash).toBe(initial.initialHash);
 
   await makeSpreadsheetDirty(page);
-  await expect
-    .poll(() => getSaveButtonState(page).then((state) => state?.disabled), { timeout: 20_000 })
-    .toBe(false);
+  await expect.poll(() => getSaveButtonState(page).then((state) => state?.disabled), { timeout: 20_000 }).toBe(false);
 
   await page.waitForTimeout(2_000);
   expect((await getStatus(page)).writeCount).toBe(0);
@@ -199,9 +197,7 @@ test('new xlsx saves through browser download without callback writes', async ({
 
   await expect(page.locator('#save-e2e-root > button, #save-e2e-root [data-action="save"]')).toHaveCount(0);
   await makeSpreadsheetDirty(page);
-  await expect
-    .poll(() => getSaveButtonState(page).then((state) => state?.disabled), { timeout: 20_000 })
-    .toBe(false);
+  await expect.poll(() => getSaveButtonState(page).then((state) => state?.disabled), { timeout: 20_000 }).toBe(false);
 
   const downloadPromise = page.waitForEvent('download', { timeout: 45_000 });
   await clickNativeSave(page);
@@ -230,20 +226,17 @@ for (const [type, outputType] of Object.entries(legacySaveOutputs) as Array<
     await page.goto(`/save-e2e.html?scenario=local-file&type=${type}`);
     await waitForReady(page);
 
-    const result = await page.evaluate(
-      async (targetExt): Promise<SaveE2EResult> => {
-        const api = (
-          window as Window & {
-            __ONLYOFFICE_SAVE_E2E__?: {
-              save: (targetExt?: string) => Promise<SaveE2EResult>;
-            };
-          }
-        ).__ONLYOFFICE_SAVE_E2E__;
-        if (!api) throw new Error('Save E2E controller is not installed');
-        return api.save(targetExt);
-      },
-      type.toUpperCase(),
-    );
+    const result = await page.evaluate(async (targetExt): Promise<SaveE2EResult> => {
+      const api = (
+        window as Window & {
+          __ONLYOFFICE_SAVE_E2E__?: {
+            save: (targetExt?: string) => Promise<SaveE2EResult>;
+          };
+        }
+      ).__ONLYOFFICE_SAVE_E2E__;
+      if (!api) throw new Error('Save E2E controller is not installed');
+      return api.save(targetExt);
+    }, type.toUpperCase());
 
     expect(result.fileName).toMatch(new RegExp(`\\.${outputType}$`, 'i'));
     expect(result.size).toBeGreaterThan(0);

@@ -1,0 +1,227 @@
+name: Build immutable runtime candidate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onlyoffice-r2-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  candidate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      ONLYOFFICE_X2T_VERSION: 9.3.0+3
+      ONLYOFFICE_X2T_COMMIT: 4360541a805477726a06caabd1c64a330377bcf2
+      ONLYOFFICE_MATRIX_FONT_RELEASE_ID: v0.5.0-648c486d1c558acd
+      ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256: 09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
+      ONLYOFFICE_FASTCDC_EVIDENCE_MODE: automatic
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Bind reproducible build time to checked-out source
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "${GITHUB_ENV}"
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Verify the pinned public x2t publication and provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/verify-x2t-publication.mjs \
+            --version 9.3.0+3 \
+            --tag v9.3.0+3 \
+            --commit 4360541a805477726a06caabd1c64a330377bcf2 \
+            --asset-root public/wasm/x2t
+      - name: Use the exact npm CLI used by trusted publication
+        run: npm install --global npm@11.17.0
+      - name: Restore the pinned full-font input from GitHub cache
+        id: full-font-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/onlyoffice-font-release
+          key: onlyoffice-font-release-v0.5.0-648c486d1c558acd-09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
+      - run: pnpm install --frozen-lockfile
+      - name: Install Chromium for the mandatory candidate matrices
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Test and build the candidate exactly once
+        run: |
+          set -euo pipefail
+          pnpm test
+          pnpm tsc --noEmit
+          ONLYOFFICE_SKIP_RELEASE_BUILD=1 pnpm build
+          FONT_CACHE="${GITHUB_WORKSPACE}/.cache/onlyoffice-font-release"
+          if test "${{ steps.full-font-cache.outputs.cache-hit }}" = "true"; then
+            FONT_MANIFEST="${FONT_CACHE}/onlyoffice-browser-font-assets.json"
+            test -f "${FONT_MANIFEST}"
+            test "$(shasum -a 256 "${FONT_MANIFEST}" | awk '{print $1}')" = "${ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256}"
+            ONLYOFFICE_MATRIX_FONT_ASSETS_DIR="${FONT_CACHE}" node scripts/hydrate-cloudflare-matrix-fonts.mjs
+          else
+            ONLYOFFICE_MATRIX_FONT_SOURCE=https://onlyoffice.getpi.work \
+              ONLYOFFICE_MATRIX_FONT_CACHE="${FONT_CACHE}" \
+              node scripts/hydrate-cloudflare-matrix-fonts.mjs
+          fi
+          pnpm fonts:verify --input dist
+          mkdir -p release-evidence
+          pnpm build:lib
+          npm pack --ignore-scripts --pack-destination release-evidence
+          TARBALL="$(find release-evidence -maxdepth 1 -name '*.tgz' -type f -print -quit)"
+          test -n "${TARBALL}"
+          test -s dist/npm/public-api.js
+          test -s dist/npm/public-api.d.ts
+          node scripts/build-release-manifest.mjs \
+            --root dist \
+            --output .onlyoffice-release \
+            --package-version "$(node -p "require('./package.json').version")" \
+            --source-commit "${GITHUB_SHA}"
+          node scripts/release-envelope.mjs \
+            --release-root .onlyoffice-release \
+            --package-tarball "${TARBALL}" \
+            --git-commit "${GITHUB_SHA}" \
+            --output release-evidence/office-release-envelope.json
+          node scripts/verify-release-publication.mjs \
+            --release-root .onlyoffice-release \
+            --expected-package-version "$(node -p "require('./package.json').version")" \
+            --expected-source-commit "${GITHUB_SHA}" \
+            --fastcdc-evidence-mode automatic
+      - name: Save the verified pinned full-font input on cache miss
+        if: steps.full-font-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/onlyoffice-font-release
+          key: onlyoffice-font-release-v0.5.0-648c486d1c558acd-09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
+      - name: Record immutable source identity before matrices
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const crypto = require('node:crypto'); const fs = require('node:fs');
+          const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const pointer = JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable-v5.json'));
+          const manifest = `.onlyoffice-release/releases/${pointer.releaseId}/manifest.json`;
+          if (JSON.parse(fs.readFileSync(manifest)).sourceCommit !== process.env.GITHUB_SHA) throw new Error('release manifest does not bind GITHUB_SHA');
+          const identity = { version: 1, gitCommit: process.env.GITHUB_SHA, lockfileSha256: sha('pnpm-lock.yaml'), runtimeManifestSha256: sha('dist/onlyoffice-runtime-assets.json'), releaseId: pointer.releaseId, releaseManifestSha256: sha(manifest) };
+          const identitySha256 = crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+          fs.writeFileSync('release-evidence/source-identity.json', JSON.stringify({ ...identity, identitySha256 }, null, 2) + '\n');
+          NODE
+      - name: Run mandatory full-v5 Cloudflare and Broker matrix
+        run: |
+          ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1 ONLYOFFICE_CF_MATRIX_REUSE_STATE="${RUNNER_TEMP}/onlyoffice-cloudflare-matrix-state" ONLYOFFICE_CF_MATRIX_REFRESH_STATE=1 ONLYOFFICE_CF_MATRIX_KEEP_STATE=1 ONLYOFFICE_CF_MATRIX_FORCE_FULL=1 ONLYOFFICE_CF_MATRIX_GREP='' node scripts/run-cloudflare-local-matrix.mjs
+          node <<'NODE'
+          const crypto = require('node:crypto'); const fs = require('node:fs');
+          const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const recorded = JSON.parse(fs.readFileSync('release-evidence/source-identity.json'));
+          const { identitySha256, ...identity } = recorded;
+          const pointer = JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable-v5.json'));
+          if (JSON.parse(fs.readFileSync(`.onlyoffice-release/releases/${pointer.releaseId}/manifest.json`)).sourceCommit !== process.env.GITHUB_SHA) throw new Error('matrix release manifest source changed');
+          const actual = { version: 1, gitCommit: process.env.GITHUB_SHA, lockfileSha256: sha('pnpm-lock.yaml'), runtimeManifestSha256: sha('dist/onlyoffice-runtime-assets.json'), releaseId: pointer.releaseId, releaseManifestSha256: sha(`.onlyoffice-release/releases/${pointer.releaseId}/manifest.json`) };
+          if (JSON.stringify(identity) !== JSON.stringify(actual) || crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex') !== identitySha256) throw new Error('matrix changed candidate source identity');
+          fs.writeFileSync('release-evidence/full-v5-cloudflare-broker-matrix.json', JSON.stringify({ version: 1, result: 'passed', matrix: 'full-v5', sourceIdentity: actual, sourceIdentitySha256: identitySha256 }, null, 2) + '\n');
+          NODE
+      - name: Run fault-injected proxy matrix
+        run: |
+          ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1 ONLYOFFICE_CF_MATRIX_REUSE_STATE="${RUNNER_TEMP}/onlyoffice-cloudflare-matrix-state" ONLYOFFICE_CF_MATRIX_REFRESH_STATE=0 ONLYOFFICE_CF_MATRIX_PORT=8887 ONLYOFFICE_CF_MATRIX_INTERNAL_PORT=8888 ONLYOFFICE_CF_MATRIX_STALL_TEST=1 ONLYOFFICE_CF_MATRIX_STALL_MS=5000 ONLYOFFICE_CF_MATRIX_USE_SYSTEM_PROXY=1 ONLYOFFICE_CF_MATRIX_GREP='fault-injected segment stream aborts' node scripts/run-cloudflare-local-matrix.mjs
+          node <<'NODE'
+          const crypto = require('node:crypto'); const fs = require('node:fs');
+          const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const recorded = JSON.parse(fs.readFileSync('release-evidence/source-identity.json')); const { identitySha256, ...identity } = recorded;
+          const pointer = JSON.parse(fs.readFileSync('.onlyoffice-release/channels/stable-v5.json'));
+          if (JSON.parse(fs.readFileSync(`.onlyoffice-release/releases/${pointer.releaseId}/manifest.json`)).sourceCommit !== process.env.GITHUB_SHA) throw new Error('fault matrix release manifest source changed');
+          const actual = { version: 1, gitCommit: process.env.GITHUB_SHA, lockfileSha256: sha('pnpm-lock.yaml'), runtimeManifestSha256: sha('dist/onlyoffice-runtime-assets.json'), releaseId: pointer.releaseId, releaseManifestSha256: sha(`.onlyoffice-release/releases/${pointer.releaseId}/manifest.json`) };
+          if (JSON.stringify(identity) !== JSON.stringify(actual) || crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex') !== identitySha256) throw new Error('fault matrix changed candidate source identity');
+          fs.writeFileSync('release-evidence/fault-injected-proxy-matrix.json', JSON.stringify({ version: 1, result: 'passed', matrix: 'fault-injected-proxy', sourceIdentity: actual, sourceIdentitySha256: identitySha256 }, null, 2) + '\n');
+          NODE
+      - name: Inventory candidate artifact and enforce a conservative size ceiling
+        id: artifact-inventory
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+
+          const roots = ['dist', '.onlyoffice-release', 'release-evidence'];
+          const reportPath = path.join('release-evidence', 'candidate-artifact-inventory.json');
+          const policyMaxBytes = 4 * 1024 ** 3;
+          const visit = (target) => {
+            const stat = fs.lstatSync(target);
+            if (stat.isSymbolicLink()) throw new Error(`candidate artifact must not contain symlinks: ${target}`);
+            if (stat.isFile()) return { files: 1, bytes: stat.size };
+            if (!stat.isDirectory()) throw new Error(`candidate artifact contains an unsupported entry: ${target}`);
+            return fs.readdirSync(target).reduce(
+              (total, name) => {
+                const entry = visit(path.join(target, name));
+                total.files += entry.files;
+                total.bytes += entry.bytes;
+                return total;
+              },
+              { files: 0, bytes: 0 },
+            );
+          };
+
+          fs.rmSync(reportPath, { force: true });
+          const breakdown = Object.fromEntries(roots.map((root) => [root, visit(root)]));
+          const payloadFiles = Object.values(breakdown).reduce((sum, entry) => sum + entry.files, 0);
+          const payloadBytes = Object.values(breakdown).reduce((sum, entry) => sum + entry.bytes, 0);
+          const report = {
+            version: 1,
+            sourceCommit: process.env.GITHUB_SHA,
+            policyMaxBytes,
+            files: payloadFiles + 1,
+            bytes: 0,
+            breakdown,
+          };
+          for (let attempt = 0; attempt < 10; attempt += 1) {
+            const encoded = `${JSON.stringify(report, null, 2)}\n`;
+            const exactBytes = payloadBytes + Buffer.byteLength(encoded);
+            if (report.bytes === exactBytes) {
+              fs.writeFileSync(reportPath, encoded);
+              break;
+            }
+            report.bytes = exactBytes;
+            if (attempt === 9) throw new Error('candidate artifact inventory size did not converge');
+          }
+          if (!fs.existsSync(reportPath)) throw new Error('candidate artifact inventory was not written');
+          if (report.bytes > policyMaxBytes) {
+            throw new Error(
+              `candidate artifact is ${report.bytes} bytes, above the conservative ${policyMaxBytes}-byte GitHub upload ceiling`,
+            );
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `files=${report.files}\nbytes=${report.bytes}\n`);
+          fs.appendFileSync(
+            process.env.GITHUB_STEP_SUMMARY,
+            `### Candidate artifact inventory\n- Files: ${report.files}\n- Uncompressed bytes: ${report.bytes}\n- Policy ceiling: ${policyMaxBytes} bytes (4 GiB)\n`,
+          );
+          console.log(`Candidate artifact contains ${report.files} files and ${report.bytes} bytes`);
+          NODE
+      - name: Retain the sole fully verified promotion input
+        id: candidate-artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: onlyoffice-runtime-candidate-${{ github.sha }}
+          path: |
+            dist
+            .onlyoffice-release
+            release-evidence
+          if-no-files-found: error
+          retention-days: 30
+          include-hidden-files: true
+          compression-level: 0
+      - name: Report immutable candidate identity
+        run: |
+          {
+            echo "### Immutable runtime candidate"
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+            echo "- Artifact ID: \`${{ steps.candidate-artifact.outputs.artifact-id }}\`"
+            echo "- Artifact digest: \`${{ steps.candidate-artifact.outputs.artifact-digest }}\`"
+            echo "- Artifact inventory: \`${{ steps.artifact-inventory.outputs.files }} files / ${{ steps.artifact-inventory.outputs.bytes }} uncompressed bytes\`"
+            echo "- Promotion input: \`onlyoffice-runtime-candidate-${GITHUB_SHA}\` from this workflow run only"
+          } >> "${GITHUB_STEP_SUMMARY}"

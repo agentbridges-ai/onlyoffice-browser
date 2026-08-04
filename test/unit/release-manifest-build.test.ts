@@ -88,6 +88,7 @@ describe('immutable release builder', () => {
       root,
       output,
       packageVersion: '0.4.0',
+      sourceCommit: 'a'.repeat(40),
       x2tVersion: '9.3.0+1',
       x2tCommit: 'abc123',
     });
@@ -96,11 +97,30 @@ describe('immutable release builder', () => {
       root,
       output: secondOutput,
       packageVersion: '0.4.0',
+      sourceCommit: 'a'.repeat(40),
       x2tVersion: '9.3.0+1',
       x2tCommit: 'abc123',
     });
     expect(second.releaseId).toBe(first.releaseId);
     expect(first.version).toBe(5);
+    expect(first.sourceCommit).toBe('a'.repeat(40));
+    expect(first.protocolHostBuildId).toBe('office-host-0.4.0-r1');
+    const releaseIdentity = Object.fromEntries(
+      Object.entries(first).filter(([key]) => key !== 'version' && key !== 'releaseId'),
+    );
+    expect(first.releaseId).toBe(
+      `v0.4.0-${crypto.createHash('sha256').update(JSON.stringify(releaseIdentity)).digest('hex').slice(0, 16)}`,
+    );
+    expect(() =>
+      buildRelease({
+        root,
+        output: temp(),
+        packageVersion: '0.4.0',
+        sourceCommit: 'not-a-commit',
+        x2tVersion: '9.3.0+1',
+        x2tCommit: 'abc123',
+      }),
+    ).toThrow(/sourceCommit/);
     expect(first.contentProtocol).toMatchObject({
       version: 1,
       digest: 'sha256',
@@ -175,6 +195,7 @@ describe('immutable release builder', () => {
       root,
       output: temp(),
       packageVersion: '0.4.1',
+      sourceCommit: 'b'.repeat(40),
       x2tVersion: '9.3.0+1',
       x2tCommit: 'abc123',
     });
@@ -226,6 +247,7 @@ describe('immutable release builder', () => {
       root,
       output,
       packageVersion: '0.6.0',
+      sourceCommit: 'c'.repeat(40),
       x2tVersion: '9.3.0+2',
       x2tCommit: 'abc123',
       fastCdcIndexer: () => ({

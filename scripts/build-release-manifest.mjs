@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import crypto from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +22,44 @@ const FASTCDC_POLICY_ID = 'fastcdc-v2020-min64k-avg256k-max1m-norm1-seed0';
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+function requireSourceCommit(value) {
+  if (!/^[a-f0-9]{40}$/.test(value || '')) {
+    throw new Error('Release sourceCommit must be an exact 40-character Git commit');
+  }
+  return value;
+}
+
+export function protocolHostBuildIdForPackageVersion(packageVersion) {
+  if (typeof packageVersion !== 'string' || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(packageVersion)) {
+    throw new Error('Release packageVersion cannot produce a protocol Host build identity');
+  }
+  return `office-host-${packageVersion}-r1`;
+}
+
+function verifiedCheckoutSourceCommit(requested) {
+  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const head = execFileSync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  requireSourceCommit(head);
+  const sourceCommit = requested ? requireSourceCommit(requested) : head;
+  if (sourceCommit !== head) {
+    throw new Error(`Release sourceCommit ${sourceCommit} does not match checked-out HEAD ${head}`);
+  }
+  for (const args of [
+    ['diff', '--quiet', '--'],
+    ['diff', '--cached', '--quiet', '--'],
+  ]) {
+    const result = spawnSync('git', args, { cwd: projectRoot, stdio: 'ignore' });
+    if (result.status !== 0) {
+      throw new Error('Release sourceCommit cannot describe a checkout with tracked source changes');
+    }
+  }
+  return sourceCommit;
 }
 
 function storageSetDescription(pack, assets) {
@@ -277,12 +316,14 @@ export function buildRelease({
   root,
   output,
   packageVersion,
+  sourceCommit,
   x2tVersion,
   x2tCommit,
   fastCdcEvidence,
   fastCdcEvidencePath,
   fastCdcIndexer,
 }) {
+  requireSourceCommit(sourceCommit);
   const runtimePath = path.join(root, 'onlyoffice-runtime-assets.json');
   const fontPath = path.join(root, 'onlyoffice-browser-font-assets.json');
   const runtimeBytes = fs.readFileSync(runtimePath);
@@ -405,6 +446,8 @@ export function buildRelease({
   };
   const identity = {
     packageVersion,
+    sourceCommit,
+    protocolHostBuildId: protocolHostBuildIdForPackageVersion(packageVersion),
     hostBuildId: sha256(hostAssets.map((asset) => `${asset.path}\0${asset.sha256}\n`).join('')),
     shellRevision: sha256(shellAssets.map((asset) => `${asset.path}\0${asset.sha256}\n`).join('')),
     runtimeManifestSha256: sha256(runtimeBytes),
@@ -487,12 +530,14 @@ function option(name, fallback) {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (isMain) {
+  const sourceCommit = verifiedCheckoutSourceCommit(option('--source-commit', process.env.ONLYOFFICE_SOURCE_COMMIT));
   const manifest = buildRelease({
     root: path.resolve(option('--root', 'dist')),
     output: path.resolve(option('--output', '.onlyoffice-release')),
     packageVersion: option('--package-version', process.env.npm_package_version || '0.0.0'),
-    x2tVersion: option('--x2t-version', process.env.ONLYOFFICE_X2T_VERSION || '9.3.0+2'),
-    x2tCommit: option('--x2t-commit', process.env.ONLYOFFICE_X2T_COMMIT || '1bb9b45a399f87ca162eea0c86abd4660f295469'),
+    sourceCommit,
+    x2tVersion: option('--x2t-version', process.env.ONLYOFFICE_X2T_VERSION || '9.3.0+3'),
+    x2tCommit: option('--x2t-commit', process.env.ONLYOFFICE_X2T_COMMIT || '4360541a805477726a06caabd1c64a330377bcf2'),
     fastCdcEvidencePath: option('--fastcdc-evidence', process.env.ONLYOFFICE_FASTCDC_EVIDENCE),
   });
   console.log(
