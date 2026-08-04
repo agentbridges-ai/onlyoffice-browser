@@ -2,7 +2,16 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium, expect, type Browser, type BrowserContext, type Frame, type Page, test } from '@playwright/test';
+import {
+  chromium,
+  expect,
+  type Browser,
+  type BrowserContext,
+  type Frame,
+  type Page,
+  type Request,
+  test,
+} from '@playwright/test';
 import { planCanonicalPackageTransfer, type CanonicalPackageTransport } from '../../src/lib/canonical-resource-store';
 import { releaseManifestV5ToContentModel } from '../../src/lib/release-content-manifest';
 import { planReleaseContent } from '../../src/lib/release-content-model';
@@ -61,7 +70,13 @@ type ReleaseManifest = {
 };
 
 type FailurePhase = 'normal' | 'offline-recovery' | 'online-update';
-type BrowserFailure = { source: string; message: string; url?: string; phase?: FailurePhase };
+type BrowserFailure = {
+  source: string;
+  message: string;
+  url?: string;
+  phase?: FailurePhase;
+  requestPhase?: FailurePhase;
+};
 type ContentCounter = {
   workerRequests: number;
   cacheHits: number;
@@ -122,6 +137,47 @@ async function waitForStableBroadcastCounts(pages: Page[], stableFor = 2_500, ti
 }
 
 function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => FailurePhase) {
+  // Chromium can report a Service Worker response after the page has already
+  // transitioned back online. Keep the phase at request start so a delayed
+  // offline 503 cannot be mistaken for a failure from the online update.
+  const stablePointerRequests: Array<{
+    request: Request;
+    phase: FailurePhase;
+    at: number;
+    status?: number;
+  }> = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.origin === canonicalOrigin && url.pathname === '/channels/stable-v5.json' && !url.search) {
+      stablePointerRequests.push({ request, phase: phase ? phase() : 'normal', at: Date.now() });
+    }
+  });
+  const findStablePointerRequest = (request: Request) =>
+    stablePointerRequests.findIndex((candidate) => candidate.request === request);
+  page.on('response', (response) => {
+    const index = findStablePointerRequest(response.request());
+    if (index < 0) return;
+    stablePointerRequests[index].status = response.status();
+    if (response.status() < 400) stablePointerRequests.splice(index, 1);
+  });
+  page.on('requestfinished', (request) => {
+    const index = findStablePointerRequest(request);
+    if (index >= 0 && (stablePointerRequests[index].status ?? 0) < 400) stablePointerRequests.splice(index, 1);
+  });
+  page.on('requestfailed', (request) => {
+    const index = findStablePointerRequest(request);
+    if (index >= 0) stablePointerRequests[index].status = 503;
+  });
+  const requestPhaseForFailure = (url: string | undefined): FailurePhase | undefined => {
+    if (!url) return undefined;
+    const now = Date.now();
+    for (let index = stablePointerRequests.length - 1; index >= 0; index -= 1) {
+      if (now - stablePointerRequests[index].at >= 120_000) stablePointerRequests.splice(index, 1);
+    }
+    const index = stablePointerRequests.findIndex((candidate) => candidate.request.url() === url);
+    if (index < 0) return undefined;
+    return stablePointerRequests.splice(index, 1)[0]?.phase;
+  };
   page.on('pageerror', (error) =>
     failures.push({ source: 'pageerror', message: error.message, ...(phase ? { phase: phase() } : {}) }),
   );
@@ -136,11 +192,13 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
           )))
     ) {
       const url = message.location().url;
+      const stablePointerRequestPhase = requestPhaseForFailure(url);
       failures.push({
         source: 'console',
         message: text,
         ...(url ? { url } : {}),
         ...(phase ? { phase: phase() } : {}),
+        ...(stablePointerRequestPhase ? { requestPhase: stablePointerRequestPhase } : {}),
       });
     }
   });
@@ -148,7 +206,7 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
 
 function isExpectedOfflineStablePointerFailure(failure: BrowserFailure): boolean {
   if (
-    failure.phase !== 'offline-recovery' ||
+    failure.requestPhase !== 'offline-recovery' ||
     failure.source !== 'console' ||
     !failure.url ||
     !/^Failed to load resource: the server responded with a status of 503(?: \([^)]*\))?$/.test(failure.message)
