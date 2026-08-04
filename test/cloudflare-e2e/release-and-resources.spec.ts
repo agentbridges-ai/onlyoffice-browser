@@ -2436,6 +2436,17 @@ test('production v5 installs once, survives restart with three offline editors, 
         [...actual.searchParams.values()].every((value) => /^(?:0|[1-9]\d*)$/.test(value))
       );
     };
+    const isExpectedOfflineStablePointerFailure = (failure: BrowserFailure): boolean => {
+      if (
+        failure.source !== 'console' ||
+        !failure.url ||
+        !/^Failed to load resource: the server responded with a status of 503(?: \([^)]*\))?$/.test(failure.message)
+      ) {
+        return false;
+      }
+      const actual = new URL(failure.url);
+      return actual.origin === canonicalOrigin && actual.pathname === '/channels/stable-v5.json' && !actual.search;
+    };
     const failedUpdateConsoleErrors = failures.slice(failuresBeforeFailedUpdate);
     // A handled fetch of the intentionally missing object does not have to emit
     // a browser console error. Chromium versions differ here: some surface the
@@ -2454,7 +2465,7 @@ test('production v5 installs once, survives restart with three offline editors, 
             ) {
               return false;
             }
-            return isExpectedFailedObjectUrl(failure.url);
+            return isExpectedFailedObjectUrl(failure.url) || isExpectedOfflineStablePointerFailure(failure);
           })(),
         ),
         `unexpected browser failures during intentional failed update: ${JSON.stringify(failedUpdateConsoleErrors)}`,
