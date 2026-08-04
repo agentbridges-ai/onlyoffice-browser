@@ -37,6 +37,7 @@ describe('published runtime audit workflow', () => {
     expect(audit).toContain("if: steps.r2-audit.outputs.enabled == 'true'");
     expect(audit).toContain('--v5-manifest manifest-public.json');
     expect(audit).toContain('--remote-verification-mode full');
+    expect(audit).toContain('--concurrency 16');
     expect(audit).toContain('cmp stable-v5-public.json stable-v5-r2.json');
     expect(audit).toContain('cmp manifest-public.json manifest-r2.json');
     expect(audit).toContain('permissions:\n  contents: read\n  actions: read');

@@ -50,6 +50,11 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain("['push','workflow_dispatch'].includes(r.event)");
     expect(promotion).toContain("r.head_branch!=='main'");
     expect(promotion).toContain('runtime-asset-version.mjs');
+    expect(promotion).toContain('--no-traverse');
+    expect(promotion).toContain('--transfers 16');
+    expect(promotion).toContain('--checkers 32');
+    expect(promotion).toContain("--exclude 'channels/**'");
+    expect(promotion).toContain('--concurrency 16');
     expect(promotion).not.toMatch(/rclone copy candidate-input\/dist r2:onlyoffice-getpi-work/);
     expect(promotion).not.toContain('wrangler@4.114.0 deploy ');
     expect(promotion).toContain('wrangler@4.114.0 versions upload');
@@ -104,6 +109,11 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('timeout-minutes: 180');
     expect(promotion).toContain('Persist or recover immutable pointer and Worker promotion intent');
     expect(promotion).toContain('promotion-intents/');
+    expect(promotion).toContain('rclone cat "r2:onlyoffice-getpi-work/${INTENT_PATH}"');
+    expect(promotion).toContain('if ! timeout 120 rclone cat');
+    expect(promotion).toContain('return 1');
+    expect(promotion).toContain('test -s "${temporary}"');
+    expect(promotion).toContain('mv "${temporary}" promotion-intent.json');
     expect(promotion).toContain('stable-v5 is neither the recorded predecessor nor this candidate');
     expect(promotion).toContain('stable-v5 changed during production deployment; refusing activation');
     expect(promotion).toContain('Record immutable promotion receipt after stable-v5 convergence');
@@ -173,6 +183,7 @@ describe('R2 release train workflows', () => {
     expect(rollback).toContain('retry_rclone()');
     expect(rollback).toContain('--v5-manifest manifest.json');
     expect(rollback).toContain('--remote-verification-mode full');
+    expect(rollback).toContain('--concurrency 16');
     expect(rollback).toContain('--expected-worker-version-id "${CURRENT_WORKER_VERSION_ID}"');
     expect(rollback).toContain('--verify-stable-root');
     expect(rollback).toContain('Restore the original pointer if rollback verification fails');
@@ -197,6 +208,7 @@ describe('R2 release train workflows', () => {
     expect(audit).toContain('schedule:');
     expect(audit).toContain('--v5-manifest manifest-public.json');
     expect(audit).toContain('--remote-verification-mode full');
+    expect(audit).toContain('--concurrency 16');
     expect(audit).toContain('R2_AUDIT_READONLY_ACCESS_KEY_ID');
     expect(audit).toContain('degraded public-only mode');
     expect(audit).toContain('x-onlyoffice-worker-version');

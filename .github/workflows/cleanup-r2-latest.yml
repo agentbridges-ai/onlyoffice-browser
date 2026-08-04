@@ -1,0 +1,233 @@
+name: Purge old R2 resources (latest only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_cleanup:
+        description: "Type PURGE_LATEST to enable the cleanup job"
+        required: true
+        type: string
+      stable_release_id:
+        description: "The exact release ID currently served by stable-v5"
+        required: true
+        type: string
+      dry_run:
+        description: "Only create and verify the deletion plan"
+        required: true
+        default: true
+        type: boolean
+
+permissions: { contents: read }
+concurrency: { group: onlyoffice-r2-production, cancel-in-progress: false, queue: max }
+
+jobs:
+  cleanup:
+    if: inputs.confirm_cleanup == 'PURGE_LATEST'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: https://40a503f1c86c028edfcd6f113c562b5b.r2.cloudflarestorage.com
+      RCLONE_CONFIG_R2_ACL: private
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+      EXPECTED_RELEASE_ID: ${{ inputs.stable_release_id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: main
+      - name: Install cleanup tools only
+        run: sudo apt-get update && sudo apt-get install --yes rclone
+      - name: Read and validate the current latest release
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_RELEASE_ID}" =~ ^[a-zA-Z0-9._+-]{1,128}$ ]]
+          retry_copy() {
+            local attempt=1
+            until timeout 120 rclone copyto "$@"; do
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 3))"
+            done
+          }
+          retry_copy r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-r2.json
+          retry_copy r2:onlyoffice-getpi-work/channels/stable.json stable-v4-r2.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const expected = process.env.EXPECTED_RELEASE_ID;
+          const pointer = JSON.parse(fs.readFileSync('stable-v5-r2.json'));
+          if (pointer.version !== 1 || pointer.releaseId !== expected || pointer.manifestUrl !== `/releases/${expected}/manifest.json` || !/^[a-f0-9]{64}$/.test(pointer.manifestSha256 || '')) {
+            throw Error('stable-v5 is not the requested release; refusing latest-only cleanup');
+          }
+          const legacy = JSON.parse(fs.readFileSync('stable-v4-r2.json'));
+          const legacyManifestUrlValid = legacy.manifestUrl === undefined || legacy.manifestUrl === `/releases/${legacy.releaseId}/manifest-v4.json`;
+          const legacyManifestShaValid = legacy.manifestSha256 === undefined || /^[a-f0-9]{64}$/.test(legacy.manifestSha256);
+          if (legacy.version !== 1 || !/^[a-zA-Z0-9._+-]{1,128}$/.test(legacy.releaseId || '') || !legacyManifestUrlValid || !legacyManifestShaValid) {
+            throw Error('stable v4 compatibility pointer is invalid');
+          }
+          fs.writeFileSync('stable-v4-release-before.txt', `${legacy.releaseId}\n`);
+          NODE
+          retry_copy "r2:onlyoffice-getpi-work/releases/${EXPECTED_RELEASE_ID}/manifest.json" latest-manifest.json
+          retry_copy "r2:onlyoffice-getpi-work/releases/${EXPECTED_RELEASE_ID}/manifest-v4.json" latest-manifest-v4.json
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+          const pointer = JSON.parse(fs.readFileSync('stable-v5-r2.json'));
+          const manifestBytes = fs.readFileSync('latest-manifest.json');
+          if (sha(manifestBytes) !== pointer.manifestSha256) throw Error('stable-v5 manifest digest mismatch');
+          const manifest = JSON.parse(manifestBytes);
+          if (manifest.version !== 5 || manifest.releaseId !== process.env.EXPECTED_RELEASE_ID) throw Error('latest manifest identity mismatch');
+          const legacyManifest = JSON.parse(fs.readFileSync('latest-manifest-v4.json'));
+          const legacyTarget = {
+            version: 1,
+            releaseId: process.env.EXPECTED_RELEASE_ID,
+            manifestUrl: `/releases/${process.env.EXPECTED_RELEASE_ID}/manifest-v4.json`,
+            manifestSha256: sha(fs.readFileSync('latest-manifest-v4.json')),
+          };
+          if (legacyManifest.version !== 4 || legacyManifest.releaseId !== process.env.EXPECTED_RELEASE_ID) throw Error('latest compatibility manifest identity mismatch');
+          fs.writeFileSync('stable-v4-target.json', JSON.stringify(legacyTarget, null, 2) + '\n');
+          fs.writeFileSync('latest-manifest.sha256', `${sha(manifestBytes)}\n`);
+          NODE
+          curl --fail --silent --show-error --retry 4 --retry-all-errors --connect-timeout 10 --max-time 30 \
+            -H 'Cache-Control: no-store' \
+            "https://onlyoffice.getpi.work/channels/stable-v5.json?cleanup=${GITHUB_RUN_ID}" \
+            --output stable-v5-public.json
+          cmp stable-v5-r2.json stable-v5-public.json
+      - name: Build a latest-only deletion plan from one R2 inventory
+        run: |
+          set -euo pipefail
+          retry_inventory() {
+            local output="$1" attempt=1 temporary="${1}.tmp"
+            while true; do
+              rm -f "${temporary}"
+              if timeout 900 node scripts/snapshot-r2-inventory.mjs r2:onlyoffice-getpi-work "${temporary}"; then
+                mv "${temporary}" "${output}"
+                return 0
+              fi
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 3))"
+            done
+          }
+          retry_inventory r2-inventory.json
+          node scripts/plan-r2-latest-cleanup.mjs \
+            --pointer stable-v5-r2.json \
+            --legacy-pointer stable-v4-target.json \
+            --manifest latest-manifest.json \
+            --inventory r2-inventory.json \
+            --output latest-only-cleanup-plan.json \
+            --delete-list latest-only-delete-list.txt
+          node <<'NODE'
+          const fs = require('node:fs');
+          const plan = JSON.parse(fs.readFileSync('latest-only-cleanup-plan.json'));
+          if (plan.mode !== 'latest-only' || plan.releaseId !== process.env.EXPECTED_RELEASE_ID) throw Error('cleanup plan identity mismatch');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
+            '### Latest-only R2 cleanup plan',
+            `- Stable release: \`${plan.releaseId}\``,
+            `- Objects before: \`${plan.inventoryObjects}\` (${plan.inventoryBytes} bytes)`,
+            `- Objects retained: \`${plan.retainedObjects}\` (${plan.retainedBytes} bytes)`,
+            `- Objects to delete: \`${plan.deleteObjects}\` (${plan.deleteBytes} bytes)`,
+            '- The v4 compatibility pointer will be aligned to this same release before a destructive run.',
+            '',
+          ].join('\n') + '\n');
+          NODE
+      - name: Upload and retain the verified cleanup receipt
+        if: inputs.dry_run
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: onlyoffice-r2-latest-cleanup-${{ github.run_id }}
+          path: |
+            stable-v5-r2.json
+            stable-v4-r2.json
+            stable-v4-target.json
+            latest-manifest.json
+            latest-manifest-v4.json
+            latest-manifest.sha256
+            r2-inventory.json
+            latest-only-cleanup-plan.json
+            latest-only-delete-list.txt
+          if-no-files-found: error
+          retention-days: 90
+      - name: Stop after a verified dry-run
+        if: inputs.dry_run
+        run: echo 'Dry-run complete; no R2 object or pointer was changed.'
+      - name: Align the v4 compatibility pointer before deletion
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          retry_copy() {
+            local attempt=1
+            until timeout 120 rclone copyto "$@"; do
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 3))"
+            done
+          }
+          retry_copy stable-v4-target.json r2:onlyoffice-getpi-work/channels/stable.json
+          retry_copy r2:onlyoffice-getpi-work/channels/stable.json stable-v4-after-write.json
+          cmp stable-v4-target.json stable-v4-after-write.json
+      - name: Delete every object outside the latest release
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          retry_delete() {
+            local attempt=1
+            until timeout 600 rclone delete r2:onlyoffice-getpi-work \
+              --files-from-raw latest-only-delete-list.txt \
+              --no-traverse --checkers 32 --transfers 16 --rmdirs; do
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 5))"
+            done
+          }
+          retry_delete
+      - name: Re-inventory and prove latest-only convergence
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          timeout 900 node scripts/snapshot-r2-inventory.mjs r2:onlyoffice-getpi-work r2-inventory-after.json
+          node scripts/plan-r2-latest-cleanup.mjs \
+            --pointer stable-v5-r2.json \
+            --legacy-pointer stable-v4-target.json \
+            --manifest latest-manifest.json \
+            --inventory r2-inventory-after.json \
+            --output latest-only-after-plan.json \
+            --delete-list latest-only-after-delete-list.txt
+          node <<'NODE'
+          const fs = require('node:fs');
+          const plan = JSON.parse(fs.readFileSync('latest-only-after-plan.json'));
+          if (plan.deleteObjects !== 0) throw Error(`latest-only cleanup left ${plan.deleteObjects} objects outside the release`);
+          if (plan.releaseId !== process.env.EXPECTED_RELEASE_ID) throw Error('latest-only cleanup changed the active release');
+          const stable = JSON.parse(fs.readFileSync('stable-v5-r2.json'));
+          const after = JSON.parse(fs.readFileSync('stable-v5-public.json'));
+          if (JSON.stringify(stable) !== JSON.stringify(after)) throw Error('stable-v5 pointer changed during cleanup');
+          NODE
+          retry_copy() { local attempt=1; until timeout 120 rclone copyto "$@"; do test "${attempt}" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
+          retry_copy r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-after-cleanup.json
+          retry_copy r2:onlyoffice-getpi-work/channels/stable.json stable-v4-after-cleanup.json
+          cmp stable-v5-r2.json stable-v5-after-cleanup.json
+          cmp stable-v4-target.json stable-v4-after-cleanup.json
+          curl --fail --silent --show-error --retry 4 --retry-all-errors --connect-timeout 10 --max-time 30 \
+            -H 'Cache-Control: no-store' \
+            "https://onlyoffice.getpi.work/channels/stable-v5.json?cleanup=${GITHUB_RUN_ID}-after" \
+            --output stable-v5-public-after.json
+          cmp stable-v5-r2.json stable-v5-public-after.json
+      - name: Upload and retain the post-delete cleanup receipt
+        if: ${{ !inputs.dry_run }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: onlyoffice-r2-latest-cleanup-${{ github.run_id }}-after
+          path: |
+            stable-v5-r2.json
+            stable-v4-target.json
+            stable-v5-after-cleanup.json
+            stable-v4-after-cleanup.json
+            stable-v5-public-after.json
+            latest-manifest.json
+            latest-manifest-v4.json
+            latest-only-cleanup-plan.json
+            latest-only-after-plan.json
+            latest-only-after-delete-list.txt
+            r2-inventory-after.json
+          if-no-files-found: error
+          retention-days: 90
