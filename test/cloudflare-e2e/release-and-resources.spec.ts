@@ -76,6 +76,7 @@ type BrowserFailure = {
   url?: string;
   phase?: FailurePhase;
   requestPhase?: FailurePhase;
+  offlineStablePointerResponse?: boolean;
 };
 type ContentCounter = {
   workerRequests: number;
@@ -146,6 +147,26 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
     at: number;
     status?: number;
   }> = [];
+  // A fetch made by a page can be fulfilled by the Service Worker without
+  // emitting a page request event. Keep a short-lived marker for the strict
+  // typed response emitted by the offline stable-pointer route so a delayed
+  // Chromium console entry can still be attributed to offline recovery.
+  const synthesizedOfflineStablePointerResponses: Array<{ at: number }> = [];
+  const isSynthesizedOfflineStablePointerResponse = (response: {
+    url(): string;
+    status(): number;
+    headers(): Record<string, string>;
+  }): boolean => {
+    if (response.status() !== 503) return false;
+    const url = new URL(response.url());
+    if (url.origin !== canonicalOrigin || url.pathname !== '/channels/stable-v5.json' || url.search) return false;
+    const headers = response.headers();
+    return (
+      headers['cache-control']?.toLowerCase() === 'no-store' &&
+      headers['content-type']?.toLowerCase() === 'application/json; charset=utf-8' &&
+      headers['retry-after'] === '1'
+    );
+  };
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (url.origin === canonicalOrigin && url.pathname === '/channels/stable-v5.json' && !url.search) {
@@ -155,6 +176,9 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
   const findStablePointerRequest = (request: Request) =>
     stablePointerRequests.findIndex((candidate) => candidate.request === request);
   page.on('response', (response) => {
+    if (isSynthesizedOfflineStablePointerResponse(response)) {
+      synthesizedOfflineStablePointerResponses.push({ at: Date.now() });
+    }
     const index = findStablePointerRequest(response.request());
     if (index < 0) return;
     stablePointerRequests[index].status = response.status();
@@ -178,6 +202,22 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
     if (index < 0) return undefined;
     return stablePointerRequests.splice(index, 1)[0]?.phase;
   };
+  const consumeSynthesizedOfflineStablePointerResponse = (url: string | undefined): boolean => {
+    if (!url) return false;
+    const actual = new URL(url);
+    if (actual.origin !== canonicalOrigin || actual.pathname !== '/channels/stable-v5.json' || actual.search)
+      return false;
+    const now = Date.now();
+    for (let index = synthesizedOfflineStablePointerResponses.length - 1; index >= 0; index -= 1) {
+      if (now - synthesizedOfflineStablePointerResponses[index].at >= 10_000) {
+        synthesizedOfflineStablePointerResponses.splice(index, 1);
+      }
+    }
+    const index = synthesizedOfflineStablePointerResponses.findIndex((candidate) => now - candidate.at < 10_000);
+    if (index < 0) return false;
+    synthesizedOfflineStablePointerResponses.splice(index, 1);
+    return true;
+  };
   page.on('pageerror', (error) =>
     failures.push({ source: 'pageerror', message: error.message, ...(phase ? { phase: phase() } : {}) }),
   );
@@ -193,12 +233,14 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
     ) {
       const url = message.location().url;
       const stablePointerRequestPhase = requestPhaseForFailure(url);
+      const offlineStablePointerResponse = consumeSynthesizedOfflineStablePointerResponse(url);
       failures.push({
         source: 'console',
         message: text,
         ...(url ? { url } : {}),
         ...(phase ? { phase: phase() } : {}),
         ...(stablePointerRequestPhase ? { requestPhase: stablePointerRequestPhase } : {}),
+        ...(offlineStablePointerResponse ? { offlineStablePointerResponse: true } : {}),
       });
     }
   });
@@ -206,7 +248,7 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
 
 function isExpectedOfflineStablePointerFailure(failure: BrowserFailure): boolean {
   if (
-    failure.requestPhase !== 'offline-recovery' ||
+    (failure.requestPhase !== 'offline-recovery' && failure.offlineStablePointerResponse !== true) ||
     failure.source !== 'console' ||
     !failure.url ||
     !/^Failed to load resource: the server responded with a status of 503(?: \([^)]*\))?$/.test(failure.message)
