@@ -116,6 +116,9 @@ describe('SW fetch routing', () => {
     expect(sw).toContain("matchPrecache('/resource-broker.html')");
     expect(sw).toContain("url.pathname === '/channels/stable-v5.json'");
     expect(sw).toContain("JSON.stringify({ code: 'offline' })");
+    expect(sw).toContain('let stablePointerFallback = null');
+    expect(sw).toContain('const rememberStablePointer = async (response) =>');
+    expect(sw).toContain('const fallback = readStablePointerFallback();');
     expect(sw).toContain("'cache-control': 'no-store'");
     expect(sw).toContain('isCanonicalPwaHost');
     expect(sw).not.toContain('FIXED_OFFLINE_SLOT');
