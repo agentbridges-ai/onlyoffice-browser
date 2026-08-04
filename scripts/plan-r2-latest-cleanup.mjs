@@ -108,7 +108,7 @@ function sumBytes(entries) {
   return entries.reduce((total, entry) => total + entry.bytes, 0);
 }
 
-export function buildLatestOnlyCleanupPlan({ pointer, legacyPointer, manifest, manifestBytes, inventory }) {
+function buildLatestOnlyCleanupPlanFromEntries({ pointer, legacyPointer, manifest, manifestBytes, entries }) {
   if (pointer?.version !== 1) fail('stable-v5 pointer version is invalid');
   const releaseId = requireReleaseId(pointer.releaseId, 'stable-v5.releaseId');
   if (pointer.manifestUrl !== `/releases/${releaseId}/manifest.json`) {
@@ -141,7 +141,6 @@ export function buildLatestOnlyCleanupPlan({ pointer, legacyPointer, manifest, m
     `rollbacks/${releaseId}/`,
     `promotion-intents/${releaseId}/`,
   ];
-  const entries = inventoryEntries(inventory);
   const kept = entries.filter(
     (entry) => keepExact.has(entry.key) || keepPrefixes.some((prefix) => entry.key.startsWith(prefix)),
   );
@@ -175,6 +174,16 @@ export function buildLatestOnlyCleanupPlan({ pointer, legacyPointer, manifest, m
   };
 }
 
+export function buildLatestOnlyCleanupPlan({ pointer, legacyPointer, manifest, manifestBytes, inventory }) {
+  return buildLatestOnlyCleanupPlanFromEntries({
+    pointer,
+    legacyPointer,
+    manifest,
+    manifestBytes,
+    entries: inventoryEntries(inventory),
+  });
+}
+
 function option(name) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
@@ -195,11 +204,12 @@ if (isMain) {
   const legacyPointer = legacyPointerPath ? readJson(legacyPointerPath, 'stable pointer') : undefined;
   const manifestBytes = fs.readFileSync(manifestPath);
   const manifest = JSON.parse(manifestBytes.toString('utf8'));
-  const inventory = inventoryEntries(readJson(inventoryPath, 'R2 inventory'));
-  const plan = buildLatestOnlyCleanupPlan({ pointer, legacyPointer, manifest, manifestBytes, inventory });
+  const inventory = readJson(inventoryPath, 'R2 inventory');
+  const entries = inventoryEntries(inventory);
+  const plan = buildLatestOnlyCleanupPlanFromEntries({ pointer, legacyPointer, manifest, manifestBytes, entries });
   const keep = new Set(plan.retainedKeys);
   const keepPrefixes = plan.retainedPrefixes;
-  const deleteKeys = inventory
+  const deleteKeys = entries
     .filter((entry) => !keep.has(entry.key) && !keepPrefixes.some((prefix) => entry.key.startsWith(prefix)))
     .map((entry) => entry.key)
     .sort();

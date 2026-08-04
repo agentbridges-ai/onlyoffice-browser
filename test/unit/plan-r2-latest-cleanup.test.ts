@@ -1,10 +1,17 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error Executable Node release scripts are intentionally shipped as plain Node ESM.
 import { buildLatestOnlyCleanupPlan } from '../../scripts/plan-r2-latest-cleanup.mjs';
 
 const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const cleanupPlanner = path.join(repositoryRoot, 'scripts/plan-r2-latest-cleanup.mjs');
 
 function fixture() {
   const releaseId = 'v0.5.12-test';
@@ -65,6 +72,54 @@ describe('latest-only R2 cleanup planning', () => {
     expect(plan.retainedObjects).toBe(11);
     expect(plan.deleteObjects).toBe(2);
     expect(plan.deleteBytes).toBe(176);
+  });
+
+  it('normalizes the raw inventory once when invoked through the CLI', () => {
+    const input = fixture();
+    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'onlyoffice-r2-cleanup-'));
+    try {
+      const pointerPath = path.join(temporaryDirectory, 'pointer.json');
+      const legacyPointerPath = path.join(temporaryDirectory, 'legacy-pointer.json');
+      const manifestPath = path.join(temporaryDirectory, 'manifest.json');
+      const inventoryPath = path.join(temporaryDirectory, 'inventory.json');
+      const outputPath = path.join(temporaryDirectory, 'plan.json');
+      const deleteListPath = path.join(temporaryDirectory, 'delete-list.txt');
+      fs.writeFileSync(pointerPath, `${JSON.stringify(input.pointer)}\n`);
+      fs.writeFileSync(legacyPointerPath, `${JSON.stringify(input.legacyPointer)}\n`);
+      fs.writeFileSync(manifestPath, input.manifestBytes);
+      fs.writeFileSync(inventoryPath, `${JSON.stringify(input.inventory)}\n`);
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          cleanupPlanner,
+          '--pointer',
+          pointerPath,
+          '--legacy-pointer',
+          legacyPointerPath,
+          '--manifest',
+          manifestPath,
+          '--inventory',
+          inventoryPath,
+          '--output',
+          outputPath,
+          '--delete-list',
+          deleteListPath,
+        ],
+        { cwd: repositoryRoot, encoding: 'utf8' },
+      );
+
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(fs.readFileSync(outputPath, 'utf8'))).toMatchObject({
+        mode: 'latest-only',
+        releaseId: input.releaseId,
+        deleteObjects: 2,
+        deleteBytes: 176,
+      });
+    } finally {
+      fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
   it('rejects a pointer that is not bound to the supplied manifest', () => {
