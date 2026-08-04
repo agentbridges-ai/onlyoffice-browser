@@ -24,7 +24,8 @@ function collectPageFailures(page: Page): string[] {
 
 async function getStatus(page: Page): Promise<SaveE2EStatus> {
   return page.evaluate(() => {
-    const api = (window as Window & { __ONLYOFFICE_SAVE_E2E__?: { getStatus: () => SaveE2EStatus } }).__ONLYOFFICE_SAVE_E2E__;
+    const api = (window as Window & { __ONLYOFFICE_SAVE_E2E__?: { getStatus: () => SaveE2EStatus } })
+      .__ONLYOFFICE_SAVE_E2E__;
     if (!api) throw new Error('Save E2E controller is not installed');
     return api.getStatus();
   });
@@ -52,11 +53,16 @@ async function installAnchorDownloadProbe(page: Page): Promise<void> {
 
 async function getAnchorDownloads(page: Page): Promise<string[]> {
   const downloads = await Promise.all(
-    page.frames().map((frame) =>
-      frame
-        .evaluate(() => (window as Window & { __ONLYOFFICE_ANCHOR_DOWNLOADS__?: string[] }).__ONLYOFFICE_ANCHOR_DOWNLOADS__ || [])
-        .catch(() => [] as string[]),
-    ),
+    page
+      .frames()
+      .map((frame) =>
+        frame
+          .evaluate(
+            () =>
+              (window as Window & { __ONLYOFFICE_ANCHOR_DOWNLOADS__?: string[] }).__ONLYOFFICE_ANCHOR_DOWNLOADS__ || [],
+          )
+          .catch(() => [] as string[]),
+      ),
   );
   return downloads.flat();
 }

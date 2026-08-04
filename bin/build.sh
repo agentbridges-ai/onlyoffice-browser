@@ -34,10 +34,18 @@ node scripts/build-onlyoffice-runtime-assets.mjs \
     --split-output .onlyoffice-runtime-asset-packs
 
 # Stage additive content-addressed objects and the immutable Release Manifest.
-# Deployment uploads these objects first and switches channels/stable.json last.
-node scripts/build-release-manifest.mjs \
-    --root dist \
-    --output .onlyoffice-release \
-    --package-version "$(node -p "require('./package.json').version")"
+# Candidate/matrix callers hydrate fonts after this runtime build and therefore
+# defer release staging until those final bytes exist.
+if [ "${ONLYOFFICE_SKIP_RELEASE_BUILD:-0}" = "1" ]; then
+    echo "Deferred immutable release staging for the caller."
+elif [ "${ONLYOFFICE_SKIP_RELEASE_BUILD:-0}" = "0" ]; then
+    node scripts/build-release-manifest.mjs \
+        --root dist \
+        --output .onlyoffice-release \
+        --package-version "$(node -p "require('./package.json').version")"
+else
+    echo "ONLYOFFICE_SKIP_RELEASE_BUILD must be 0 or 1." >&2
+    exit 1
+fi
 
 echo "Build completed successfully!"

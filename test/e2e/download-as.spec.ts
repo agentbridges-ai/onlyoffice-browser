@@ -285,9 +285,10 @@ async function expectMarkdownDownload(
   if (/\.zip$/i.test(fileName)) {
     expect(Array.from(content.subarray(0, 4))).toEqual([0x50, 0x4b, 0x03, 0x04]);
     const names = getZipEntryNames(content);
-    expect(names.some((name) => /\.md$/i.test(name)), `markdown entries in ${fileName}: ${names.join(', ')}`).toBe(
-      true,
-    );
+    expect(
+      names.some((name) => /\.md$/i.test(name)),
+      `markdown entries in ${fileName}: ${names.join(', ')}`,
+    ).toBe(true);
     expect(
       names.some((name) => /^assets\/.+\.(png|jpe?g|gif|webp|svg)$/i.test(name)),
       `asset entries in ${fileName}: ${names.join(', ')}`,
@@ -295,7 +296,10 @@ async function expectMarkdownDownload(
     return;
   }
 
-  const text = content.toString('utf8').replace(/^\ufeff/, '').trimStart();
+  const text = content
+    .toString('utf8')
+    .replace(/^\ufeff/, '')
+    .trimStart();
   expect(text.length).toBeGreaterThan(0);
   expect(text).not.toMatch(/^(DOCY;|XLSY;|PPTY;|RE9D|UEsDB|PK\x03\x04)/);
 }
@@ -308,7 +312,10 @@ async function expectTextDownload(
   const content = await readDownload(download, expectedName);
   expectNonEmpty(content);
   expect(content.includes(0)).toBe(false);
-  const text = content.toString('utf8').replace(/^\ufeff/, '').trimStart();
+  const text = content
+    .toString('utf8')
+    .replace(/^\ufeff/, '')
+    .trimStart();
   expect(text.length).toBeGreaterThan(0);
   expect(text).not.toMatch(/^(DOCY;|XLSY;|PPTY;|RE9D|UEsDB|PK\x03\x04)/);
   if (matcher) expect(text).toMatch(matcher);
@@ -318,7 +325,10 @@ async function expectRtfDownload(download: import('@playwright/test').Download, 
   const content = await readDownload(download, expectedName);
   expectNonEmpty(content);
   const latin1 = content.toString('latin1').trimStart();
-  const utf16le = content.toString('utf16le').replace(/^\ufeff/, '').trimStart();
+  const utf16le = content
+    .toString('utf16le')
+    .replace(/^\ufeff/, '')
+    .trimStart();
   expect(latin1.startsWith('{\\rtf') || utf16le.startsWith('{\\rtf')).toBe(true);
 }
 
@@ -397,9 +407,7 @@ async function clickDownloadDialogAction(frame: import('@playwright/test').Frame
     }
 
     const normalizedLabels = candidateLabels.map((label) => label.toLowerCase());
-    const candidates = Array.from(
-      document.querySelectorAll<HTMLElement>('button, [role="button"], .btn, .button, a'),
-    )
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], .btn, .button, a'))
       .filter((element) => {
         const text = (element.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
         return normalizedLabels.includes(text) && isVisible(element);
@@ -417,7 +425,12 @@ async function clickDownloadDialogAction(frame: import('@playwright/test').Frame
   }, labels);
   if (clicked) return true;
 
-  for (const pattern of [/Save & Download|保存并下载|保存 & 下载/i, /^Download$|^下载$/i, /^OK$|^Ok$|^确定$/i, /^Apply$|^应用$/i]) {
+  for (const pattern of [
+    /Save & Download|保存并下载|保存 & 下载/i,
+    /^Download$|^下载$/i,
+    /^OK$|^Ok$|^确定$/i,
+    /^Apply$|^应用$/i,
+  ]) {
     if (await clickIfVisible(frame.getByRole('button', { name: pattern }).first())) return true;
     if (await clickIfVisible(frame.getByText(pattern).first())) return true;
   }
@@ -496,13 +509,13 @@ async function waitForDownloadFormat(frame: import('@playwright/test').Frame, ex
         );
       }
 
-	      return Array.from(document.querySelectorAll<HTMLElement>('.btn-doc-format[format]')).some(
-	        (button) => Boolean(button.querySelector(`.svg-format-${targetExt}`)) && isVisible(button),
-	      );
-	    },
-	    ext,
-	    { timeout: 5_000 },
-	  );
+      return Array.from(document.querySelectorAll<HTMLElement>('.btn-doc-format[format]')).some(
+        (button) => Boolean(button.querySelector(`.svg-format-${targetExt}`)) && isVisible(button),
+      );
+    },
+    ext,
+    { timeout: 5_000 },
+  );
 }
 
 async function clickDownloadFormat(frame: import('@playwright/test').Frame, ext: string): Promise<void> {
@@ -560,12 +573,10 @@ async function triggerDownloadAs(
   await waitForDownloadFormat(frame, target.ext);
 
   let downloadTimeoutMessage = '';
-  const downloadPromise = page
-    .waitForEvent('download', { timeout: DOWNLOAD_AS_TIMEOUT_MS })
-    .catch((error: Error) => {
-      downloadTimeoutMessage = error.message;
-      return null;
-    });
+  const downloadPromise = page.waitForEvent('download', { timeout: DOWNLOAD_AS_TIMEOUT_MS }).catch((error: Error) => {
+    downloadTimeoutMessage = error.message;
+    return null;
+  });
   await clickDownloadFormat(frame, target.ext);
 
   let conversionError: Error | null = null;

@@ -1,165 +1,232 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-describe('R2 release workflow', () => {
-  it('bounds and atomically commits every R2 metadata read', () => {
-    const reader = fs.readFileSync(path.resolve('scripts/rclone-read-metadata.sh'), 'utf8');
+const read = (file: string) => fs.readFileSync(file, 'utf8');
+const candidate = read('.github/workflows/candidate-r2.yml');
+const promotion = read('.github/workflows/deploy-r2.yml');
+const rollback = read('.github/workflows/rollback-r2.yml');
+const audit = read('.github/workflows/audit-r2.yml');
+const npmPublication = read('.github/workflows/release-npm.yml');
+const pullRequestChecks = read('.github/workflows/ci.yml');
+const matrixRunner = read('scripts/run-cloudflare-local-matrix.mjs');
 
-    expect(reader).toContain('for attempt in 1 2 3');
-    expect(reader).toContain('timeout 60s rclone cat "${source_object}"');
-    expect(reader).toContain('--low-level-retries 3');
-    expect(reader).toContain('> "${temporary}"');
-    expect(reader).toContain('mv "${temporary}" "${destination}"');
-    expect(reader).toContain('trap cleanup EXIT');
-  });
-
-  it('hydrates a pinned immutable font release instead of regenerating its own output', () => {
-    const workflow = fs.readFileSync(path.resolve('.github/workflows/deploy-r2.yml'), 'utf8');
-
-    expect(workflow).toContain('ONLYOFFICE_MATRIX_FONT_RELEASE_ID: v0.5.0-648c486d1c558acd');
-    expect(workflow).toContain(
-      'ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256: 09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45',
+describe('R2 release train workflows', () => {
+  it('builds, matrices, publishes immutable CAS, smokes, then retains a candidate', () => {
+    expect(candidate).toContain('SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)');
+    expect(candidate).toContain("if: github.ref == 'refs/heads/main'");
+    expect(candidate).toContain('ONLYOFFICE_SKIP_RELEASE_BUILD=1 pnpm build');
+    expect(candidate).toContain('Record immutable source identity before matrices');
+    expect(candidate).toContain('ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1');
+    expect(candidate).toContain('matrix changed candidate source identity');
+    expect(candidate).toContain('fault matrix changed candidate source identity');
+    expect(candidate).toContain('Run mandatory full-v5 Cloudflare and Broker matrix');
+    expect(candidate).toContain('Run fault-injected proxy matrix');
+    expect(candidate).not.toContain('r2:onlyoffice-getpi-work');
+    expect(candidate).toContain('Retain the sole fully verified promotion input');
+    expect(candidate).not.toContain('Smoke the exact candidate route');
+    expect(candidate.indexOf('Test and build the candidate exactly once')).toBeLessThan(
+      candidate.indexOf('Record immutable source identity before matrices'),
     );
-    expect(workflow).toContain('node scripts/hydrate-cloudflare-matrix-fonts.mjs');
-    expect(workflow).toContain('names.size<45');
-    expect(workflow).toContain("'Wingdings 3'");
-    expect(workflow).toContain('hidden.some(name=>names.has(name))');
-    expect(workflow).not.toContain('retained-font-input');
-    expect(workflow).not.toContain('--include "/fonts/**"');
-  });
-
-  it('derives SOURCE_DATE_EPOCH from the checked-out commit before building', () => {
-    const workflow = fs.readFileSync(path.resolve('.github/workflows/deploy-r2.yml'), 'utf8');
-    const timestamp = workflow.indexOf('SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)');
-    const build = workflow.indexOf('pnpm build');
-
-    expect(timestamp).toBeGreaterThanOrEqual(0);
-    expect(build).toBeGreaterThan(timestamp);
-  });
-
-  it('publishes v5 CAS objects additively and verifies every remote SHA-256 before Worker deployment', () => {
-    const workflow = fs.readFileSync(path.resolve('.github/workflows/deploy-r2.yml'), 'utf8');
-    const upload = workflow.indexOf('name: Upload additive release and compatibility objects (not verification)');
-    const remoteVerification = workflow.indexOf('name: Verify every v5 immutable object directly from R2');
-    const worker = workflow.indexOf('name: Deploy wildcard runtime Worker');
-    const routeVerification = workflow.indexOf('name: Verify release-specific Worker routes before activation');
-    const activation = workflow.indexOf('name: Activate the authoritative v5 stable pointer');
-    const postVerification = workflow.indexOf('name: Verify production deployment');
-
-    expect(workflow).toContain('ONLYOFFICE_FASTCDC_EVIDENCE_MODE: automatic');
-    expect(workflow).toContain('--fastcdc-evidence-mode "${ONLYOFFICE_FASTCDC_EVIDENCE_MODE}"');
-    expect(workflow).toContain('git ls-files --error-unmatch "${ONLYOFFICE_FASTCDC_EVIDENCE_PATH}"');
-    expect(workflow).toContain('--package-version "$(node -p "require(\'./package.json\').version")"');
-    expect(workflow).toContain('--expected-package-version "${ONLYOFFICE_PACKAGE_VERSION}"');
-    expect(workflow).toContain('PACKAGE_VERSION="$(node -p');
-    expect(workflow).toContain('ONLYOFFICE_PACKAGE_VERSION=${PACKAGE_VERSION}');
-    expect(workflow).toContain('--remote r2:onlyoffice-getpi-work');
-    expect(workflow).toContain('--remote-verification-mode "${ONLYOFFICE_REMOTE_VERIFICATION_MODE}"');
-    expect(workflow).toContain('--remote-inventory "${RUNNER_TEMP}/onlyoffice-r2-inventory-before.json"');
-    expect(workflow).toContain('node scripts/snapshot-r2-inventory.mjs');
-    expect(workflow).toContain('timeout --signal=TERM --kill-after=30s 15m');
-    expect(workflow).toContain('ONLYOFFICE_REMOTE_VERIFICATION_MODE=incremental');
-    expect(workflow).toContain('ONLYOFFICE_REMOTE_VERIFICATION_MODE=full');
-    expect(workflow).toContain('partial success is not verification');
-    expect(workflow).not.toMatch(/\brclone\s+sync\b/);
-    expect(workflow).not.toMatch(/--delete(?:-after|-before|-during)?\b/);
-    expect(workflow).not.toMatch(/\brclone\s+check\b/);
-
-    expect(upload).toBeGreaterThanOrEqual(0);
-    expect(remoteVerification).toBeGreaterThan(upload);
-    expect(worker).toBeGreaterThan(remoteVerification);
-    expect(routeVerification).toBeGreaterThan(worker);
-    expect(activation).toBeGreaterThan(routeVerification);
-    expect(postVerification).toBeGreaterThan(activation);
-  });
-
-  it('runs a real stalled-stream and system-proxy fault pass after the normal matrix', () => {
-    const workflow = fs.readFileSync(path.resolve('.github/workflows/deploy-r2.yml'), 'utf8');
-    const matrix = workflow.indexOf('name: Run mandatory full-v5 local Cloudflare/Broker matrix');
-    const fault = workflow.indexOf('name: Run fault-injected local matrix with the system proxy enabled');
-    const upload = workflow.indexOf('name: Upload additive release and compatibility objects (not verification)');
-
-    expect(fault).toBeGreaterThan(matrix);
-    expect(upload).toBeGreaterThan(fault);
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_STALL_TEST=1');
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_USE_SYSTEM_PROXY=1');
-    expect(workflow).toContain("ONLYOFFICE_CF_MATRIX_GREP='fault-injected segment stream aborts'");
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_REFRESH_STATE=0');
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_PORT=8887');
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_INTERNAL_PORT=8888');
-  });
-
-  it('requires a non-downgradable full-v5 local matrix and retains source-bound JSON evidence', () => {
-    const workflow = fs.readFileSync(path.resolve('.github/workflows/deploy-r2.yml'), 'utf8');
-    const sourceIdentity = workflow.indexOf('name: Bind release build to source identity');
-    const matrix = workflow.indexOf('name: Run mandatory full-v5 local Cloudflare/Broker matrix');
-    const evidence = workflow.indexOf('name: Record successful full-v5 matrix evidence');
-    const artifact = workflow.indexOf('name: Retain successful full-v5 matrix evidence');
-    const upload = workflow.indexOf('name: Upload additive release and compatibility objects (not verification)');
-    const activation = workflow.indexOf('name: Activate the authoritative v5 stable pointer');
-    const matrixBlock = workflow.slice(matrix, evidence);
-
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_FORCE_FULL: "1"');
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_GREP: ""');
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_REUSE_BUILD: "0"');
-    expect(workflow).toContain('ONLYOFFICE_CF_MATRIX_KEEP_STATE: "0"');
-    expect(workflow).not.toContain('ONLYOFFICE_CF_MATRIX_REUSE_BUILD: "1"');
-    expect(matrixBlock).toContain('test -z "${ONLYOFFICE_CF_MATRIX_GREP}"');
-    expect(matrixBlock).toContain('test "${ONLYOFFICE_CF_MATRIX_REUSE_BUILD}" = "0"');
-    expect(matrixBlock).toContain('node scripts/run-cloudflare-local-matrix.mjs');
-    expect(matrixBlock).not.toContain('--grep');
-    expect(workflow).toContain("execFileSync('git', ['rev-parse', 'HEAD']");
-    expect(workflow).toContain('gitCommit !== process.env.GITHUB_SHA');
-    expect(workflow).toContain("fs.readFileSync('pnpm-lock.yaml')");
-    expect(workflow).toContain("fs.readFileSync('dist/onlyoffice-runtime-assets.json')");
-    expect(workflow).toContain('releaseManifest.runtimeManifestSha256 !== runtimeManifestSha256');
-    expect(workflow).toContain('release-evidence/source-identity.json');
-    expect(workflow).toContain('release-evidence/full-v5-cloudflare-broker-matrix.json');
-    expect(workflow).toContain('uses: actions/upload-artifact@v6');
-    expect(workflow).toContain('if-no-files-found: error');
-    expect(workflow).toContain('retention-days: 90');
-    expect(sourceIdentity).toBeGreaterThanOrEqual(0);
-    expect(matrix).toBeGreaterThan(sourceIdentity);
-    expect(evidence).toBeGreaterThan(matrix);
-    expect(artifact).toBeGreaterThan(evidence);
-    expect(upload).toBeGreaterThan(artifact);
-    expect(activation).toBeGreaterThan(upload);
-  });
-
-  it('keeps the legacy v4 pointer frozen and uses stable-v5 as the only activation write', () => {
-    const workflow = fs.readFileSync(path.resolve('.github/workflows/deploy-r2.yml'), 'utf8');
-    const freezeStart = workflow.indexOf('name: Validate and freeze the legacy v4 compatibility pointer');
-    const activationStart = workflow.indexOf('name: Activate the authoritative v5 stable pointer');
-    const verificationStart = workflow.indexOf('name: Verify production deployment');
-    const freeze = workflow.slice(freezeStart, activationStart);
-    const activation = workflow.slice(activationStart, verificationStart);
-    const verification = workflow.slice(verificationStart);
-
-    expect(workflow).toContain(
-      "if(manifest.version !== 4 || manifest.releaseId !== pointer.releaseId) throw new Error('stable.json must retain the v4 compatibility manifest')",
+    expect(candidate.indexOf('npm pack --ignore-scripts --pack-destination')).toBeGreaterThan(
+      candidate.indexOf('ONLYOFFICE_SKIP_RELEASE_BUILD=1 pnpm build'),
     );
-    expect(workflow).toContain("require('./.onlyoffice-release/channels/stable-v5.json')");
-    expect(freezeStart).toBeGreaterThanOrEqual(0);
-    expect(activationStart).toBeGreaterThan(freezeStart);
-    expect(verificationStart).toBeGreaterThan(activationStart);
-    expect(freeze).toContain('scripts/rclone-read-metadata.sh \\');
-    expect(freeze).toContain('r2:onlyoffice-getpi-work/channels/stable.json');
-    expect(freeze).toContain("'releases/'+pointer.releaseId+'/manifest.json'");
-    expect(freeze).toContain('((pointer.manifestUrl === undefined) !== (pointer.manifestSha256 === undefined))');
-    expect(freeze).toContain('manifest.version !== 4');
-    expect(activation).not.toContain('channels/stable.json');
-    expect(activation).toContain('r2:onlyoffice-getpi-work/channels/stable-v5.json');
-    expect(activation).toContain('scripts/rclone-read-metadata.sh');
-    expect(activation).toContain('"${RUNNER_TEMP}/onlyoffice-stable-v5-r2.json"');
-    expect(verification).toContain('scripts/rclone-read-metadata.sh');
-    expect(verification).toContain('"${RUNNER_TEMP}/onlyoffice-legacy-stable-final.json"');
-    expect(verification).toContain(
-      'pointer.manifestUrl || `/releases/${encodeURIComponent(pointer.releaseId)}/manifest.json`',
+    expect(candidate).toContain('test -s dist/npm/public-api.js');
+    expect(candidate).toContain('test -s dist/npm/public-api.d.ts');
+    expect(candidate).toContain('npm install --global npm@11.17.0');
+    expect(candidate).toContain('npm pack --ignore-scripts --pack-destination');
+    expect(candidate.indexOf('Record immutable source identity before matrices')).toBeLessThan(
+      candidate.indexOf('Run mandatory full-v5 Cloudflare and Broker matrix'),
     );
-    expect(verification).toContain('(pointer.manifestSha256 && sha256(manifestBytes) !== pointer.manifestSha256)');
-    expect(verification).toContain("await verify('stable-v5.json', expectedV5, 5, attempt)");
-    expect(verification).toContain("await verify('stable.json', expectedLegacy, 4, attempt)");
-    expect(workflow).not.toMatch(/rclone_copyto_with_outer_retry[\s\S]*?\.onlyoffice-release\/channels\/stable\.json/);
+  });
+  it('promotes only a successful named candidate with no runtime rebuild', () => {
+    expect(promotion).toContain('actions: read');
+    expect(promotion).toContain('candidate_run_id');
+    expect(promotion).toContain('staging_run_id');
+    expect(promotion).toContain('onlyoffice-runtime-stage-${{ inputs.candidate_commit }}-${{ inputs.staging_run_id }}');
+    expect(promotion).toContain('staging evidence is not bound to this exact candidate run and runtime');
+    expect(promotion).toContain('piwork_integration_run_id');
+    expect(promotion).toContain('piwork_integration_run_attempt');
+    expect(promotion).toContain("conclusion!=='success'");
+    expect(promotion).toContain("['push','workflow_dispatch'].includes(r.event)");
+    expect(promotion).toContain("r.head_branch!=='main'");
+    expect(promotion).toContain('runtime-asset-version.mjs');
+    expect(promotion).not.toMatch(/rclone copy candidate-input\/dist r2:onlyoffice-getpi-work/);
+    expect(promotion).not.toContain('wrangler@4.114.0 deploy ');
+    expect(promotion).toContain('wrangler@4.114.0 versions upload');
+    expect(promotion).toContain('WRANGLER_OUTPUT_FILE_PATH');
+    expect(promotion).toContain('"${PREVIOUS_WORKER_VERSION_ID}@100%"');
+    expect(promotion).toContain('"${CANDIDATE_WORKER_VERSION_ID}@0%"');
+    expect(promotion).toContain('"${CANDIDATE_WORKER_VERSION_ID}@100%"');
+    expect(promotion).toContain('--worker-version-id "${CANDIDATE_WORKER_VERSION_ID}"');
+    expect(promotion).toContain('--expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}"');
+    expect(promotion).toContain('stable-v5-release-cas');
+    expect(promotion).toContain('candidate envelope, manifest source, or source package integrity mismatch');
+    expect(promotion).toContain('manifest.sourceCommit!==process.env.CANDIDATE');
+    expect(promotion).toContain('validateReleaseEnvelope');
+    expect(promotion).toContain('bindExistingNpmPublication');
+    expect(promotion).toContain('candidate npm registry/SLSA/public API evidence is stale or forged');
+    expect(promotion).toContain('candidate npm package must be published with verified provenance before promotion');
+    expect(promotion).toContain('new npm publication is not the exact candidate commit and source package');
+    expect(promotion).toContain('staging evidence is not bound to the current immutable npm publication');
+    expect(promotion).toContain('descriptor.npmPackage?.integrity!==npmRegistry.integrity');
+    expect(promotion).toContain('Piwork integration descriptor is not bound to this runtime candidate');
+    expect(promotion).toContain("run.event!=='workflow_dispatch'");
+    expect(promotion).toContain('commits/${PIWORK_COMMIT}/pulls');
+    expect(promotion).toContain('exactly one open same-repository PR on main');
+    expect(promotion).toContain('.github/actions/setup-toolchain/action.yml');
+    expect(promotion).toContain('scripts/verify-onlyoffice-release.mjs Makefile');
+    expect(promotion).toContain('Piwork integration may not modify');
+    expect(promotion).toContain('descriptor.runtimeIdentity?.sourceCommit!==envelope.source.gitCommit');
+    expect(promotion).toContain('descriptor.runtimeIdentity?.hostBuildId!==envelope.runtime.protocolHostBuildId');
+    expect(promotion).toContain('descriptor.releaseManifest?.hostBuildId!==envelope.runtime.hostBuildId');
+    expect(promotion).toContain('candidate matrix evidence mismatch');
+    expect(promotion).toContain('Require successful production staging evidence for this candidate');
+    expect(promotion).toContain("r.path.endsWith('/stage-r2.yml')");
+    expect(promotion).toContain("run.event!=='workflow_dispatch'");
+    expect(promotion).toContain('/actions/runs/${PIWORK_RUN_ID}/attempts/${PIWORK_RUN_ATTEMPT}');
+    expect(promotion).toContain('/actions/runs/${PIWORK_RUN_ID}/attempts/${PIWORK_RUN_ATTEMPT}/jobs?per_page=100');
+    expect(promotion).toContain('run.run_attempt!==Number(process.env.PIWORK_RUN_ATTEMPT)');
+    expect(promotion).toContain("deepVerifyRunAttempt:id('PIWORK_RUN_ATTEMPT')");
+    expect(promotion).toContain('actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349');
+    expect(promotion).toContain('ONLYOFFICE_RELEASE_READ_APP_ID');
+    expect(promotion).toContain('ONLYOFFICE_RELEASE_READ_APP_PRIVATE_KEY');
+    expect(promotion).toContain("if: steps.piwork-app.outputs.enabled == 'true'");
+    expect(promotion).toContain('Configure both optional GitHub App secrets or neither');
+    expect(promotion).toContain('PIWORK_READ_TOKEN: ${{ steps.piwork-read-token.outputs.token }}');
+    expect(promotion).toContain('if test -n "${PIWORK_READ_TOKEN}"');
+    expect(promotion).toContain('-H "Authorization: Bearer ${PIWORK_READ_TOKEN}"');
+    expect(promotion).toContain("-H 'X-GitHub-Api-Version: 2022-11-28'");
+    expect(promotion).toContain('x-ratelimit-limit=${limit:-unknown}');
+    expect(promotion).toContain('Configure the optional Piwork read GitHub App');
+    expect(promotion.match(/https:\/\/api\.github\.com\/repos\/agentbridges-ai\/pi-work/g)).toHaveLength(3);
+    expect(promotion).toContain('OnlyOffice candidate integration / ${envelope.runtime.releaseId}');
+    expect(promotion).toContain("descriptor.lifecycle!=='candidate'");
+    expect(promotion).toContain('timeout-minutes: 180');
+    expect(promotion).toContain('Persist or recover immutable pointer and Worker promotion intent');
+    expect(promotion).toContain('promotion-intents/');
+    expect(promotion).toContain('stable-v5 is neither the recorded predecessor nor this candidate');
+    expect(promotion).toContain('stable-v5 changed during production deployment; refusing activation');
+    expect(promotion).toContain('Record immutable promotion receipt after stable-v5 convergence');
+    expect(promotion.indexOf('Record immutable promotion receipt after stable-v5 convergence')).toBeGreaterThan(
+      promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass'),
+    );
+    expect(promotion).toContain('previousStable');
+    expect(promotion).toContain("require('./promotion-intent.json').previousStable");
+    expect(promotion).toContain('public promotion receipt bytes, digest, or immutable cache policy mismatch');
+    expect(promotion).toContain('Compensate an incomplete pointer and Worker transaction');
+    expect(promotion).toContain("['previous/previous','previous/split','previous/candidate','candidate/candidate']");
+    expect(promotion).toContain(
+      'const matchesPrevious=same(current,intent.previousStable),matchesCandidate=same(current,intent.runtime)',
+    );
+    expect(promotion).toContain(
+      "const pointerState=matchesCandidate&&workerState==='candidate'?'candidate':matchesPrevious?'previous':matchesCandidate?'candidate':null",
+    );
+    expect(promotion.indexOf('const workerState=')).toBeLessThan(promotion.indexOf('const pointerState='));
+    expect(promotion).toContain("fs.writeFileSync('.promotion-intent-adopted'");
+    expect(promotion).toContain("fs.writeFileSync('.promotion-already-converged'");
+    expect(promotion).toContain('No fully validated promotion intent was adopted by this run');
+    expect(promotion).toContain('Production was already converged when this run adopted the intent');
+    expect(promotion.indexOf("fs.writeFileSync('.promotion-intent-adopted'")).toBeGreaterThan(
+      promotion.indexOf('immutable promotion intent ${field} mismatch'),
+    );
+    expect(promotion).toContain('previousVersionId');
+    expect(promotion).toContain('candidateVersionId');
+    expect(promotion).toContain('finalDeploymentId');
+    expect(promotion).toContain('Retain production promotion receipt');
+    expect(promotion).toContain('trustRoot');
+    expect(promotion).toContain("channel:'stable-v5'");
+    expect(promotion).toContain("staging:{runId:id('STAGING_RUN_ID')}");
+    expect(promotion).toContain('must be a positive safe integer');
+    expect(promotion).toContain('path:`promotions/');
+    expect(promotion).toContain('promotion-receipt/metadata.json');
+    expect(promotion).toContain('PROMOTION_RECEIPT_PATH="$(node -p');
+    expect(promotion).toContain('export PROMOTION_RECEIPT_PATH PROMOTION_RECEIPT_FILE PROMOTION_RECEIPT_SHA256');
+    expect(promotion).toContain('legacy-before.json');
+    expect(promotion).toContain('Cache-Control: no-store');
+    expect(promotion).toContain('stable-v5 did not converge to the exact no-store pointer');
+    expect(promotion).not.toContain('--verify-pointers');
+    expect(promotion.indexOf('verify-release-http')).toBeLessThan(
+      promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass'),
+    );
+    expect(promotion).not.toMatch(/pnpm build|release:build|hydrate-cloudflare|run-cloudflare|ONLYOFFICE_CF_MATRIX/);
+  });
+  it('rolls back compare-before-write and only stable-v5 with readback', () => {
+    expect(rollback).toContain('EXPECTED_CURRENT_RELEASE_ID');
+    expect(rollback).toContain('EXPECTED_CURRENT_MANIFEST_SHA256');
+    expect(rollback).toContain('EXPECTED_MANIFEST_SHA256');
+    expect(rollback).toContain('expected_current_manifest_sha256');
+    expect(rollback).toContain('expected_manifest_sha256');
+    expect(rollback).toContain('timeout-minutes: 180');
+    expect(rollback).toContain('test "${GITHUB_REF}" = refs/heads/main');
+    expect(rollback).toContain('target-promotion-receipts');
+    expect(rollback).toContain('!positive(receipt.piwork?.deepVerifyRunAttempt)');
+    expect(rollback).toContain('/actions/runs/${production_run_id}/attempts/${production_run_attempt}');
+    expect(rollback).toContain("run.path==='.github/workflows/deploy-r2.yml'");
+    expect(rollback).toContain(
+      'rollback target was never activated by a successful exact protected production run attempt',
+    );
+    expect(rollback).toContain('test "${MANIFEST_SHA256}" = "${EXPECTED_MANIFEST_SHA256}"');
+    expect(rollback).toContain('channels/stable-v5.json');
+    expect(rollback).toContain('stable-v5-readback.json');
+    expect(rollback).toContain('stable-v5-before-write.json');
+    expect(rollback).toContain('stable-v5 changed during rollback verification; refusing activation');
+    expect(rollback).toContain('retry_rclone()');
+    expect(rollback).toContain('--v5-manifest manifest.json');
+    expect(rollback).toContain('--remote-verification-mode full');
+    expect(rollback).toContain('--expected-worker-version-id "${CURRENT_WORKER_VERSION_ID}"');
+    expect(rollback).toContain('--verify-stable-root');
+    expect(rollback).toContain('Restore the original pointer if rollback verification fails');
+    expect(rollback).toContain('Worker deployment changed during rollback verification; refusing activation');
+    expect(rollback).toContain('CURRENT_WORKER_DEPLOYMENT_ID');
+    expect(rollback).toContain('worker-after-rollback.json');
+    expect(rollback).toContain('touch .rollback-committed');
+    expect(rollback).toContain('rollbacks/${target.releaseId}');
+    expect(rollback).toContain("authorization:{kind:'promotion-receipt'");
+    expect(rollback).toContain('currentDeploymentId:process.env.CURRENT_WORKER_DEPLOYMENT_ID');
+    expect(rollback.indexOf('touch .rollback-committed')).toBeLessThan(
+      rollback.indexOf("fs.writeFileSync('rollback-receipt.json'"),
+    );
+    expect(rollback).toContain('Cache-Control: no-store');
+    expect(rollback).toContain('stable-v5 rollback did not propagate to its immutable manifest');
+    expect(rollback).toContain('cmp -s stable-v5-failed-rollback.json stable-v5.json');
+    expect(rollback).toContain('cmp -s stable-v5-failed-rollback.json stable-v5-before.json');
+    expect(rollback).not.toContain('CURRENT_RELEASE_ID=');
+    expect(rollback).not.toContain('r2:onlyoffice-getpi-work/channels/stable.json');
+  });
+  it('audits the complete stable storage set without a mutable write', () => {
+    expect(audit).toContain('schedule:');
+    expect(audit).toContain('--v5-manifest manifest-public.json');
+    expect(audit).toContain('--remote-verification-mode full');
+    expect(audit).toContain('R2_AUDIT_READONLY_ACCESS_KEY_ID');
+    expect(audit).toContain('degraded public-only mode');
+    expect(audit).toContain('x-onlyoffice-worker-version');
+    expect(audit).toContain('unversioned runtime root is not bound to stable-v5 CAS');
+    expect(audit).toContain('promotion-receipt-names.txt');
+    expect(audit).toContain('rollback-receipt-names.txt');
+    expect(audit).toContain('promotion-evidence.json');
+    expect(audit).toContain('rollback-evidence.json');
+    expect(audit).toContain('!positive(receipt.piwork?.deepVerifyRunAttempt)');
+    expect(audit).toContain('/actions/runs/${receipt_run_id}/attempts/${receipt_run_attempt}');
+    expect(audit).toContain("'.github/workflows/deploy-r2.yml'");
+    expect(audit).toContain("'.github/workflows/rollback-r2.yml'");
+    expect(audit).toContain('Release/Worker pair authorization: passed');
+    expect(audit).toContain('public release-pair receipt bytes, digest, immutable cache policy');
+    expect(audit).not.toMatch(/rclone (?:copy|copyto) [^\n]+ r2:onlyoffice-getpi-work/);
+  });
+  it('pins every third-party action to a full commit SHA', () => {
+    for (const workflow of [candidate, promotion, rollback, audit, npmPublication, pullRequestChecks])
+      expect(workflow).not.toMatch(/uses:\s+[^\s]+@v\d/);
+  });
+
+  it('has an explicit current-build matrix mode that cannot rebuild the candidate', () => {
+    expect(matrixRunner).toContain("ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD === '1'");
+    const currentBuildBranch = matrixRunner.slice(
+      matrixRunner.indexOf('if (useCurrentBuild)'),
+      matrixRunner.indexOf('} else if (!reusedPersistDirectory || refreshReusedState)'),
+    );
+    expect(currentBuildBranch).toContain('Current-build matrix input is missing');
+    expect(currentBuildBranch).not.toContain("await run('pnpm', ['build'])");
+    expect(currentBuildBranch).not.toContain('hydrate-cloudflare-matrix-fonts.mjs');
+    expect(currentBuildBranch).not.toContain("await run('pnpm', ['release:build'])");
   });
 });

@@ -8,7 +8,12 @@ type SaveE2EStatus = {
 
 test('Word showcase exposes its authored content and drawing objects in the editor model', async ({ page }) => {
   const failures = collectPageFailures(page);
-  await openFixture(page, 'docx', '/fixtures/regressions/office-preview-showcase.docx', 'ONLYOFFICE Word Preview Showcase.docx');
+  await openFixture(
+    page,
+    'docx',
+    '/fixtures/regressions/office-preview-showcase.docx',
+    'ONLYOFFICE Word Preview Showcase.docx',
+  );
   await expectSharedUnicodeFallbackChain(page);
   const frame = await getEditorFrame(page, '/documenteditor/main/index.html');
   const model = await frame.evaluate(() => {
@@ -24,8 +29,10 @@ test('Word showcase exposes its authored content and drawing objects in the edit
       .map((imageName: string) => {
         const resourceUrl = scope.AscCommon?.g_oDocumentUrls?.urls?.[`media/${imageName}`];
         const image = resourceUrl
-          ? (scope.editor?.ImageLoader?.map_image_index?.[resourceUrl] ||
-              scope.AscCommon?.g_image_loader?.map_image_index?.[resourceUrl])?.Image
+          ? (
+              scope.editor?.ImageLoader?.map_image_index?.[resourceUrl] ||
+              scope.AscCommon?.g_image_loader?.map_image_index?.[resourceUrl]
+            )?.Image
           : undefined;
         return {
           imageName,
@@ -43,7 +50,28 @@ test('Word showcase exposes its authored content and drawing objects in the edit
     };
   });
 
-  for (const marker of ['W01', 'W02', 'W03', 'W04', 'W05', 'W06', 'W07', 'W08', 'W09', 'W10', 'W11', 'W12', 'W13', 'W14', 'W15', 'W16', 'W17/W19', 'W18', 'W20', 'W21']) {
+  for (const marker of [
+    'W01',
+    'W02',
+    'W03',
+    'W04',
+    'W05',
+    'W06',
+    'W07',
+    'W08',
+    'W09',
+    'W10',
+    'W11',
+    'W12',
+    'W13',
+    'W14',
+    'W15',
+    'W16',
+    'W17/W19',
+    'W18',
+    'W20',
+    'W21',
+  ]) {
     expect(model.text, `missing Word model marker ${marker}`).toContain(marker);
   }
   expect(model.paragraphCount).toBeGreaterThan(40);
@@ -59,16 +87,32 @@ test('Word showcase exposes its authored content and drawing objects in the edit
   expect(failures).toEqual([]);
 });
 
-test('PowerPoint showcase exposes every slide, marker and native object class in the editor model', async ({ page }) => {
+test('PowerPoint showcase exposes every slide, marker and native object class in the editor model', async ({
+  page,
+}) => {
   const failures = collectPageFailures(page);
-  await openFixture(page, 'pptx', '/fixtures/regressions/office-preview-showcase.pptx', 'ONLYOFFICE Presentation Preview Showcase.pptx');
+  await openFixture(
+    page,
+    'pptx',
+    '/fixtures/regressions/office-preview-showcase.pptx',
+    'ONLYOFFICE Presentation Preview Showcase.pptx',
+  );
   await expectSharedUnicodeFallbackChain(page);
   const frame = await getEditorFrame(page, '/presentationeditor/main/index.html');
   const model = await frame.evaluate(() => {
     const scope = globalThis as typeof globalThis & { editor?: any };
     const presentation = scope.editor?.WordControl?.m_oLogicDocument;
     const slides = presentation?.Slides || [];
-    const summary = { text: '', shapeCount: 0, chartCount: 0, groupCount: 0, tableCount: 0, imageCount: 0, transitionCount: 0, timingCount: 0 };
+    const summary = {
+      text: '',
+      shapeCount: 0,
+      chartCount: 0,
+      groupCount: 0,
+      tableCount: 0,
+      imageCount: 0,
+      transitionCount: 0,
+      timingCount: 0,
+    };
     const visit = (shape: any) => {
       summary.shapeCount += 1;
       const type = shape?.constructor?.name || '';
@@ -76,7 +120,8 @@ test('PowerPoint showcase exposes every slide, marker and native object class in
       if (shape?.isChart?.() || shape?.graphicObject?.isChart?.()) summary.chartCount += 1;
       if (type === 'CGraphicFrame' && shape?.graphicObject?.constructor?.name === 'CTable') summary.tableCount += 1;
       if (shape?.getImageUrl?.()) summary.imageCount += 1;
-      const paragraphs = shape?.txBody?.content?.GetAllParagraphs?.() || shape?.textBoxContent?.GetAllParagraphs?.() || [];
+      const paragraphs =
+        shape?.txBody?.content?.GetAllParagraphs?.() || shape?.textBoxContent?.GetAllParagraphs?.() || [];
       summary.text += `\n${paragraphs.map((paragraph: any) => paragraph.GetText?.() || '').join('\n')}`;
       for (const child of shape?.spTree || []) visit(child);
     };
@@ -102,9 +147,16 @@ test('PowerPoint showcase exposes every slide, marker and native object class in
   expect(failures).toEqual([]);
 });
 
-test('Spreadsheet showcase exposes sheets, formulas, charts and native-object sheet in the workbook model', async ({ page }) => {
+test('Spreadsheet showcase exposes sheets, formulas, charts and native-object sheet in the workbook model', async ({
+  page,
+}) => {
   const failures = collectPageFailures(page);
-  await openFixture(page, 'xlsx', '/fixtures/regressions/office-preview-showcase.xlsx', 'ONLYOFFICE Spreadsheet Preview Showcase.xlsx');
+  await openFixture(
+    page,
+    'xlsx',
+    '/fixtures/regressions/office-preview-showcase.xlsx',
+    'ONLYOFFICE Spreadsheet Preview Showcase.xlsx',
+  );
   await expectSharedUnicodeFallbackChain(page);
   const frame = await getEditorFrame(page, '/spreadsheeteditor/main/index.html');
   const model = await frame.evaluate(() => {
@@ -118,19 +170,43 @@ test('Spreadsheet showcase exposes sheets, formulas, charts and native-object sh
     };
     return {
       sheetNames: sheets.map((sheet: any) => sheet.getName?.() || sheet.sName || ''),
-      hiddenSheets: sheets.filter((sheet: any) => sheet.getHidden?.() || sheet.hidden).map((sheet: any) => sheet.getName?.() || sheet.sName || ''),
+      hiddenSheets: sheets
+        .filter((sheet: any) => sheet.getHidden?.() || sheet.hidden)
+        .map((sheet: any) => sheet.getName?.() || sheet.sName || ''),
       drawingCounts: sheets.map((sheet: any) => sheet.Drawings?.length || 0),
       chartCount: sheets.reduce(
-        (count: number, sheet: any) => count + (sheet.Drawings || []).filter((drawing: any) => drawing.graphicObject?.isChart?.()).length,
+        (count: number, sheet: any) =>
+          count + (sheet.Drawings || []).filter((drawing: any) => drawing.graphicObject?.isChart?.()).length,
         0,
       ),
-      overviewTitle: readCell(sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Overview'), 1, 1),
-      overviewFormula: readCell(sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Overview'), 6, 1),
-      nativeTitle: readCell(sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Native PivotTable and Slicer'), 0, 0),
+      overviewTitle: readCell(
+        sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Overview'),
+        1,
+        1,
+      ),
+      overviewFormula: readCell(
+        sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Overview'),
+        6,
+        1,
+      ),
+      nativeTitle: readCell(
+        sheets.find((sheet: any) => (sheet.getName?.() || sheet.sName) === 'Native PivotTable and Slicer'),
+        0,
+        0,
+      ),
     };
   });
 
-  expect(model.sheetNames).toEqual(['Overview', 'Data', 'Formats', 'Charts', 'Sparklines', 'RTL & CJK', 'Reference', 'Native PivotTable and Slicer']);
+  expect(model.sheetNames).toEqual([
+    'Overview',
+    'Data',
+    'Formats',
+    'Charts',
+    'Sparklines',
+    'RTL & CJK',
+    'Reference',
+    'Native PivotTable and Slicer',
+  ]);
   expect(model.hiddenSheets).toContain('Reference');
   expect(model.overviewTitle.value).toContain('Spreadsheet Preview Showcase');
   expect(model.overviewFormula.formula).toContain('SUM');
@@ -158,7 +234,14 @@ async function openFixture(page: Page, type: string, fixtureUrl: string, fixture
 }
 
 async function getEditorFrame(page: Page, path: string): Promise<Frame> {
-  await expect.poll(() => page.frames().find((frame) => frame.url().includes(path))?.url()).toContain(path);
+  await expect
+    .poll(() =>
+      page
+        .frames()
+        .find((frame) => frame.url().includes(path))
+        ?.url(),
+    )
+    .toContain(path);
   const frame = page.frames().find((candidate) => candidate.url().includes(path));
   if (!frame) throw new Error(`Editor frame was not created: ${path}`);
   return frame;

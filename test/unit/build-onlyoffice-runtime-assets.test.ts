@@ -232,5 +232,7 @@ describe('build-onlyoffice-runtime-assets', () => {
     expect(revisionIndex).toBeGreaterThan(patchIndex);
     expect(manifestIndex).toBeGreaterThan(revisionIndex);
     expect(releaseIndex).toBeGreaterThan(manifestIndex);
+    expect(buildScript).toContain('ONLYOFFICE_SKIP_RELEASE_BUILD');
+    expect(buildScript).toContain('must be 0 or 1');
   });
 });

@@ -114,9 +114,11 @@ interface DownloadAsEvent {
   };
 }
 
-type DocumentStateChangeEvent = boolean | {
-  data?: boolean;
-}
+type DocumentStateChangeEvent =
+  | boolean
+  | {
+      data?: boolean;
+    };
 
 interface OnlyOfficeMockServer {
   buildNumber?: number;
@@ -173,21 +175,25 @@ interface DocEditor {
     [key: string]: unknown;
   } | null;
   getEditorWindow?: () => Window | null;
-  asc_nativeGetFile3?: () => {
-    data?: Uint8Array | ArrayBuffer | ArrayBufferView;
-    header?: string;
-  } | Uint8Array | ArrayBuffer | ArrayBufferView;
-	  asc_nativeGetPDF?: (options?: Record<string, unknown>) =>
-	    | {
-	        data?: Uint8Array | ArrayBuffer | ArrayBufferView;
-	      }
-	    | Uint8Array
-	    | ArrayBuffer
-	    | ArrayBufferView
-	    | null;
-	  asc_nativeCalculateFile?: (options?: Record<string, unknown> | null) => unknown;
-	  asc_nativeGetHtml?: (options?: Record<string, unknown> | null) => string;
-	  zoomFitToWidth?: () => void;
+  asc_nativeGetFile3?: () =>
+    | {
+        data?: Uint8Array | ArrayBuffer | ArrayBufferView;
+        header?: string;
+      }
+    | Uint8Array
+    | ArrayBuffer
+    | ArrayBufferView;
+  asc_nativeGetPDF?: (options?: Record<string, unknown>) =>
+    | {
+        data?: Uint8Array | ArrayBuffer | ArrayBufferView;
+      }
+    | Uint8Array
+    | ArrayBuffer
+    | ArrayBufferView
+    | null;
+  asc_nativeCalculateFile?: (options?: Record<string, unknown> | null) => unknown;
+  asc_nativeGetHtml?: (options?: Record<string, unknown> | null) => string;
+  zoomFitToWidth?: () => void;
   processRightsChange?: (enabled: boolean, message?: string) => void;
   connectMockServer?: (server: OnlyOfficeMockServer) => void;
   cryptPadMessageToOO?: (msg: any) => void;

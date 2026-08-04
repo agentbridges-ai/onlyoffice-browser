@@ -237,28 +237,29 @@ describe('X2TConverter', () => {
     expect(legacyResult.fileName).toBe('local_ppt_png.zip');
   });
 
-	  it('converts native editor HTML through x2t with explicit source and target formats', async () => {
-	    const converter = new X2TConverter();
-	    const x2tModule = createFakeX2TModule();
-	    const htmlBytes = Uint8Array.from('<!doctype html><html><body>alpha</body></html>', (char) =>
-	      char.charCodeAt(0) & 0xff,
-	    );
+  it('converts native editor HTML through x2t with explicit source and target formats', async () => {
+    const converter = new X2TConverter();
+    const x2tModule = createFakeX2TModule();
+    const htmlBytes = Uint8Array.from(
+      '<!doctype html><html><body>alpha</body></html>',
+      (char) => char.charCodeAt(0) & 0xff,
+    );
 
-	    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
-	    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
 
-	    const result = await converter.convertHtmlToDocument(htmlBytes, 'local.docx', 'MD');
-	    const params = x2tModule.lastParamsXml;
+    const result = await converter.convertHtmlToDocument(htmlBytes, 'local.docx', 'MD');
+    const params = x2tModule.lastParamsXml;
 
-	    expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>70</m_nFormatFrom>'));
-	    expect(params).toEqual(expect.stringContaining('<m_nFormatTo>92</m_nFormatTo>'));
-	    expect(params).toEqual(expect.stringContaining('<m_bIsNoBase64>true</m_bIsNoBase64>'));
-	    expect(params).toEqual(expect.stringContaining('<m_sFontDir>/working/fonts/</m_sFontDir>'));
-	    expect(result.fileName).toBe('local.md');
-	    expect(Array.from(x2tModule.lastInputBytes || [])).toEqual(Array.from(htmlBytes));
-	  });
+    expect(params).toEqual(expect.stringContaining('<m_nFormatFrom>70</m_nFormatFrom>'));
+    expect(params).toEqual(expect.stringContaining('<m_nFormatTo>92</m_nFormatTo>'));
+    expect(params).toEqual(expect.stringContaining('<m_bIsNoBase64>true</m_bIsNoBase64>'));
+    expect(params).toEqual(expect.stringContaining('<m_sFontDir>/working/fonts/</m_sFontDir>'));
+    expect(result.fileName).toBe('local.md');
+    expect(Array.from(x2tModule.lastInputBytes || [])).toEqual(Array.from(htmlBytes));
+  });
 
-	  it('decodes native base64 save-bin payloads and passes explicit target format for document exports', async () => {
+  it('decodes native base64 save-bin payloads and passes explicit target format for document exports', async () => {
     const converter = new X2TConverter();
     const x2tModule = createFakeX2TModule();
     const nativeText = 'XLSY;v10;0;\x07\x06\x8b\x02';
@@ -301,22 +302,27 @@ describe('X2TConverter', () => {
   it.each([
     { targetExt: 'TXT', targetFormat: oAscFileType.TXT, outputFileName: 'local.txt' },
     { targetExt: 'RTF', targetFormat: oAscFileType.RTF, outputFileName: 'local.rtf' },
-  ])('routes native document exports to $targetExt through the upstream native-bin path', async ({ targetExt, targetFormat, outputFileName }) => {
-    const converter = new X2TConverter();
-    const x2tModule = createFakeX2TModule();
-    const nativeBytes = new Uint8Array([0x44, 0x4f, 0x43, 0x59, 0x3b, 0x76, 0x31, 0x30, 0x3b, 0x30, 0x3b, 1, 2, 3]);
+  ])(
+    'routes native document exports to $targetExt through the upstream native-bin path',
+    async ({ targetExt, targetFormat, outputFileName }) => {
+      const converter = new X2TConverter();
+      const x2tModule = createFakeX2TModule();
+      const nativeBytes = new Uint8Array([0x44, 0x4f, 0x43, 0x59, 0x3b, 0x76, 0x31, 0x30, 0x3b, 0x30, 0x3b, 1, 2, 3]);
 
-    (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
-    vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
+      (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
+      vi.spyOn(converter, 'initialize').mockResolvedValue(x2tModule);
 
-    const result = await converter.convertBinToDocument(nativeBytes, 'local.docx', targetExt);
-    const [targetParams] = x2tModule.paramsXmls;
+      const result = await converter.convertBinToDocument(nativeBytes, 'local.docx', targetExt);
+      const [targetParams] = x2tModule.paramsXmls;
 
-    expect(x2tModule.paramsXmls).toHaveLength(1);
-    expect(targetParams).toEqual(expect.stringContaining(`<m_nFormatFrom>${oAscFileType.CANVAS_WORD}</m_nFormatFrom>`));
-    expect(targetParams).toEqual(expect.stringContaining(`<m_nFormatTo>${targetFormat}</m_nFormatTo>`));
-    expect(result.fileName).toBe(outputFileName);
-  });
+      expect(x2tModule.paramsXmls).toHaveLength(1);
+      expect(targetParams).toEqual(
+        expect.stringContaining(`<m_nFormatFrom>${oAscFileType.CANVAS_WORD}</m_nFormatFrom>`),
+      );
+      expect(targetParams).toEqual(expect.stringContaining(`<m_nFormatTo>${targetFormat}</m_nFormatTo>`));
+      expect(result.fileName).toBe(outputFileName);
+    },
+  );
 
   it('keeps single-image native document exports as image files by default', async () => {
     const converter = new X2TConverter();
@@ -346,7 +352,9 @@ describe('X2TConverter', () => {
     const [csvParams] = x2tModule.paramsXmls;
 
     expect(x2tModule.paramsXmls).toHaveLength(1);
-    expect(csvParams).toEqual(expect.stringContaining(`<m_nFormatFrom>${oAscFileType.CANVAS_SPREADSHEET}</m_nFormatFrom>`));
+    expect(csvParams).toEqual(
+      expect.stringContaining(`<m_nFormatFrom>${oAscFileType.CANVAS_SPREADSHEET}</m_nFormatFrom>`),
+    );
     expect(csvParams).toEqual(expect.stringContaining(`<m_nFormatTo>${oAscFileType.CSV}</m_nFormatTo>`));
     expect(result.fileName).toBe('local.csv');
   });
@@ -377,9 +385,7 @@ describe('X2TConverter', () => {
 
     x2tModule.files.set(
       '/working/media/display6image1.svg',
-      Uint8Array.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>', (char) =>
-        char.charCodeAt(0),
-      ),
+      Uint8Array.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>', (char) => char.charCodeAt(0)),
     );
     (converter as unknown as { x2tModule: EmscriptenModule }).x2tModule = x2tModule;
     vi.mocked(URL.createObjectURL).mockImplementation((blob) => {

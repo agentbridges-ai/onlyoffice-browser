@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadReleasePublication } from './verify-release-publication.mjs';
+import { loadReleasePublication, loadV5ManifestPublication } from './verify-release-publication.mjs';
 
 const REQUIRED_BROKER_ANCESTORS = [
   'https://piwork.getpi.work',
@@ -59,6 +59,25 @@ function expectHeader(response, name, expected, label) {
   if (typeof expected === 'string' ? actual !== expected : !expected.test(actual || '')) {
     fail(`${label} ${name} mismatch: ${actual || 'missing'}`);
   }
+}
+
+function workerVersionFetch(fetchImpl, expectedWorkerVersionId, overrideWorkerVersionId) {
+  if (!expectedWorkerVersionId) return fetchImpl;
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(expectedWorkerVersionId)) {
+    fail('expectedWorkerVersionId is invalid');
+  }
+  if (overrideWorkerVersionId && overrideWorkerVersionId !== expectedWorkerVersionId) {
+    fail('overrideWorkerVersionId must match expectedWorkerVersionId');
+  }
+  return async (input, init = {}) => {
+    const headers = new Headers(init.headers);
+    if (overrideWorkerVersionId) {
+      headers.set('Cloudflare-Workers-Version-Overrides', `onlyoffice-browser-runtime="${overrideWorkerVersionId}"`);
+    }
+    const response = await fetchImpl(input, { ...init, headers });
+    expectHeader(response, 'x-onlyoffice-worker-version', expectedWorkerVersionId, 'Worker version');
+    return response;
+  };
 }
 
 function localBytes(publication, object, start, end) {
@@ -123,8 +142,48 @@ async function verifyPointers(publication, origin, fetchImpl, cacheBust) {
   }
 }
 
+async function verifyStableRoot(publication, origin, fetchImpl, cacheBust) {
+  const manifestObject = publication.objects.find((object) => object.kind === 'manifest-v5');
+  const runtimeAsset = publication.manifest?.assets?.find((asset) => asset.path === 'onlyoffice-runtime-assets.json');
+  if (!manifestObject || !runtimeAsset || !/^[a-f0-9]{64}$/.test(runtimeAsset.sha256 || '')) {
+    fail('Release does not contain a verifiable stable root runtime manifest');
+  }
+  const pointerResponse = await fetchImpl(`${origin}/channels/stable-v5.json?ci=${encodeURIComponent(cacheBust)}`, {
+    cache: 'no-store',
+    redirect: 'manual',
+  });
+  if (pointerResponse.status !== 200) fail(`stable-v5.json returned ${pointerResponse.status}`);
+  expectHeader(pointerResponse, 'cache-control', /^no-store(?:$|,)/, 'stable-v5.json');
+  const pointer = await readJsonResponse(pointerResponse, 'stable-v5.json');
+  if (
+    pointer.value?.version !== 1 ||
+    pointer.value.releaseId !== publication.releaseId ||
+    pointer.value.manifestUrl !== `/releases/${publication.releaseId}/manifest.json` ||
+    pointer.value.manifestSha256 !== manifestObject.sha256
+  ) {
+    fail('stable-v5.json does not select the expected immutable release');
+  }
+  const rootResponse = await fetchImpl(`${origin}/onlyoffice-runtime-assets.json?ci=${encodeURIComponent(cacheBust)}`, {
+    cache: 'no-store',
+    redirect: 'manual',
+  });
+  if (rootResponse.status !== 200) fail(`Stable root runtime manifest returned ${rootResponse.status}`);
+  expectHeader(rootResponse, 'x-onlyoffice-asset-version', publication.releaseId, 'Stable root runtime manifest');
+  expectHeader(
+    rootResponse,
+    'cache-control',
+    /^public, max-age=0, must-revalidate(?:,|$)/,
+    'Stable root runtime manifest',
+  );
+  const bytes = new Uint8Array(await rootResponse.arrayBuffer());
+  if (bytes.byteLength !== runtimeAsset.bytes || sha256(bytes) !== runtimeAsset.sha256) {
+    fail('Stable root runtime manifest bytes do not match the selected release');
+  }
+}
+
 export async function verifyReleaseHttp(publication, options = {}) {
-  const fetchImpl = options.fetchImpl || fetch;
+  const expectedWorkerVersionId = options.expectedWorkerVersionId || options.workerVersionId;
+  const fetchImpl = workerVersionFetch(options.fetchImpl || fetch, expectedWorkerVersionId, options.workerVersionId);
   const canonicalOrigin = normalizeOrigin(
     options.canonicalOrigin || 'https://onlyoffice.getpi.work',
     'canonicalOrigin',
@@ -189,10 +248,14 @@ export async function verifyReleaseHttp(publication, options = {}) {
   if (options.verifyPointers) {
     await verifyPointers(publication, canonicalOrigin, fetchImpl, cacheBust);
   }
+  if (options.verifyStableRoot) {
+    await verifyStableRoot(publication, canonicalOrigin, fetchImpl, cacheBust);
+  }
   return {
     releaseId: publication.releaseId,
     object: object.key,
     pointers: Boolean(options.verifyPointers),
+    stableRoot: Boolean(options.verifyStableRoot),
   };
 }
 
@@ -203,20 +266,31 @@ function option(name, fallback) {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (isMain) {
-  const publication = loadReleasePublication(option('--release-root', '.onlyoffice-release'), {
+  const commonOptions = {
     expectedPackageVersion: option('--expected-package-version'),
     fastCdcEvidenceMode: option('--fastcdc-evidence-mode', 'automatic'),
     fastCdcEvidencePath: option('--fastcdc-evidence'),
-  });
+  };
+  const v5Manifest = option('--v5-manifest');
+  const publication = v5Manifest
+    ? loadV5ManifestPublication(v5Manifest, {
+        ...commonOptions,
+        releaseId: option('--release-id'),
+        expectedManifestSha256: option('--expected-manifest-sha256'),
+      })
+    : loadReleasePublication(option('--release-root', '.onlyoffice-release'), commonOptions);
   const result = await verifyReleaseHttp(publication, {
     canonicalOrigin: option('--canonical-origin', 'https://onlyoffice.getpi.work'),
     editorOrigin: option('--editor-origin', 'https://office-editor-github-actions-smoke.getpi.work'),
     cacheBust: option('--cache-bust', process.env.GITHUB_SHA || publication.releaseId),
     verifyPointers: process.argv.includes('--verify-pointers'),
+    verifyStableRoot: process.argv.includes('--verify-stable-root'),
+    workerVersionId: option('--worker-version-id'),
+    expectedWorkerVersionId: option('--expected-worker-version-id'),
   });
   console.log(
     `Verified production Host, Broker CSP, and content-object Range for ${result.releaseId}${
       result.pointers ? ' with stable pointers' : ''
-    }`,
+    }${result.stableRoot ? ' with the stable root alias' : ''}`,
   );
 }

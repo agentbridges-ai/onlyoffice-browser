@@ -112,7 +112,10 @@ function getDefaultOfficeHostUrl(): string {
   if (configured) return new URL(configured, window.location.href).href;
 
   const hostUrl = new URL('/office-host.html', window.location.href);
-  if (hostUrl.hostname === 'localhost' || (hostUrl.hostname.endsWith('.localhost') && hostUrl.hostname !== 'host.localhost')) {
+  if (
+    hostUrl.hostname === 'localhost' ||
+    (hostUrl.hostname.endsWith('.localhost') && hostUrl.hostname !== 'host.localhost')
+  ) {
     hostUrl.hostname = 'host.localhost';
   } else if (hostUrl.hostname === 'host.localhost') {
     hostUrl.hostname = 'app.localhost';

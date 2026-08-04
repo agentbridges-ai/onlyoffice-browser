@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing signed tag to publish after a workflow-only repair
+        description: Signed tag for a transient retry; dispatch this workflow with --ref set to the same tag
         required: true
         type: string
 
@@ -15,26 +15,35 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: onlyoffice-npm-publication
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     environment: production
     env:
       RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.release_tag || github.ref }}
-      - uses: pnpm/action-setup@v4
+          fetch-depth: 0
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
         with:
           version: 11.4.0
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - name: Use an npm CLI with trusted publishing support
         run: npm install --global npm@11.17.0
+      - name: Read immutable package version
+        run: echo "PACKAGE_VERSION=$(node -p "require('./package.json').version")" >> "${GITHUB_ENV}"
       - name: Verify signed release identity
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,16 +52,106 @@ jobs:
           test "${RELEASE_TAG}" = "v${PACKAGE_VERSION}"
           TAG_OBJECT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{tag}")"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT}" --jq '.verification.verified')" = "true"
+          RELEASE_COMMIT="$(git rev-list -n 1 "${RELEASE_TAG}")"
+          test "${RELEASE_COMMIT}" = "$(git rev-parse HEAD)"
+          if test "${GITHUB_EVENT_NAME}" = workflow_dispatch; then
+            test "${GITHUB_REF}" = "refs/tags/${RELEASE_TAG}"
+            test "${GITHUB_SHA}" = "${RELEASE_COMMIT}"
+          fi
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${RELEASE_COMMIT}" origin/main
+          echo "RELEASE_COMMIT=${RELEASE_COMMIT}" >> "${GITHUB_ENV}"
       - name: Test and build framework-free proxy API
         run: |
           pnpm install --frozen-lockfile
           pnpm test
           pnpm tsc --noEmit
           pnpm build:lib
-          npm pack --dry-run
-      - name: Publish with npm provenance
-        run: npm publish --access public
-      - name: Create GitHub release
+          mkdir -p release-evidence
+          npm pack --ignore-scripts --pack-destination release-evidence
+          PACKAGE_TARBALL="$(find release-evidence -name '*.tgz' -print -quit)"
+          test -n "${PACKAGE_TARBALL}"
+          tar -tzf "${PACKAGE_TARBALL}" | grep -qx 'package/dist/npm/public-api.js'
+          echo "PACKAGE_TARBALL=${PACKAGE_TARBALL}" >> "${GITHUB_ENV}"
+          echo "PACKAGE_INTEGRITY=sha512-$(openssl dgst -sha512 -binary "${PACKAGE_TARBALL}" | base64 -w0)" >> "${GITHUB_ENV}"
+      - name: Read existing immutable npm publication
+        id: registry
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const url = `https://registry.npmjs.org/${encodeURIComponent('@agentbridges-ai/onlyoffice-browser')}/${encodeURIComponent(process.env.PACKAGE_VERSION)}`;
+          let response;
+          for (let attempt = 1; attempt <= 4; attempt += 1) {
+            try {
+              response = await fetch(url, { cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(15_000) });
+            } catch (error) {
+              if (attempt === 4) throw error;
+            }
+            if (response?.status === 404 || response?.ok) break;
+            if (attempt === 4) throw new Error(`npm registry returned ${response?.status}`);
+            await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+          }
+          if (response.status === 404) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'already_published=false\n');
+          } else {
+            if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
+            const metadata = await response.json();
+            if (!metadata?.dist?.integrity) throw new Error('existing npm version has no integrity');
+            fs.writeFileSync('published.json', JSON.stringify(metadata, null, 2) + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `already_published=true\nintegrity=${metadata.dist.integrity}\n`);
+          }
+          NODE
+        env:
+          PACKAGE_VERSION: ${{ env.PACKAGE_VERSION }}
+      - name: Verify existing immutable npm publication
+        if: steps.registry.outputs.already_published == 'true'
+        run: |
+          ATTESTATION_URL="$(node -e "import('./scripts/npm-publication-identity.mjs').then(({assertPublishedIdentity})=>console.log(assertPublishedIdentity(require('./published.json'),{version:process.env.PACKAGE_VERSION,gitHead:process.env.RELEASE_COMMIT,integrity:process.env.PACKAGE_INTEGRITY}).attestationUrl))")"
+          curl --fail --silent --show-error --retry 4 --retry-all-errors --connect-timeout 10 --max-time 30 "${ATTESTATION_URL}" --output published-attestation.json
+          node -e "import('./scripts/npm-publication-identity.mjs').then(({assertNpmSlsaAttestation})=>assertNpmSlsaAttestation(require('./published-attestation.json'),{packageName:'@agentbridges-ai/onlyoffice-browser',version:process.env.PACKAGE_VERSION,gitHead:process.env.RELEASE_COMMIT,integrity:process.env.PACKAGE_INTEGRITY,releaseTag:process.env.RELEASE_TAG,workflow:'.github/workflows/release-npm.yml'}))"
+      - name: Refuse dist-tag regression
+        if: steps.registry.outputs.already_published != 'true'
+        run: |
+          npm view @agentbridges-ai/onlyoffice-browser dist-tags --json > dist-tags.json
+          node -e "import('./scripts/npm-publication-identity.mjs').then(({assertDistTagDoesNotRegress})=>assertDistTagDoesNotRegress(require('./dist-tags.json'),process.env.PACKAGE_VERSION))"
+      - name: Re-verify the remote signed tag immediately before publication
+        if: steps.registry.outputs.already_published != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${RELEASE_TAG}" --verify-tag --generate-notes --title "${RELEASE_TAG}"
+        run: |
+          set -euo pipefail
+          LOCAL_TAG_OBJECT="$(git rev-parse "refs/tags/${RELEASE_TAG}")"
+          REMOTE_TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+          test "${REMOTE_TAG_OBJECT}" = "${LOCAL_TAG_OBJECT}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${REMOTE_TAG_OBJECT}" --jq '.verification.verified')" = true
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${REMOTE_TAG_OBJECT}" --jq '.object.sha')" = "${RELEASE_COMMIT}"
+      - name: Publish exact package with npm provenance
+        if: steps.registry.outputs.already_published != 'true'
+        run: |
+          TAG="$(node -e "import('./scripts/npm-publication-identity.mjs').then(({npmDistTag})=>console.log(npmDistTag(process.env.PACKAGE_VERSION)))")"
+          # Publishing the unchanged directory lets npm bind registry gitHead;
+          # --ignore-scripts makes its deterministic pack identical to the SRI
+          # computed above, which the post-publication gate verifies exactly.
+          npm publish . --ignore-scripts --access public --provenance --tag "${TAG}"
+      - name: Verify newly published immutable npm identity and provenance
+        if: steps.registry.outputs.already_published != 'true'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if npm view "@agentbridges-ai/onlyoffice-browser@${PACKAGE_VERSION}" --json > published.json 2>/dev/null; then
+              ATTESTATION_URL="$(node -e "import('./scripts/npm-publication-identity.mjs').then(({assertPublishedIdentity})=>console.log(assertPublishedIdentity(require('./published.json'),{version:process.env.PACKAGE_VERSION,gitHead:process.env.RELEASE_COMMIT,integrity:process.env.PACKAGE_INTEGRITY}).attestationUrl))")" || true
+              if test -n "${ATTESTATION_URL:-}" && curl --fail --silent --show-error --connect-timeout 10 --max-time 30 "${ATTESTATION_URL}" --output published-attestation.json; then
+                if node -e "import('./scripts/npm-publication-identity.mjs').then(({assertNpmSlsaAttestation})=>assertNpmSlsaAttestation(require('./published-attestation.json'),{packageName:'@agentbridges-ai/onlyoffice-browser',version:process.env.PACKAGE_VERSION,gitHead:process.env.RELEASE_COMMIT,integrity:process.env.PACKAGE_INTEGRITY,releaseTag:process.env.RELEASE_TAG,workflow:'.github/workflows/release-npm.yml'}))"; then exit 0; fi
+              fi
+            fi
+            test "${attempt}" = 5 && { echo 'published npm identity/provenance did not converge' >&2; exit 1; }
+            sleep "$((attempt * 4))"
+          done
+      - name: Report existing publication identity on retry
+        if: steps.registry.outputs.already_published == 'true'
+        run: echo "npm version already exists with integrity ${{ steps.registry.outputs.integrity }}; retry is verification-only"
+      - name: Create GitHub release if absent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || gh release create "${RELEASE_TAG}" --verify-tag --generate-notes --title "${RELEASE_TAG}"
