@@ -113,6 +113,21 @@ describe('latest-only R2 cleanup planning', () => {
     ).toThrow('not a safe R2 key');
   });
 
+  it('accepts an S3 slash root marker only without object metadata', () => {
+    const input = fixture();
+    const plan = buildLatestOnlyCleanupPlan({
+      ...input,
+      inventory: [{ Path: '/', Size: undefined }, ...input.inventory],
+    });
+    expect(plan.inventoryObjects).toBe(input.inventory.length);
+    expect(() =>
+      buildLatestOnlyCleanupPlan({
+        ...input,
+        inventory: [{ Path: '/', Size: 1 }, ...input.inventory],
+      }),
+    ).toThrow('not a safe R2 key');
+  });
+
   it('ignores an S3 root marker and normalizes a harmless leading ./ prefix', () => {
     const input = fixture();
     const plan = buildLatestOnlyCleanupPlan({
