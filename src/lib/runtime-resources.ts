@@ -409,6 +409,39 @@ export class OfficeRuntimeResourceManager {
     this.publish(this.controller.getProgress(this.controller.isComplete() ? 'complete' : 'ready'), null, null);
   }
 
+  /**
+   * Reconcile the immutable runtime while this page is idle.
+   *
+   * The canonical installer retains the active release until the candidate has
+   * downloaded only its missing CAS objects, verified them, primed every
+   * editor origin, and atomically activated it.  Keeping that sequence here
+   * gives the application one safe automatic path while preserving the panel's
+   * explicit check, repair, pause, and retry controls.
+   */
+  maintain(): Promise<RuntimeCacheProgress> {
+    if (!this.installer) return this.checkHealth();
+    return this.run('maintain-canonical-release', 'load-all', async () => {
+      // Never compete with an operation initiated in another same-origin tab.
+      // Its BroadcastChannel snapshot will update this manager when it settles.
+      if (this.installer!.getInstallerSnapshot().phase !== 'idle') {
+        return this.controller.getProgress(this.controller.isComplete() ? 'complete' : 'ready');
+      }
+
+      await this.installer!.checkForUpdates();
+      const snapshot = this.installer!.getInstallerSnapshot();
+      if (snapshot.phase !== 'idle' || snapshot.readiness === 'ready') {
+        return this.controller.getProgress(this.controller.isComplete() ? 'complete' : 'ready');
+      }
+      if (snapshot.readiness === 'repair-needed') {
+        await this.installer!.repair({ scope: 'installed' });
+      } else if (snapshot.readiness === 'needs-download' || snapshot.readiness === 'update-available') {
+        const plan = await this.installer!.plan({ scope: 'all' });
+        await this.installer!.apply(plan);
+      }
+      return this.controller.getProgress(this.controller.isComplete() ? 'complete' : 'ready');
+    });
+  }
+
   pause(): void {
     this.installer?.pause();
     this.publish(this.snapshot.progress, this.snapshot.operation, null);
@@ -519,13 +552,18 @@ export class OfficeRuntimeResourceManager {
           this.publish(progress, null, null);
           return progress;
         } catch (error) {
+          // The canonical installer carries the precise failed CAS path in
+          // its live snapshot. Keep it when a high-level operation rejects
+          // with only a resource error code, so automatic maintenance remains
+          // as actionable as an explicit panel operation.
+          const installerFailure = this.installer?.getInstallerSnapshot().failedResources[0];
           const nextError =
             error && typeof error === 'object' && 'code' in error
               ? {
                   code: (error as { code: ResourceErrorCode }).code,
-                  path: (error as { path?: string }).path,
+                  path: (error as { path?: string }).path || installerFailure?.path,
                 }
-              : { code: 'network' as const };
+              : { code: 'network' as const, path: installerFailure?.path };
           this.publish(
             this.controller.getProgress('error', [
               {

@@ -273,6 +273,135 @@ describe('OfficeRuntimeResourceManager', () => {
       installedRelease: null,
     });
   });
+
+  it('automatically completes a candidate with the retained release still usable when the candidate fails', async () => {
+    let installerListener: (snapshot: ResourceInstallerSnapshot) => void = () => undefined;
+    const installerSnapshot: ResourceInstallerSnapshot = {
+      installedRelease: 'release-a',
+      targetRelease: 'release-b',
+      availableRelease: 'release-b',
+      availablePackageVersion: '0.5.8',
+      readiness: 'update-available',
+      phase: 'idle',
+      storageMode: 'cache-storage',
+      currentChunk: null,
+      currentChunkIndex: 0,
+      currentChunkCount: 0,
+      downloadedBytes: 0,
+      downloadBytes: 40,
+      verifiedBytes: 0,
+      verifyBytes: 40,
+      bytesPerSecond: 0,
+      failedResources: [],
+      canPause: false,
+      canResume: false,
+      canRetry: false,
+      errorCode: null,
+      installedProfiles: ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'],
+    };
+    const releaseInstaller: OfficeRuntimeResourceInstaller = {
+      plan: vi.fn(async () => ({
+        planId: 'candidate-plan',
+        releaseId: 'release-b',
+        scope: 'all' as const,
+        profiles: ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'],
+        totalBytes: 40,
+        downloadBytes: 40,
+        reusedBytes: 60,
+      })),
+      apply: vi.fn(async () => {
+        // This is the installer contract after a failed candidate prewarm:
+        // A stays active and B remains available for a later retry.
+        installerSnapshot.failedResources = [{ path: 'objects/sha256/candidate', code: 'network', attempts: 1 }];
+        installerSnapshot.errorCode = 'network';
+        installerSnapshot.canRetry = true;
+        installerListener(installerSnapshot);
+        throw Object.assign(new Error('candidate download failed'), { code: 'network' as const });
+      }),
+      checkForUpdates: vi.fn(async () => undefined),
+      checkHealth: vi.fn(async () => undefined),
+      repair: vi.fn(async () => undefined),
+      pause: vi.fn(),
+      resume: vi.fn(async () => undefined),
+      cancel: vi.fn(),
+      getInstallerSnapshot: () => installerSnapshot,
+      subscribeInstaller: (listener) => {
+        installerListener = listener;
+        return () => undefined;
+      },
+      getInstalledPaths: () => [],
+    };
+    const manager = await createOfficeRuntimeResourceManager({ releaseInstaller });
+
+    await expect(manager.maintain()).rejects.toMatchObject({ code: 'network' });
+
+    expect(releaseInstaller.checkForUpdates).toHaveBeenCalledOnce();
+    expect(releaseInstaller.plan).toHaveBeenCalledWith({ scope: 'all' });
+    expect(releaseInstaller.apply).toHaveBeenCalledOnce();
+    expect(manager.getSnapshot()).toMatchObject({
+      installedRelease: 'release-a',
+      targetRelease: 'release-b',
+      readiness: 'update-available',
+      error: { code: 'network', path: 'objects/sha256/candidate' },
+    });
+  });
+
+  it('automatically repairs an installed release instead of redownloading its complete package', async () => {
+    let installerListener: (snapshot: ResourceInstallerSnapshot) => void = () => undefined;
+    const installerSnapshot: ResourceInstallerSnapshot = {
+      installedRelease: 'release-a',
+      targetRelease: 'release-a',
+      availableRelease: 'release-a',
+      availablePackageVersion: '0.5.7',
+      readiness: 'repair-needed',
+      phase: 'idle',
+      storageMode: 'cache-storage',
+      currentChunk: null,
+      currentChunkIndex: 0,
+      currentChunkCount: 0,
+      downloadedBytes: 0,
+      downloadBytes: 100,
+      verifiedBytes: 0,
+      verifyBytes: 100,
+      bytesPerSecond: 0,
+      failedResources: [{ path: 'objects/sha256/bad', code: 'integrity', attempts: 1 }],
+      canPause: false,
+      canResume: false,
+      canRetry: true,
+      errorCode: 'integrity',
+      installedProfiles: ['base', 'word', 'cell', 'slide', 'fonts-basic', 'fonts-office-compat'],
+    };
+    const releaseInstaller: OfficeRuntimeResourceInstaller = {
+      plan: vi.fn(),
+      apply: vi.fn(),
+      checkForUpdates: vi.fn(async () => undefined),
+      checkHealth: vi.fn(async () => undefined),
+      repair: vi.fn(async () => {
+        installerSnapshot.readiness = 'ready';
+        installerSnapshot.failedResources = [];
+        installerSnapshot.errorCode = null;
+        installerSnapshot.canRetry = false;
+        installerListener(installerSnapshot);
+      }),
+      pause: vi.fn(),
+      resume: vi.fn(async () => undefined),
+      cancel: vi.fn(),
+      getInstallerSnapshot: () => installerSnapshot,
+      subscribeInstaller: (listener) => {
+        installerListener = listener;
+        return () => undefined;
+      },
+      getInstalledPaths: () => [],
+    };
+    const manager = await createOfficeRuntimeResourceManager({ releaseInstaller });
+
+    await manager.maintain();
+
+    expect(releaseInstaller.repair).toHaveBeenCalledWith({ scope: 'installed' });
+    expect(releaseInstaller.plan).not.toHaveBeenCalled();
+    expect(releaseInstaller.apply).not.toHaveBeenCalled();
+    expect(manager.getSnapshot()).toMatchObject({ installedRelease: 'release-a', readiness: 'ready', error: null });
+  });
 });
 
 describe('Office resource installer runtime selection', () => {

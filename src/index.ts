@@ -148,6 +148,7 @@ let resourceManager: OfficeRuntimeResourceManager | null = null;
 let resourcePanelRoot: Root | null = null;
 let latestResourceSnapshot: OfficeRuntimeResourceSnapshot | null = null;
 let resourceInitialization: Promise<void> | null = null;
+let stopResourceMaintenance: (() => void) | null = null;
 let pendingActivation: DocumentTab | null = null;
 let waitingWorkbox: Workbox | null = null;
 let updateActivationPending = false;
@@ -352,6 +353,36 @@ function scheduleIdle(task: () => Promise<unknown>): void {
   } else {
     globalThis.setTimeout(run, 1_500);
   }
+}
+
+function canMaintainResourcesInBackground(): boolean {
+  if (navigator.onLine === false || document.visibilityState === 'hidden') return false;
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  return connection?.saveData !== true;
+}
+
+function startResourceMaintenance(): void {
+  stopResourceMaintenance?.();
+  const maintain = () => {
+    if (!canMaintainResourcesInBackground()) return;
+    scheduleIdle(() => resourceManager?.maintain() || Promise.resolve());
+  };
+  const onVisible = () => {
+    if (document.visibilityState === 'visible') maintain();
+  };
+  const interval = window.setInterval(maintain, 30 * 60 * 1000);
+  const stop = () => {
+    clearInterval(interval);
+    removeEventListener('online', maintain);
+    document.removeEventListener('visibilitychange', onVisible);
+    removeEventListener('pagehide', stop);
+    if (stopResourceMaintenance === stop) stopResourceMaintenance = null;
+  };
+  stopResourceMaintenance = stop;
+  addEventListener('online', maintain);
+  document.addEventListener('visibilitychange', onVisible);
+  addEventListener('pagehide', stop, { once: true });
+  maintain();
 }
 
 async function destroyEditor(): Promise<void> {
@@ -589,12 +620,7 @@ async function initializeResources(): Promise<void> {
     resourceManager.subscribe(renderResources);
     const snapshot = resourceManager.getSnapshot();
     renderResources(snapshot);
-    if (
-      navigator.onLine !== false &&
-      (snapshot.readiness === 'needs-download' || snapshot.readiness === 'update-available')
-    ) {
-      await resourceManager.plan({ scope: 'all' });
-    }
+    startResourceMaintenance();
   } catch {
     const snapshot = resourceManager?.getSnapshot();
     if (snapshot) {

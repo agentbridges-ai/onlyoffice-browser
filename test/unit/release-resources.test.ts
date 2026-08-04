@@ -683,6 +683,39 @@ describe('Release Manifest v4 Office Pack', () => {
 });
 
 describe('Release Manifest v5 content protocol', () => {
+  it('polls only the tiny channel pointer when the cached immutable manifest identity is unchanged', async () => {
+    const release = contentManifest('v0.6.0-cached-manifest');
+    const manifestBytes = new TextEncoder().encode(JSON.stringify(release));
+    const manifestSha256 = digest(manifestBytes);
+    const requests: string[] = [];
+    const repository = new ReleaseRepository(
+      'https://onlyoffice.example.test/',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        requests.push(url.pathname);
+        if (url.pathname === '/channels/stable-v5.json') {
+          return Response.json({
+            version: 1,
+            releaseId: release.releaseId,
+            manifestUrl: `/releases/${release.releaseId}/manifest.json`,
+            manifestSha256,
+          });
+        }
+        return new Response(manifestBytes);
+      }) as unknown as typeof fetch,
+    );
+
+    const first = await repository.currentV5();
+    const second = await repository.currentV5(first);
+
+    expect(second).toEqual(first);
+    expect(requests).toEqual([
+      '/channels/stable-v5.json',
+      `/releases/${release.releaseId}/manifest.json`,
+      '/channels/stable-v5.json',
+    ]);
+  });
+
   it('pins the SHA-256 of the exact manifest response bytes', async () => {
     const release = contentManifest('v0.6.0-raw-manifest');
     const encoded = new TextEncoder().encode(JSON.stringify(release));
