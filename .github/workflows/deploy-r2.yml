@@ -281,12 +281,28 @@ jobs:
       - name: Upload candidate CAS in production and fully verify it
         run: |
           set -euo pipefail
-          retry_rclone() { local attempt=1; until timeout 180 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
-          retry_rclone copy candidate-input/.onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs --ignore-existing
-          retry_rclone copy candidate-input/.onlyoffice-release/releases r2:onlyoffice-getpi-work/releases --ignore-existing
-          retry_rclone copy candidate-input/.onlyoffice-release/packages r2:onlyoffice-getpi-work/packages --ignore-existing
-          retry_rclone copy candidate-input/.onlyoffice-release/segments r2:onlyoffice-getpi-work/segments --ignore-existing
-          node scripts/verify-release-publication.mjs --release-root candidate-input/.onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --expected-source-commit "${{ inputs.candidate_commit }}" --fastcdc-evidence-mode automatic --remote r2:onlyoffice-getpi-work --remote-verification-mode full
+          retry_rclone() { local attempt=1; until timeout 300 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
+          RCLONE_TUNING=(
+            --no-traverse
+            --transfers 16
+            --checkers 32
+            --buffer-size 16M
+            --s3-chunk-size 64M
+            --s3-upload-concurrency 8
+            --s3-upload-cutoff 64M
+          )
+          retry_rclone copy candidate-input/.onlyoffice-release r2:onlyoffice-getpi-work \
+            --ignore-existing \
+            --exclude 'channels/**' \
+            "${RCLONE_TUNING[@]}"
+          node scripts/verify-release-publication.mjs \
+            --release-root candidate-input/.onlyoffice-release \
+            --expected-package-version "$(node -p "require('./package.json').version")" \
+            --expected-source-commit "${{ inputs.candidate_commit }}" \
+            --fastcdc-evidence-mode automatic \
+            --remote r2:onlyoffice-getpi-work \
+            --remote-verification-mode full \
+            --concurrency 16
       - name: Reconstruct and fully verify the immutable predecessor release
         run: |
           set -euo pipefail
@@ -301,7 +317,8 @@ jobs:
             --expected-manifest-sha256 "${PREVIOUS_MANIFEST_SHA256}" \
             --fastcdc-evidence-mode automatic \
             --remote r2:onlyoffice-getpi-work \
-            --remote-verification-mode full
+            --remote-verification-mode full \
+            --concurrency 16
           PREVIOUS_HTTP_OBJECT="$(node --input-type=module - "${PREVIOUS_RELEASE_ID}" "${PREVIOUS_MANIFEST_SHA256}" <<'NODE'
           import {loadV5ManifestPublication} from './scripts/verify-release-publication.mjs';
           const publication=loadV5ManifestPublication('predecessor-release/manifest.json',{releaseId:process.argv[2],expectedManifestSha256:process.argv[3],fastCdcEvidenceMode:'automatic'});

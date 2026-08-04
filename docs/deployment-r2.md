@@ -58,15 +58,28 @@ additive and never run `rclone sync`, `--delete`, or `--delete-after`. Existing
 release objects are not overwritten (`--ignore-existing`); an existing object
 with incorrect bytes is detected by the mandatory remote SHA-256 gate.
 
-The release workflow does not perform garbage collection. Retention and
-mark-and-sweep must remain a separate operation that keeps all releases
-referenced by Piwork, active editor leases, the current pointers, the newest
-three releases, and the minimum retention window. It must also treat every
-unfinalized `promotion-intents/**` record (both its candidate and predecessor),
-every staged candidate still inside the staging-retention window, and every
-valid retained `promotions/**` receipt as reachability roots. An intent is
-finalized only when its digest-bound receipt exists; abandoning an intent or a
-stage requires an explicit audited decision after its recovery window expires.
+The release workflow does not perform garbage collection. By default, an
+audited mark-and-sweep should keep all releases referenced by Piwork, active
+editor leases, the current pointers, the newest three releases, and the
+minimum retention window. It must also treat every unfinalized
+`promotion-intents/**` record (both its candidate and predecessor), every
+staged candidate still inside the staging-retention window, and every valid
+retained `promotions/**` receipt as reachability roots. An intent is finalized
+only when its digest-bound receipt exists; abandoning an intent or a stage
+requires an explicit audited decision after its recovery window expires.
+
+When the product policy deliberately changes to “latest release only”, use the
+manual `Purge old R2 resources (latest only)` workflow. It is separate from
+publication, defaults to a verified dry-run, requires typing `PURGE_LATEST`,
+and first aligns the v4 compatibility pointer with the active v5 release. Only
+after that pointer, the latest v5/v4 manifests, the full CAS inventory, and the
+public no-store pointer have been checked does it delete objects outside the
+latest release. It never uses `sync --delete-after`; the generated raw key list
+is deleted with bounded concurrency and the inventory is rebuilt afterwards.
+This mode intentionally removes rollback/history objects, so a later release
+must upload its complete immutable tree again and rollback to an older release
+is no longer available. The workflow retains the cleanup plan and post-delete
+inventory as a 90-day audit artifact.
 
 ## v5 and v4 pointer contract
 
@@ -77,10 +90,12 @@ and update checks use this pointer.
 
 `channels/stable.json` must point to
 `/releases/<releaseId>/manifest-v4.json`, and its digest must match the exact
-v4 manifest bytes. It is a read-only compatibility anchor: normal v5 releases
-validate it before and after activation but never rewrite it. Its release may
-therefore be older than `stable-v5.json`; the referenced v4 release and all of
-its immutable objects remain retained so legacy clients continue to work.
+v4 manifest bytes. It is normally a read-only compatibility anchor: normal v5
+releases validate it before and after activation but never rewrite it. A
+latest-only cleanup is the explicit exception; it first validates and aligns
+this pointer to the active release before deleting the old v4 release. Its
+release may therefore be older than `stable-v5.json` until that cleanup is
+approved.
 
 `stable-v5.json` is the single activation write. R2 strong consistency makes
 that one `PutObject` an atomic replacement. The workflow no longer tries to
@@ -189,13 +204,17 @@ manual dispatch:
 requires `STAGE`, the same candidate commit, and the successful candidate run.
 It repeats the envelope, npm registry/SLSA, source-package, and matrix checks
 without rebuilding, then uploads only `.onlyoffice-release/{blobs,releases,packages,segments}`
-with `--ignore-existing` and fully re-hashes the remote CAS. It does not write a
-channel, copy `dist` compatibility-root files, or deploy a Worker. It verifies
-the release Host, Broker, and release-bound object routes through the _current_
-production Worker and retains an evidence artifact. This proves current-Worker
-compatibility for Piwork online candidate verification; it does not validate a
-candidate Worker change, which is verified only during promotion before stable
-activation.
+with `--ignore-existing` and high-concurrency, no-traverse CAS transfer. The
+staging inventory is captured before upload; the remote verifier checks exact
+presence/size for every object and streams SHA-256 only for objects introduced
+or replaced by this candidate. This avoids re-reading the historical bucket on
+every stage while the scheduled audit and the promotion gate retain the full
+remote re-hash. It does not write a channel, copy `dist` compatibility-root
+files, or deploy a Worker. It verifies the release Host, Broker, and
+release-bound object routes through the _current_ production Worker and retains
+an evidence artifact. This proves current-Worker compatibility for Piwork
+online candidate verification; it does not validate a candidate Worker change,
+which is verified only during promotion before stable activation.
 
 `deploy-r2.yml` is a manual, production-environment approval transaction:
 
@@ -373,12 +392,12 @@ fixed public immutable font release. `stage-r2.yml` makes
 only its immutable CAS available to the current production Worker and emits
 compatibility evidence, allowing Piwork to online-verify the candidate without
 an activation. `deploy-r2.yml` requires that stage run, repeats full remote
-verification, transactionally verifies the candidate Worker at 0%, activates
-it at 100%, then moves only `stable-v5`. Runtime-root aliases follow release
-CAS instead of mutable compatibility-root objects. `rollback-r2.yml` binds the
-target to its recorded manifest digest and successful protected promotion,
-preflights the current Worker, restores only that pointer, and records a
-promotion-chained immutable rollback receipt.
+verification with bounded parallel streams, transactionally verifies the
+candidate Worker at 0%, activates it at 100%, then moves only `stable-v5`.
+Runtime-root aliases follow release CAS instead of mutable compatibility-root
+objects. `rollback-r2.yml` binds the target to its recorded manifest digest
+and successful protected promotion, preflights the current Worker, restores
+only that pointer, and records a promotion-chained immutable rollback receipt.
 
 ## Required GitHub configuration
 
@@ -412,13 +431,15 @@ enforced by this local change alone:
 `audit-r2.yml` provides the separate read-only full publication audit. It
 authorizes the active release/Worker pair either directly through a successful
 promotion receipt or through a successful rollback receipt whose target digest
-and authorization chain resolve to that valid promotion receipt. CAS
-garbage collection must remain an independently approved mark-and-sweep job and may run only after
-enumerating `stable-v5`, the frozen legacy pointer, retained editor leases, the
-newest three releases, the minimum retention window, and every release still
-pinned by supported Piwork versions. Active promotion intents, their candidate
-and predecessor releases, unexpired staged candidates, and digest-valid
-promotion receipts and valid promotion-chained rollback receipts are additional
-roots. GC must not infer that an intent is
+and authorization chain resolve to that valid promotion receipt. Normal CAS
+garbage collection remains an independently approved mark-and-sweep job and
+may run only after enumerating `stable-v5`, the legacy pointer, retained editor
+leases, the newest three releases, the minimum retention window, and every
+release still pinned by supported Piwork versions. Active promotion intents,
+their candidate and predecessor releases, unexpired staged candidates, and
+digest-valid promotion receipts and valid promotion-chained rollback receipts
+are additional roots. The latest-only workflow is the deliberate exception:
+it removes those historical roots after aligning `stable.json`, and therefore
+disables rollback to older releases. GC must not infer that an intent is
 abandoned merely because its originating workflow stopped; only a matching
 receipt finalizes it, and abandonment is a separate recorded operation.

@@ -50,6 +50,11 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain("['push','workflow_dispatch'].includes(r.event)");
     expect(promotion).toContain("r.head_branch!=='main'");
     expect(promotion).toContain('runtime-asset-version.mjs');
+    expect(promotion).toContain('--no-traverse');
+    expect(promotion).toContain('--transfers 16');
+    expect(promotion).toContain('--checkers 32');
+    expect(promotion).toContain("--exclude 'channels/**'");
+    expect(promotion).toContain('--concurrency 16');
     expect(promotion).not.toMatch(/rclone copy candidate-input\/dist r2:onlyoffice-getpi-work/);
     expect(promotion).not.toContain('wrangler@4.114.0 deploy ');
     expect(promotion).toContain('wrangler@4.114.0 versions upload');
@@ -173,6 +178,7 @@ describe('R2 release train workflows', () => {
     expect(rollback).toContain('retry_rclone()');
     expect(rollback).toContain('--v5-manifest manifest.json');
     expect(rollback).toContain('--remote-verification-mode full');
+    expect(rollback).toContain('--concurrency 16');
     expect(rollback).toContain('--expected-worker-version-id "${CURRENT_WORKER_VERSION_ID}"');
     expect(rollback).toContain('--verify-stable-root');
     expect(rollback).toContain('Restore the original pointer if rollback verification fails');
@@ -197,6 +203,7 @@ describe('R2 release train workflows', () => {
     expect(audit).toContain('schedule:');
     expect(audit).toContain('--v5-manifest manifest-public.json');
     expect(audit).toContain('--remote-verification-mode full');
+    expect(audit).toContain('--concurrency 16');
     expect(audit).toContain('R2_AUDIT_READONLY_ACCESS_KEY_ID');
     expect(audit).toContain('degraded public-only mode');
     expect(audit).toContain('x-onlyoffice-worker-version');

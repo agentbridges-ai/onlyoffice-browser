@@ -79,12 +79,57 @@ jobs:
       - name: Stage immutable CAS and fully verify remote bytes
         run: |
           set -euo pipefail
-          retry_rclone() { local attempt=1; until timeout 180 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
-          retry_rclone copy candidate-input/.onlyoffice-release/blobs r2:onlyoffice-getpi-work/blobs --ignore-existing
-          retry_rclone copy candidate-input/.onlyoffice-release/releases r2:onlyoffice-getpi-work/releases --ignore-existing
-          retry_rclone copy candidate-input/.onlyoffice-release/packages r2:onlyoffice-getpi-work/packages --ignore-existing
-          retry_rclone copy candidate-input/.onlyoffice-release/segments r2:onlyoffice-getpi-work/segments --ignore-existing
-          node scripts/verify-release-publication.mjs --release-root candidate-input/.onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --expected-source-commit "${{ inputs.candidate_commit }}" --fastcdc-evidence-mode automatic --remote r2:onlyoffice-getpi-work --remote-verification-mode full
+          retry_rclone() { local attempt=1; until timeout 300 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
+          retry_inventory() {
+            local output="$1"; shift
+            local temporary="${output}.tmp" attempt=1
+            while true; do
+              rm -f "${temporary}"
+              if timeout 300 rclone "$@" > "${temporary}"; then
+                mv "${temporary}" "${output}"
+                return 0
+              fi
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 3))"
+            done
+          }
+
+          # The release tree is immutable CAS.  Copy it in one traversal and do
+          # not enumerate the (ever-growing) destination bucket: --no-traverse
+          # turns the existence check into bounded HEAD requests for the
+          # candidate's own objects.  Higher checker/transfer parallelism keeps
+          # the large pack and the many small CAS objects flowing together.
+          RCLONE_TUNING=(
+            --no-traverse
+            --transfers 16
+            --checkers 32
+            --buffer-size 16M
+            --s3-chunk-size 64M
+            --s3-upload-concurrency 8
+            --s3-upload-cutoff 64M
+          )
+          # Preserve the full SHA-256 gate for objects introduced by this
+          # release, while reusing the previous inventory for unchanged CAS
+          # objects.  This avoids re-reading the complete historical bucket on
+          # every staging run without weakening size/presence checks.
+          before_inventory="${RUNNER_TEMP}/r2-before.json"
+          retry_inventory "${before_inventory}" lsjson r2:onlyoffice-getpi-work \
+            --recursive --files-only --fast-list --no-modtime --no-mimetype
+
+          retry_rclone copy candidate-input/.onlyoffice-release r2:onlyoffice-getpi-work \
+            --ignore-existing \
+            --exclude 'channels/**' \
+            "${RCLONE_TUNING[@]}"
+
+          node scripts/verify-release-publication.mjs \
+            --release-root candidate-input/.onlyoffice-release \
+            --expected-package-version "$(node -p "require('./package.json').version")" \
+            --expected-source-commit "${{ inputs.candidate_commit }}" \
+            --fastcdc-evidence-mode automatic \
+            --remote r2:onlyoffice-getpi-work \
+            --remote-verification-mode incremental \
+            --remote-inventory "${before_inventory}" \
+            --concurrency 16
       - name: Verify staged release against the current production Worker
         run: |
           set -euo pipefail
