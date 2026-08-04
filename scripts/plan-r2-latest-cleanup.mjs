@@ -91,7 +91,10 @@ function inventoryEntries(inventory) {
     // Some S3-compatible list implementations emit an empty root marker. The
     // marker is not a deletable object; keep dot paths in strict validation so
     // a real `.`/`./` object can never be silently omitted from cleanup.
-    if (rawKey === '') return [];
+    const isEmptyRootMarker = rawKey === '';
+    const isSlashRootMarker =
+      rawKey === '/' && (entry?.IsDir === true || entry?.Size === 0 || entry?.Size === undefined);
+    if (isEmptyRootMarker || isSlashRootMarker) return [];
     const normalizedKey = typeof rawKey === 'string' ? rawKey.replace(/^\.\//, '') : rawKey;
     const key = requireSafeKey(normalizedKey, `inventory entry ${index}.Path`);
     if (seen.has(key)) fail(`R2 inventory contains duplicate key ${key}`);
