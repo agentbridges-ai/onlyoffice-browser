@@ -61,7 +61,15 @@ function expectHeader(response, name, expected, label) {
   }
 }
 
-function workerVersionFetch(fetchImpl, expectedWorkerVersionId, overrideWorkerVersionId) {
+function requestOrigin(input) {
+  try {
+    return new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).origin;
+  } catch {
+    return null;
+  }
+}
+
+function workerVersionFetch(fetchImpl, expectedWorkerVersionId, overrideWorkerVersionId, workerVersionOrigin) {
   if (!expectedWorkerVersionId) return fetchImpl;
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(expectedWorkerVersionId)) {
     fail('expectedWorkerVersionId is invalid');
@@ -75,7 +83,12 @@ function workerVersionFetch(fetchImpl, expectedWorkerVersionId, overrideWorkerVe
       headers.set('Cloudflare-Workers-Version-Overrides', `onlyoffice-browser-runtime="${overrideWorkerVersionId}"`);
     }
     const response = await fetchImpl(input, { ...init, headers });
-    expectHeader(response, 'x-onlyoffice-worker-version', expectedWorkerVersionId, 'Worker version');
+    // The canonical origin is the Worker-version probe surface. Production
+    // editor origins may redirect shared resources to canonical and Cloudflare
+    // does not guarantee that version metadata is echoed on that edge response.
+    if (!workerVersionOrigin || requestOrigin(input) === workerVersionOrigin) {
+      expectHeader(response, 'x-onlyoffice-worker-version', expectedWorkerVersionId, 'Worker version');
+    }
     return response;
   };
 }
@@ -227,10 +240,16 @@ async function verifyStableRoot(publication, origin, fetchImpl, cacheBust) {
 
 export async function verifyReleaseHttp(publication, options = {}) {
   const expectedWorkerVersionId = options.expectedWorkerVersionId || options.workerVersionId;
-  const fetchImpl = workerVersionFetch(options.fetchImpl || fetch, expectedWorkerVersionId, options.workerVersionId);
   const canonicalOrigin = normalizeOrigin(
     options.canonicalOrigin || 'https://onlyoffice.getpi.work',
     'canonicalOrigin',
+  );
+  const workerVersionOrigin = normalizeOrigin(options.workerVersionOrigin || canonicalOrigin, 'workerVersionOrigin');
+  const fetchImpl = workerVersionFetch(
+    options.fetchImpl || fetch,
+    expectedWorkerVersionId,
+    options.workerVersionId,
+    workerVersionOrigin,
   );
   const editorOrigin = normalizeOrigin(
     options.editorOrigin || 'https://office-editor-github-actions-smoke.getpi.work',
@@ -331,6 +350,7 @@ if (isMain) {
     verifyStableRoot: process.argv.includes('--verify-stable-root'),
     workerVersionId: option('--worker-version-id'),
     expectedWorkerVersionId: option('--expected-worker-version-id'),
+    workerVersionOrigin: option('--worker-version-origin'),
   });
   console.log(
     `Verified production Host, Broker CSP, and content-object Range for ${result.releaseId}${
