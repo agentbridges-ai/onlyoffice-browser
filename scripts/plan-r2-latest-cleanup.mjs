@@ -38,7 +38,7 @@ function requireSafeKey(value, label) {
     value.includes('\\') ||
     value.split('/').some((part) => !part || part === '.' || part === '..')
   ) {
-    fail(`${label} is not a safe R2 key`);
+    fail(`${label} is not a safe R2 key: ${JSON.stringify(value)}`);
   }
   return value;
 }
