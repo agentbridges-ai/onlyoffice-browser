@@ -286,6 +286,7 @@ describe('release-specific production HTTP verification', () => {
       'https://capricorn.getpi.work https://aquarius.getpi.work https://pisces.getpi.work',
     ].join('; ');
     const workerVersionId = 'dc8dcd28-271b-4367-9840-6c244f84cb40';
+    let includeRuntimeWorkerVersion = true;
     const respond = (body?: BodyInit | null, init?: ResponseInit, includeWorkerVersion = true) => {
       const response = new Response(body, init);
       if (includeWorkerVersion) response.headers.set('X-OnlyOffice-Worker-Version', workerVersionId);
@@ -312,10 +313,14 @@ describe('release-specific production HTTP verification', () => {
         );
       }
       if (url.pathname.endsWith('/resource-broker.html')) {
-        return respond('<html>broker bootstrap</html>', {
-          status: 200,
-          headers: { 'Content-Security-Policy': csp },
-        });
+        return respond(
+          '<html>broker bootstrap</html>',
+          {
+            status: 200,
+            headers: { 'Content-Security-Policy': csp },
+          },
+          false,
+        );
       }
       if (url.pathname.includes('/objects/')) {
         const range = new Headers(init?.headers).get('range');
@@ -328,60 +333,88 @@ describe('release-specific production HTTP verification', () => {
           'Cross-Origin-Resource-Policy': 'cross-origin',
         };
         if (init?.method === 'HEAD') {
-          return respond(null, {
-            status: 200,
-            headers: { ...shared, 'Content-Length': String(object.bytes) },
-          });
+          return respond(
+            null,
+            {
+              status: 200,
+              headers: { ...shared, 'Content-Length': String(object.bytes) },
+            },
+            false,
+          );
         }
         if (range === `bytes=${object.bytes}-`) {
-          return respond(null, {
-            status: 416,
-            headers: { ...shared, 'Content-Range': `bytes */${object.bytes}` },
-          });
+          return respond(
+            null,
+            {
+              status: 416,
+              headers: { ...shared, 'Content-Range': `bytes */${object.bytes}` },
+            },
+            false,
+          );
         }
-        return respond(objectBytes.subarray(0, 8), {
-          status: 206,
-          headers: {
-            ...shared,
-            'Content-Length': '8',
-            'Content-Range': `bytes 0-7/${object.bytes}`,
+        return respond(
+          objectBytes.subarray(0, 8),
+          {
+            status: 206,
+            headers: {
+              ...shared,
+              'Content-Length': '8',
+              'Content-Range': `bytes 0-7/${object.bytes}`,
+            },
           },
-        });
+          false,
+        );
       }
       if (url.pathname.startsWith('/channels/')) {
         const pointer = url.pathname === '/channels/stable-v5.json' ? publication.stableV5 : publication.stableV4;
-        return respond(JSON.stringify(pointer), {
-          headers: { 'Cache-Control': 'no-store', 'Content-Type': 'application/json' },
-        });
+        return respond(
+          JSON.stringify(pointer),
+          {
+            headers: { 'Cache-Control': 'no-store', 'Content-Type': 'application/json' },
+          },
+          false,
+        );
       }
       if (url.pathname === publication.stableV5.manifestUrl || url.pathname === publication.stableV4.manifestUrl) {
-        return respond(fs.readFileSync(path.join(output, ...url.pathname.slice(1).split('/'))));
+        return respond(fs.readFileSync(path.join(output, ...url.pathname.slice(1).split('/'))), undefined, false);
       }
       if (url.pathname === '/onlyoffice-runtime-assets.json') {
-        return respond(fs.readFileSync(path.join(root, 'onlyoffice-runtime-assets.json')), {
-          headers: {
-            'Cache-Control': 'public, max-age=0, must-revalidate',
-            'X-OnlyOffice-Asset-Version': publication.releaseId,
+        return respond(
+          fs.readFileSync(path.join(root, 'onlyoffice-runtime-assets.json')),
+          {
+            headers: {
+              'Cache-Control': 'public, max-age=0, must-revalidate',
+              'X-OnlyOffice-Asset-Version': publication.releaseId,
+            },
           },
-        });
+          includeRuntimeWorkerVersion,
+        );
       }
       if (url.pathname === '/index.html') {
-        return respond(fs.readFileSync(path.join(root, 'index.html')), {
-          headers: {
-            'Cache-Control': 'public, max-age=0, must-revalidate',
-            'Content-Type': 'text/html; charset=utf-8',
-            'X-OnlyOffice-Asset-Version': publication.releaseId,
+        return respond(
+          fs.readFileSync(path.join(root, 'index.html')),
+          {
+            headers: {
+              'Cache-Control': 'public, max-age=0, must-revalidate',
+              'Content-Type': 'text/html; charset=utf-8',
+              'X-OnlyOffice-Asset-Version': publication.releaseId,
+            },
           },
-        });
+          false,
+        );
       }
       if (url.pathname === '/sw.js') {
-        return respond(fs.readFileSync(path.join(root, 'sw.js')), {
-          headers: {
-            'Cache-Control': 'public, max-age=0, must-revalidate',
-            'Content-Type': 'text/javascript; charset=utf-8',
-            'X-OnlyOffice-Asset-Version': publication.releaseId,
+        return respond(
+          fs.readFileSync(path.join(root, 'sw.js')),
+          {
+            headers: {
+              'Cache-Control': 'public, max-age=0, must-revalidate',
+              'Content-Type': 'text/javascript; charset=utf-8',
+              'X-OnlyOffice-Asset-Version': publication.releaseId,
+            },
           },
-        });
+          false,
+        );
       }
       return respond('not found', { status: 404 });
     });
@@ -402,5 +435,16 @@ describe('release-specific production HTTP verification', () => {
       stableRoot: true,
     });
     expect(fetchImpl).toHaveBeenCalled();
+
+    includeRuntimeWorkerVersion = false;
+    await expect(
+      verifyReleaseHttp(publication, {
+        canonicalOrigin: 'https://onlyoffice.getpi.work',
+        editorOrigin: 'https://office-editor-github-actions-smoke.getpi.work',
+        verifyStableRoot: true,
+        fetchImpl,
+        workerVersionId,
+      }),
+    ).rejects.toThrow('Worker version x-onlyoffice-worker-version mismatch: missing');
   });
 });

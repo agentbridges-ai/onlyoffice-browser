@@ -98,9 +98,10 @@ jobs:
           if (
             sha256(manifestBytes) !== pointer.manifestSha256 ||
             !hasDirective(manifestResponse.headers.get('cache-control'), 'immutable') ||
-            manifestResponse.headers.get('x-onlyoffice-worker-version') !== workerVersionId
+            (manifestResponse.headers.get('x-onlyoffice-worker-version') &&
+              manifestResponse.headers.get('x-onlyoffice-worker-version') !== workerVersionId)
           ) {
-            throw new Error('public immutable manifest identity or cache policy is invalid');
+            throw new Error('public immutable manifest identity, cache policy, or Worker diagnostic is invalid');
           }
           const manifest = JSON.parse(manifestBytes.toString('utf8'));
           if (manifest.version !== 5 || manifest.releaseId !== pointer.releaseId || !Array.isArray(manifest.assets)) {
@@ -141,12 +142,13 @@ jobs:
             object.headers.get('content-length') !== String(asset.bytes) ||
             object.headers.get('x-content-sha256') !== asset.sha256 ||
             object.headers.get('x-onlyoffice-asset-version') !== pointer.releaseId ||
-            object.headers.get('x-onlyoffice-worker-version') !== workerVersionId ||
+            (object.headers.get('x-onlyoffice-worker-version') &&
+              object.headers.get('x-onlyoffice-worker-version') !== workerVersionId) ||
             !hasDirective(object.headers.get('cache-control'), 'immutable') ||
             object.headers.get('access-control-allow-origin') !== '*' ||
             object.headers.get('cross-origin-resource-policy') !== 'cross-origin'
           ) {
-            throw new Error('public release-bound object bytes, identity or headers are invalid');
+            throw new Error('public release-bound object bytes, identity, cache policy or Worker diagnostic is invalid');
           }
 
           const runtimeAsset = manifest.assets.find(
