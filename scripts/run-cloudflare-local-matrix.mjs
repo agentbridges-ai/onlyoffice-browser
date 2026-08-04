@@ -18,6 +18,7 @@ const reusedPersistDirectory = process.env.ONLYOFFICE_CF_MATRIX_REUSE_STATE
 const persistDirectory =
   reusedPersistDirectory || fs.mkdtempSync(path.join(os.tmpdir(), 'onlyoffice-cloudflare-matrix-'));
 const refreshReusedState = reusedPersistDirectory && process.env.ONLYOFFICE_CF_MATRIX_REFRESH_STATE === '1';
+const useCurrentBuild = process.env.ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD === '1';
 const token = crypto.randomBytes(24).toString('hex');
 const children = new Set();
 const servers = new Set();
@@ -567,18 +568,55 @@ async function main() {
     ({ files, releasePointer, releaseManifest, packageManifest, nextReleaseId } = prepareBrokerOnlyRelease());
     process.stdout.write(`Using minimal broker release ${releasePointer.releaseId} (${files.length} R2 objects)\n`);
   } else {
-    if (!reusedPersistDirectory || refreshReusedState) {
-      await run('pnpm', ['build']);
+    if (process.env.ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD && !useCurrentBuild) {
+      throw new Error('ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD must be exactly 1 when set');
+    }
+    // A release candidate has already built, hydrated, and materialized its
+    // release root.  This mode deliberately refuses to invoke those commands:
+    // the local matrix seeds from that exact candidate rather than silently
+    // producing a second runtime.
+    if (useCurrentBuild) {
+      for (const required of [
+        path.join(root, 'dist/onlyoffice-runtime-assets.json'),
+        path.join(root, 'dist/onlyoffice-browser-font-assets.json'),
+        path.join(root, '.onlyoffice-release/channels/stable-v5.json'),
+      ]) {
+        if (!fs.existsSync(required)) throw new Error(`Current-build matrix input is missing: ${required}`);
+      }
+    } else if (!reusedPersistDirectory || refreshReusedState) {
+      await run('pnpm', ['build'], { env: { ONLYOFFICE_SKIP_RELEASE_BUILD: '1' } });
       await run('node', ['scripts/hydrate-cloudflare-matrix-fonts.mjs']);
       await run('pnpm', ['release:build']);
     } else if (!fs.existsSync(reusedPersistDirectory)) {
       throw new Error(`Requested Cloudflare matrix state does not exist: ${reusedPersistDirectory}`);
     }
     releasePointer = JSON.parse(fs.readFileSync(path.join(root, '.onlyoffice-release/channels/stable-v5.json')));
-    releaseManifest = JSON.parse(
-      fs.readFileSync(path.join(root, `.onlyoffice-release/releases/${releasePointer.releaseId}/manifest.json`)),
+    const releaseManifestBytes = fs.readFileSync(
+      path.join(root, `.onlyoffice-release/releases/${releasePointer.releaseId}/manifest.json`),
     );
+    releaseManifest = JSON.parse(releaseManifestBytes);
+    if (
+      releaseManifest.version !== 5 ||
+      releaseManifest.releaseId !== releasePointer.releaseId ||
+      releasePointer.manifestUrl !== `/releases/${releasePointer.releaseId}/manifest.json` ||
+      !/^[a-f0-9]{64}$/.test(releasePointer.manifestSha256 || '') ||
+      crypto.createHash('sha256').update(releaseManifestBytes).digest('hex') !== releasePointer.manifestSha256 ||
+      !/^[a-f0-9]{64}$/.test(releaseManifest.runtimeManifestSha256 || '')
+    ) {
+      throw new Error('Current-build matrix input is not a complete v5 release');
+    }
+    const runtimeManifest = fs.readFileSync(path.join(root, 'dist/onlyoffice-runtime-assets.json'));
+    if (crypto.createHash('sha256').update(runtimeManifest).digest('hex') !== releaseManifest.runtimeManifestSha256) {
+      throw new Error('Current-build runtime manifest does not match its v5 release manifest');
+    }
+    const fontManifest = fs.readFileSync(path.join(root, 'dist/onlyoffice-browser-font-assets.json'));
+    if (crypto.createHash('sha256').update(fontManifest).digest('hex') !== releaseManifest.fontManifestSha256) {
+      throw new Error('Current-build font manifest does not match its v5 release manifest');
+    }
     packageManifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json')));
+    if (packageManifest.version !== releaseManifest.packageVersion) {
+      throw new Error('Current-build package version does not match its v5 release manifest');
+    }
     const variants =
       reusedPersistDirectory && !refreshReusedState
         ? (() => {

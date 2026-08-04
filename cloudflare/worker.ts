@@ -20,6 +20,8 @@ const RELEASE_PATH_PATTERN = /^\/r\/([^/]{1,384})\/(.+)$/;
 const RELEASE_PACKAGE_PATH_PATTERN = /^\/p\/([^/]{1,384})\/office-resources\.oobpack$/;
 const RELEASE_SEGMENT_PATH_PATTERN = /^\/segments\/sha256\/([a-f0-9]{64})$/;
 const RELEASE_CONTENT_OBJECT_PATH_PATTERN = /^\/objects\/([^/]{1,384})\/sha256\/([a-f0-9]{64})$/;
+const RELEASE_RECEIPT_KEY_PATTERN =
+  /^(?:promotions|rollbacks)\/[a-zA-Z0-9._+-]{1,128}\/[a-f0-9]{40}-[a-f0-9]{64}\.json$/;
 const EDITOR_SHELL_ASSET_PATH_PATTERN = /^\/assets\/[a-zA-Z0-9._+-]+\.(?:css|js)$/;
 const RELEASE_ID_PATTERN = /^[a-zA-Z0-9._+-]{1,128}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -128,6 +130,11 @@ type RuntimeBucket = {
 export type WorkerEnv = {
   ASSETS: RuntimeBucket;
   ASSET_VERSION: string;
+  CF_VERSION_METADATA?: {
+    id: string;
+    tag: string;
+    timestamp: string;
+  };
   LOCAL_MATRIX_MODE?: string;
   LOCAL_MATRIX_PORT?: string;
   LOCAL_MATRIX_CONTROL_TOKEN?: string;
@@ -290,6 +297,10 @@ export function resolveObjectKey(pathname: string): string | null {
     return null;
   }
   return key;
+}
+
+export function isImmutableReleaseReceiptKey(key: string): boolean {
+  return RELEASE_RECEIPT_KEY_PATTERN.test(key);
 }
 
 function canonicalAssetUrl(url: URL, version: string, canonicalHostname = CANONICAL_HOST): string {
@@ -668,6 +679,23 @@ async function stableReleaseId(env: WorkerEnv): Promise<string | null> {
     : null;
 }
 
+async function stableV5ReleaseId(env: WorkerEnv): Promise<string | null> {
+  const channel = await readJsonObject<{
+    version?: number;
+    releaseId?: string;
+    manifestUrl?: string;
+    manifestSha256?: string;
+  }>(env, 'channels/stable-v5.json');
+  return channel?.version === 1 &&
+    typeof channel.releaseId === 'string' &&
+    RELEASE_ID_PATTERN.test(channel.releaseId) &&
+    channel.manifestUrl === `/releases/${channel.releaseId}/manifest.json` &&
+    typeof channel.manifestSha256 === 'string' &&
+    SHA256_PATTERN.test(channel.manifestSha256)
+    ? channel.releaseId
+    : null;
+}
+
 export function releaseIdFromReferrer(value: string | null): string | null {
   if (!value) return null;
   try {
@@ -904,6 +932,19 @@ async function serveAsset(
   const packageRequest = resolveReleasePackageRequest(url.pathname);
   const contentSegmentRequest = resolveContentSegmentRequest(url.pathname);
   const contentObjectRequest = resolveReleaseContentObjectRequest(url.pathname);
+  const rootAssetPath = resolveObjectKey(url.pathname);
+  const stableRootEligible =
+    env.LOCAL_MATRIX_MODE !== '1' &&
+    !releaseRequest &&
+    !packageRequest &&
+    !contentSegmentRequest &&
+    !contentObjectRequest &&
+    Boolean(rootAssetPath) &&
+    !isCanonicalReleaseMetadataPath(url.pathname) &&
+    !isImmutableReleaseReceiptKey(rootAssetPath || '') &&
+    !url.pathname.startsWith(PRINT_ROUTE_PREFIX) &&
+    !url.pathname.startsWith('/onlyoffice-plugin/');
+  const stableRootReleaseId = stableRootEligible ? await stableV5ReleaseId(env) : null;
   const routeCounter =
     env.LOCAL_MATRIX_MODE === '1' && (releaseRequest || packageRequest || contentSegmentRequest || contentObjectRequest)
       ? localMatrixCounter(localMatrixRouteCounters, `${request.method} ${url.pathname}${url.search}`)
@@ -935,15 +976,22 @@ async function serveAsset(
           }
         : contentObjectRequest
           ? await resolveImmutableContentObject(env, ctx, contentObjectRequest)
-          : null;
-  if ((releaseRequest || packageRequest || contentSegmentRequest || contentObjectRequest) && !immutableAsset) {
+          : stableRootReleaseId && rootAssetPath
+            ? await resolveImmutableAsset(env, ctx, { releaseId: stableRootReleaseId, path: rootAssetPath })
+            : null;
+  if (
+    (releaseRequest || packageRequest || contentSegmentRequest || contentObjectRequest || stableRootEligible) &&
+    !immutableAsset
+  ) {
     const body = releaseRequest
       ? 'Release asset not found'
       : packageRequest
         ? 'Release package not found'
         : contentObjectRequest
           ? 'Release content object not found'
-          : 'Release segment not found';
+          : stableRootEligible
+            ? 'Stable release asset not found'
+            : 'Release segment not found';
     completeMatrixRequest(matrixCounters, 404);
     return assetError(body, 404);
   }
@@ -955,7 +1003,10 @@ async function serveAsset(
   }
 
   const versioned = isAssetRevision(url.searchParams.get(VERSION_QUERY));
-  const immutable = Boolean(immutableAsset) || (!isolated && (versioned || key.startsWith('releases/')));
+  const stableRootAlias = stableRootEligible && Boolean(immutableAsset);
+  const immutable =
+    (Boolean(immutableAsset) && !stableRootAlias) ||
+    (!isolated && (versioned || key.startsWith('releases/') || isImmutableReleaseReceiptKey(key)));
   const assetVersion = immutableAsset?.version || env.ASSET_VERSION;
   const cache = (caches as CacheStorage & { default: Cache }).default;
   const cacheKeyUrl = new URL(url);
@@ -1288,120 +1339,137 @@ export function applyReleaseMime(headers: Headers, releaseMime?: string): void {
   if (releaseMime) headers.set('Content-Type', releaseMime);
 }
 
+async function handleRequest(request: Request, env: WorkerEnv, ctx: WorkerExecutionContext): Promise<Response> {
+  const url = new URL(request.url);
+  const requestHostname = resolveRequestHostname(request, env.LOCAL_MATRIX_MODE === '1');
+  if (!requestHostname) return new Response('Missing local matrix host', { status: 421 });
+  if (env.LOCAL_MATRIX_MODE === '1' && request.headers.has(LOCAL_MATRIX_HOST_HEADER)) {
+    url.hostname = requestHostname;
+    if (env.LOCAL_MATRIX_PORT) url.port = env.LOCAL_MATRIX_PORT;
+  }
+  const { logicalHostname: hostname, canonicalHostname } = resolveRuntimeHost(
+    requestHostname,
+    env.LOCAL_MATRIX_MODE === '1',
+  );
+  if (!isOnlyOfficeHost(hostname)) return new Response('Unknown host', { status: 404 });
+
+  if (
+    env.LOCAL_MATRIX_MODE === '1' &&
+    hostname === CANONICAL_HOST &&
+    request.method === 'POST' &&
+    url.pathname === '/__matrix__/stable-v5'
+  ) {
+    return updateLocalMatrixStablePointer(request, env);
+  }
+
+  if (
+    env.LOCAL_MATRIX_MODE === '1' &&
+    hostname === CANONICAL_HOST &&
+    request.method === 'GET' &&
+    (url.pathname === '/__matrix__/segment-counters' ||
+      url.pathname === '/__matrix__/object-counters' ||
+      url.pathname === '/__matrix__/route-counters' ||
+      url.pathname === '/__matrix__/content-counters')
+  ) {
+    const body =
+      url.pathname === '/__matrix__/segment-counters'
+        ? Object.fromEntries(localMatrixSegmentCounters)
+        : url.pathname === '/__matrix__/object-counters'
+          ? Object.fromEntries(localMatrixObjectCounters)
+          : url.pathname === '/__matrix__/route-counters'
+            ? Object.fromEntries(localMatrixRouteCounters)
+            : {
+                segments: Object.fromEntries(localMatrixSegmentCounters),
+                objects: Object.fromEntries(localMatrixObjectCounters),
+                routes: Object.fromEntries(localMatrixRouteCounters),
+              };
+    const response = Response.json(body);
+    applySharedHeaders(response.headers);
+    return response;
+  }
+
+  if (request.method === 'OPTIONS') {
+    const headers = new Headers({
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': request.headers.get('access-control-request-headers') || '*',
+      'Access-Control-Max-Age': '86400',
+    });
+    applySharedHeaders(headers);
+    return new Response(null, { status: 204, headers });
+  }
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD, OPTIONS' } });
+  }
+
+  const isolated = isIsolatedEditorHost(hostname);
+  if (isolated && isCanonicalReleaseMetadataPath(url.pathname)) {
+    const canonical = new URL(url);
+    canonical.hostname = canonicalHostname;
+    return sharedRedirect(canonical.href);
+  }
+  if (isolated && resolveReleaseContentObjectRequest(url.pathname)) {
+    const canonical = new URL(url);
+    canonical.hostname = canonicalHostname;
+    return sharedRedirect(canonical.href);
+  }
+  const pinnedReleaseId = releaseIdFromReferrer(request.headers.get('referer'));
+  const editorAssetRoute = resolveEditorAssetRoute(url.pathname);
+  const localMatrixFixture = env.LOCAL_MATRIX_MODE === '1' && editorAssetRoute.pathname.startsWith('/__matrix__/');
+  if (
+    isolated &&
+    !localMatrixFixture &&
+    shouldShareAsset(editorAssetRoute.pathname, request.headers.get('sec-fetch-dest'))
+  ) {
+    const releaseId = editorAssetRoute.releaseId || pinnedReleaseId || (await stableReleaseId(env));
+    if (releaseId) {
+      const canonical = new URL(url);
+      canonical.hostname = canonicalHostname;
+      const releasePathname = canonicalReleasePathname(url.pathname, releaseId);
+      if (!releasePathname) return new Response('Invalid asset path', { status: 400 });
+      canonical.pathname = releasePathname;
+      canonical.searchParams.delete(VERSION_QUERY);
+      return sharedRedirect(canonical.href);
+    }
+    return sharedRedirect(canonicalAssetUrl(url, env.ASSET_VERSION, canonicalHostname));
+  }
+  if (isolated && pinnedReleaseId && !resolveReleaseRequest(url.pathname)) {
+    url.pathname = `/r/${pinnedReleaseId}/${url.pathname.replace(/^\/+/, '')}`;
+  }
+  let response = await serveAsset(request, env, ctx, url, isolated);
+  if (env.LOCAL_MATRIX_MODE === '1') {
+    response = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    response.headers.set('X-OnlyOffice-Matrix-Host', requestHostname);
+    response.headers.set('X-OnlyOffice-Matrix-Isolated', isolated ? '1' : '0');
+    response.headers.set(
+      'Access-Control-Expose-Headers',
+      `${response.headers.get('Access-Control-Expose-Headers') || ''}, Content-Security-Policy, X-OnlyOffice-Matrix-Host, X-OnlyOffice-Matrix-Isolated`.replace(
+        /^,\s*/,
+        '',
+      ),
+    );
+  }
+  return response;
+}
+
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: WorkerExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    const requestHostname = resolveRequestHostname(request, env.LOCAL_MATRIX_MODE === '1');
-    if (!requestHostname) return new Response('Missing local matrix host', { status: 421 });
-    if (env.LOCAL_MATRIX_MODE === '1' && request.headers.has(LOCAL_MATRIX_HOST_HEADER)) {
-      url.hostname = requestHostname;
-      if (env.LOCAL_MATRIX_PORT) url.port = env.LOCAL_MATRIX_PORT;
-    }
-    const { logicalHostname: hostname, canonicalHostname } = resolveRuntimeHost(
-      requestHostname,
-      env.LOCAL_MATRIX_MODE === '1',
+    const response = await handleRequest(request, env, ctx);
+    const versionId = env.CF_VERSION_METADATA?.id;
+    if (!versionId) return response;
+    const headers = new Headers(response.headers);
+    headers.set('X-OnlyOffice-Worker-Version', versionId);
+    headers.set(
+      'Access-Control-Expose-Headers',
+      `${headers.get('Access-Control-Expose-Headers') || ''}, X-OnlyOffice-Worker-Version`.replace(/^,\s*/, ''),
     );
-    if (!isOnlyOfficeHost(hostname)) return new Response('Unknown host', { status: 404 });
-
-    if (
-      env.LOCAL_MATRIX_MODE === '1' &&
-      hostname === CANONICAL_HOST &&
-      request.method === 'POST' &&
-      url.pathname === '/__matrix__/stable-v5'
-    ) {
-      return updateLocalMatrixStablePointer(request, env);
-    }
-
-    if (
-      env.LOCAL_MATRIX_MODE === '1' &&
-      hostname === CANONICAL_HOST &&
-      request.method === 'GET' &&
-      (url.pathname === '/__matrix__/segment-counters' ||
-        url.pathname === '/__matrix__/object-counters' ||
-        url.pathname === '/__matrix__/route-counters' ||
-        url.pathname === '/__matrix__/content-counters')
-    ) {
-      const body =
-        url.pathname === '/__matrix__/segment-counters'
-          ? Object.fromEntries(localMatrixSegmentCounters)
-          : url.pathname === '/__matrix__/object-counters'
-            ? Object.fromEntries(localMatrixObjectCounters)
-            : url.pathname === '/__matrix__/route-counters'
-              ? Object.fromEntries(localMatrixRouteCounters)
-              : {
-                  segments: Object.fromEntries(localMatrixSegmentCounters),
-                  objects: Object.fromEntries(localMatrixObjectCounters),
-                  routes: Object.fromEntries(localMatrixRouteCounters),
-                };
-      const response = Response.json(body);
-      applySharedHeaders(response.headers);
-      return response;
-    }
-
-    if (request.method === 'OPTIONS') {
-      const headers = new Headers({
-        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': request.headers.get('access-control-request-headers') || '*',
-        'Access-Control-Max-Age': '86400',
-      });
-      applySharedHeaders(headers);
-      return new Response(null, { status: 204, headers });
-    }
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD, OPTIONS' } });
-    }
-
-    const isolated = isIsolatedEditorHost(hostname);
-    if (isolated && isCanonicalReleaseMetadataPath(url.pathname)) {
-      const canonical = new URL(url);
-      canonical.hostname = canonicalHostname;
-      return sharedRedirect(canonical.href);
-    }
-    if (isolated && resolveReleaseContentObjectRequest(url.pathname)) {
-      const canonical = new URL(url);
-      canonical.hostname = canonicalHostname;
-      return sharedRedirect(canonical.href);
-    }
-    const pinnedReleaseId = releaseIdFromReferrer(request.headers.get('referer'));
-    const editorAssetRoute = resolveEditorAssetRoute(url.pathname);
-    const localMatrixFixture = env.LOCAL_MATRIX_MODE === '1' && editorAssetRoute.pathname.startsWith('/__matrix__/');
-    if (
-      isolated &&
-      !localMatrixFixture &&
-      shouldShareAsset(editorAssetRoute.pathname, request.headers.get('sec-fetch-dest'))
-    ) {
-      const releaseId = editorAssetRoute.releaseId || pinnedReleaseId || (await stableReleaseId(env));
-      if (releaseId) {
-        const canonical = new URL(url);
-        canonical.hostname = canonicalHostname;
-        const releasePathname = canonicalReleasePathname(url.pathname, releaseId);
-        if (!releasePathname) return new Response('Invalid asset path', { status: 400 });
-        canonical.pathname = releasePathname;
-        canonical.searchParams.delete(VERSION_QUERY);
-        return sharedRedirect(canonical.href);
-      }
-      return sharedRedirect(canonicalAssetUrl(url, env.ASSET_VERSION, canonicalHostname));
-    }
-    if (isolated && pinnedReleaseId && !resolveReleaseRequest(url.pathname)) {
-      url.pathname = `/r/${pinnedReleaseId}/${url.pathname.replace(/^\/+/, '')}`;
-    }
-    let response = await serveAsset(request, env, ctx, url, isolated);
-    if (env.LOCAL_MATRIX_MODE === '1') {
-      response = new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      });
-      response.headers.set('X-OnlyOffice-Matrix-Host', requestHostname);
-      response.headers.set('X-OnlyOffice-Matrix-Isolated', isolated ? '1' : '0');
-      response.headers.set(
-        'Access-Control-Expose-Headers',
-        `${response.headers.get('Access-Control-Expose-Headers') || ''}, Content-Security-Policy, X-OnlyOffice-Matrix-Host, X-OnlyOffice-Matrix-Isolated`.replace(
-          /^,\s*/,
-          '',
-        ),
-      );
-    }
-    return response;
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   },
 };

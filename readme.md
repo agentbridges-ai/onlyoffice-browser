@@ -113,20 +113,43 @@ npm run assets:build
 
 The generated `.onlyoffice-runtime-assets` directory is directly deployable. The `.onlyoffice-runtime-asset-packs` directory contains split `core`, `word`, `cell`, and `slide` packs for CDN or release-artifact workflows. Pass `--types word,slide` or `--dictionaries en_US,en_GB` to `scripts/build-onlyoffice-runtime-assets.mjs` when you need a narrower or broader deployment profile. Preview/edit mode assets are intentionally not split yet; both `embed` and `main` shells stay inside each document-type pack.
 
+## Release model
+
+The Host runtime (`releaseId`) and public npm package version are independent. A candidate artifact is staged as immutable R2 CAS before Piwork online verification; staging checks it through the current production Worker without changing a channel or deploying a Worker. Promotion re-verifies the CAS, tests the candidate Worker at 0% against both new and predecessor releases, moves it to 100%, and then advances `stable-v5`. Unversioned runtime assets resolve through that pointer to immutable CAS. Rollback requires the target's digest-bound promotion authorization, preflights the current Worker, changes only the pointer, and records an immutable rollback receipt chained to that promotion. Stable npm releases publish exact tgz files to `latest`; prereleases use `next`. Existing npm versions are verification-only and must match registry integrity, git source, and provenance metadata.
+
+Every newly generated v5 manifest includes the exact 40-character candidate
+`sourceCommit`, and that field participates in `releaseId`. The release envelope
+also keeps the release-file aggregate `hostBuildId` separate from the Host
+protocol `protocolHostBuildId`; Piwork consumes those as
+`releaseManifest.hostBuildId` and `runtimeIdentity.hostBuildId`, respectively.
+
 ## GitHub Actions
 
-- `CI`: lint, TypeScript, unit tests, npm package build/dry-pack, demo production build, and Playwright E2E.
-- `Deploy demo`: manual GitHub Pages deployment for the demo. It is manual because the OnlyOffice runtime assets are large.
-- `Publish npm`: tag or manual npm release workflow prepared for npm Trusted Publishing.
+- `Pull request checks` (`ci.yml`): formatting, lint, TypeScript, unit tests, package dry-pack, public API build, demo production build, and local release-manifest verification.
+- `Build immutable runtime candidate` (`candidate-r2.yml`): verifies the signed/immutable/attested x2t input, builds the runtime once, records source and matrix evidence, and retains the exact immutable GitHub promotion artifact. It has no production credentials or write path; a font-cache miss reads only the fixed digest-pinned public release.
+- `Stage immutable runtime candidate` (`stage-r2.yml`): manually stages only a fully verified candidate CAS and checks it through the current production Worker for Piwork online verification. It never writes a channel, compatibility-root file, or Worker deployment.
+- `Promote verified runtime candidate` (`deploy-r2.yml`): requires the successful stage run and exact explicitly dispatched Piwork candidate-integration run attempt, then repeats full remote verification and runs a recoverable 0%→100% Worker/pointer transaction before advancing only `stable-v5`.
+- `Roll back stable runtime pointer` (`rollback-r2.yml`): binds the target release to its original manifest SHA-256 and successful protected promotion, preflights the exact current Worker, then changes only `stable-v5` with compare-before-write, compensation, and an immutable rollback receipt.
+- `Audit published runtime` (`audit-r2.yml`): weekly or manual read-only re-hash of every object declared by the active v5 manifest, followed by public pointer, Worker version, Host, object-route, stable-root CAS, and exact protected promotion-or-chained-rollback authorization checks.
+- `Publish npm package` (`release-npm.yml`): signed `v<package-version>` tag or transient retry from that same tag ref. It packages one exact `.tgz`, uses `latest` for stable releases and `next` for prereleases, and verifies registry identity plus npm's SLSA DSSE provenance record.
 
-To enable `Publish npm`, configure npm Trusted Publishing for:
+Cross-repository Piwork verification can optionally use a short-lived GitHub App
+installation token scoped only to `agentbridges-ai/pi-work`, minted from the
+production environment's `ONLYOFFICE_RELEASE_READ_APP_ID` and
+`ONLYOFFICE_RELEASE_READ_APP_PRIVATE_KEY` secrets. Configure both or neither.
+Without them, the three public REST checks use anonymous GitHub API quota and
+report its rate-limit headers on failure. The App is recommended and needs only
+Actions, Contents, and Pull requests read access. Promotion records the exact
+deep-verify run ID and run attempt in both its immutable intent and receipt.
+
+To enable npm Trusted Publishing, configure npm for:
 
 - Package: `@agentbridges-ai/onlyoffice-browser`
 - Repository: `agentbridges-ai/onlyoffice-browser`
-- Workflow: `publish.yml`
-- Environment: leave blank unless the workflow is later changed to use one
+- Workflow: `.github/workflows/release-npm.yml`
+- Environment: `production`
 
-The workflow uses GitHub OIDC through `id-token: write`, so it does not need a long-lived npm token once the trusted publisher is configured.
+The workflow uses GitHub OIDC through `id-token: write`, so it does not need a long-lived npm token once the trusted publisher is configured. The provenance check decodes the npm-hosted DSSE payload and checks its package URL, SHA-512 subject, source commit, tag, and workflow binding; it does not claim to independently verify Sigstore signatures.
 
 ## Browser-Only Boundary
 

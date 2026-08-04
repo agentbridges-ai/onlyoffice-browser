@@ -13,6 +13,7 @@ import {
 } from './fastcdc-release-policy.mjs';
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const GIT_COMMIT_PATTERN = /^[a-f0-9]{40}$/;
 const RELEASE_ID_PATTERN = /^[a-zA-Z0-9._+-]{1,128}$/;
 const FASTCDC_POLICY_ID = 'fastcdc-v2020-min64k-avg256k-max1m-norm1-seed0';
 const FASTCDC_CONFIGURATION = Object.freeze({
@@ -263,6 +264,70 @@ function validateFastCdcEvidence(manifest, fastCdcAssets, options) {
   return evidence;
 }
 
+function collectV5Objects(manifest, releaseId, options = {}) {
+  if (manifest?.version !== 5 || manifest.releaseId !== releaseId) {
+    fail('manifest.json must be Release Manifest v5 for the requested release');
+  }
+  if (typeof manifest.packageVersion !== 'string' || manifest.packageVersion.length === 0) {
+    fail('v5 packageVersion identity is invalid');
+  }
+  if (options.expectedPackageVersion && manifest.packageVersion !== options.expectedPackageVersion) {
+    fail(`Expected package version ${options.expectedPackageVersion}, received ${manifest.packageVersion}`);
+  }
+  if (options.expectedSourceCommit) {
+    if (!GIT_COMMIT_PATTERN.test(options.expectedSourceCommit)) fail('expected source commit is invalid');
+    if (manifest.sourceCommit !== options.expectedSourceCommit) {
+      fail('v5 sourceCommit does not match the expected candidate commit');
+    }
+    const escapedPackageVersion = manifest.packageVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!new RegExp(`^office-host-${escapedPackageVersion}-r[1-9][0-9]*$`).test(manifest.protocolHostBuildId || '')) {
+      fail('v5 protocolHostBuildId identity is invalid');
+    }
+  } else if (manifest.sourceCommit !== undefined && !GIT_COMMIT_PATTERN.test(manifest.sourceCommit)) {
+    fail('v5 sourceCommit identity is invalid');
+  }
+  if (
+    manifest.contentProtocol?.version !== 1 ||
+    manifest.contentProtocol.digest !== 'sha256' ||
+    manifest.contentProtocol.cacheKeyFormat !== 'canonical-sha256-v1' ||
+    assertSha256(manifest.contentProtocol.storageSetSha256, 'contentProtocol.storageSetSha256') !==
+      computeStorageSetSha256(manifest.package, manifest.assets) ||
+    manifest.contentProtocol.fastcdcPolicyId !== FASTCDC_POLICY_ID
+  ) {
+    fail('v5 content protocol identity is invalid');
+  }
+  const objects = new Map();
+  validatePackage(manifest, objects);
+  const fastCdcAssets = validateAssets(manifest, objects);
+  validateFastCdcEvidence(manifest, fastCdcAssets, options);
+  return { objects, fastCdcAssets };
+}
+
+export function loadV5ManifestPublication(manifestFile, options = {}) {
+  const file = path.resolve(manifestFile);
+  const manifestV5 = readJsonWithBytes(file, 'v5 manifest');
+  const releaseId = assertReleaseId(options.releaseId || manifestV5.value?.releaseId, 'releaseId');
+  const { objects, fastCdcAssets } = collectV5Objects(manifestV5.value, releaseId, options);
+  const manifestSha256 = sha256(manifestV5.bytes);
+  if (options.expectedManifestSha256) {
+    const expected = assertSha256(options.expectedManifestSha256, 'expected manifest digest');
+    if (manifestSha256 !== expected) fail('v5 manifest digest does not match the expected pointer digest');
+  }
+  addObject(objects, {
+    kind: 'manifest-v5',
+    key: `releases/${releaseId}/manifest.json`,
+    bytes: manifestV5.bytes.byteLength,
+    sha256: manifestSha256,
+  });
+  return {
+    root: path.dirname(file),
+    releaseId,
+    manifest: manifestV5.value,
+    objects: [...objects.values()].sort((left, right) => left.key.localeCompare(right.key)),
+    fastCdcAssets: fastCdcAssets.map((asset) => asset.path),
+  };
+}
+
 export function loadReleasePublication(releaseRoot, options = {}) {
   const root = path.resolve(releaseRoot);
   const stableV5 = readJsonWithBytes(path.join(root, 'channels/stable-v5.json'), 'stable-v5.json');
@@ -288,37 +353,13 @@ export function loadReleasePublication(releaseRoot, options = {}) {
 
   const manifest = manifestV5.value;
   const compatibilityManifest = manifestV4.value;
-  if (manifest?.version !== 5 || manifest.releaseId !== releaseId) {
-    fail('manifest.json must be Release Manifest v5 for the stable-v5 release');
-  }
   if (compatibilityManifest?.version !== 4 || compatibilityManifest.releaseId !== releaseId) {
     fail('manifest-v4.json must retain Release Manifest v4 compatibility');
   }
-  if (
-    typeof manifest.packageVersion !== 'string' ||
-    manifest.packageVersion.length === 0 ||
-    compatibilityManifest.packageVersion !== manifest.packageVersion
-  ) {
+  if (compatibilityManifest.packageVersion !== manifest.packageVersion) {
     fail('v5/v4 packageVersion identity is invalid');
   }
-  if (options.expectedPackageVersion && manifest.packageVersion !== options.expectedPackageVersion) {
-    fail(`Expected package version ${options.expectedPackageVersion}, received ${manifest.packageVersion}`);
-  }
-  if (
-    manifest.contentProtocol?.version !== 1 ||
-    manifest.contentProtocol.digest !== 'sha256' ||
-    manifest.contentProtocol.cacheKeyFormat !== 'canonical-sha256-v1' ||
-    assertSha256(manifest.contentProtocol.storageSetSha256, 'contentProtocol.storageSetSha256') !==
-      computeStorageSetSha256(manifest.package, manifest.assets) ||
-    manifest.contentProtocol.fastcdcPolicyId !== FASTCDC_POLICY_ID
-  ) {
-    fail('v5 content protocol identity is invalid');
-  }
-
-  const objects = new Map();
-  validatePackage(manifest, objects);
-  const fastCdcAssets = validateAssets(manifest, objects);
-  validateFastCdcEvidence(manifest, fastCdcAssets, options);
+  const { objects, fastCdcAssets } = collectV5Objects(manifest, releaseId, options);
 
   for (const field of [
     'hostBuildId',
@@ -598,16 +639,30 @@ function option(name, fallback) {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (isMain) {
-  const releaseRoot = option('--release-root', '.onlyoffice-release');
   const remote = option('--remote');
-  const publication = loadReleasePublication(releaseRoot, {
+  const concurrency = Number(option('--concurrency', '4'));
+  const v5Manifest = option('--v5-manifest');
+  const commonOptions = {
     expectedPackageVersion: option('--expected-package-version'),
+    expectedSourceCommit: option('--expected-source-commit'),
     fastCdcEvidenceMode: option('--fastcdc-evidence-mode', 'automatic'),
     fastCdcEvidencePath: option('--fastcdc-evidence'),
-  });
-  const concurrency = Number(option('--concurrency', '4'));
-  const local = await verifyLocalRelease(publication, { concurrency });
-  console.log(`Verified ${local.objects} local immutable objects (${local.bytes} bytes) for ${publication.releaseId}`);
+  };
+  const publication = v5Manifest
+    ? loadV5ManifestPublication(v5Manifest, {
+        ...commonOptions,
+        releaseId: option('--release-id'),
+        expectedManifestSha256: option('--expected-manifest-sha256'),
+      })
+    : loadReleasePublication(option('--release-root', '.onlyoffice-release'), commonOptions);
+  if (!v5Manifest) {
+    const local = await verifyLocalRelease(publication, { concurrency });
+    console.log(
+      `Verified ${local.objects} local immutable objects (${local.bytes} bytes) for ${publication.releaseId}`,
+    );
+  } else if (!remote) {
+    fail('--v5-manifest requires --remote because its object bodies are not local');
+  }
   if (remote) {
     const remoteResult = await verifyRemoteRelease(publication, remote, {
       concurrency,

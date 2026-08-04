@@ -9,14 +9,8 @@ if (!hostBundleName) throw new Error('Built Office Host bundle is missing');
 const hostBundle = await readFile(resolve(assetsRoot, hostBundleName), 'utf8');
 const expectedBuildId = `office-host-${packageJson.version}-r1`;
 const versionImport = /from["']\.\/(version-[^"']+\.js)["']/.exec(hostBundle)?.[1];
-const versionBundle = versionImport
-  ? await readFile(resolve(assetsRoot, versionImport), 'utf8')
-  : '';
-if (
-  !versionImport ||
-  !versionBundle.includes(packageJson.version) ||
-  !hostBundle.includes('office-host-${')
-) {
+const versionBundle = versionImport ? await readFile(resolve(assetsRoot, versionImport), 'utf8') : '';
+if (!versionImport || !versionBundle.includes(packageJson.version) || !hostBundle.includes('office-host-${')) {
   throw new Error(`Built Office Host identity does not match npm ${packageJson.version}/${expectedBuildId}`);
 }
 

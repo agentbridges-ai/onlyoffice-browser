@@ -71,8 +71,10 @@ test('legacy DOC decodes its embedded chart preview instead of only reaching REA
     if (!imageName) return false;
     const resourceUrl = scope.AscCommon?.g_oDocumentUrls?.urls?.[`media/${imageName}`];
     const image = resourceUrl
-      ? (scope.editor?.ImageLoader?.map_image_index?.[resourceUrl] ||
-          scope.AscCommon?.g_image_loader?.map_image_index?.[resourceUrl])?.Image
+      ? (
+          scope.editor?.ImageLoader?.map_image_index?.[resourceUrl] ||
+          scope.AscCommon?.g_image_loader?.map_image_index?.[resourceUrl]
+        )?.Image
       : undefined;
     return Boolean(image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0);
   });
@@ -172,9 +174,7 @@ test('ODT chart retains five distinct gradient series in the editor document mod
 
   expect(series).toHaveLength(5);
   expect(series.map((item) => item.fillType)).toEqual(Array(5).fill('CGradFill'));
-  const gradientColors = series.map((item) =>
-    item.colors.map(({ R, G, B }) => [R, G, B]),
-  );
+  const gradientColors = series.map((item) => item.colors.map(({ R, G, B }) => [R, G, B]));
   expect(gradientColors).toEqual([
     [
       [0x35, 0x74, 0xac],
@@ -293,8 +293,10 @@ test('RTF source retains readable content without an empty drawing placeholder',
         const imageName = graphic?.getImageUrl?.() || '';
         const resourceUrl = scope.AscCommon?.g_oDocumentUrls?.urls?.[`media/${imageName}`];
         const image = resourceUrl
-          ? (scope.editor?.ImageLoader?.map_image_index?.[resourceUrl] ||
-              scope.AscCommon?.g_image_loader?.map_image_index?.[resourceUrl])?.Image
+          ? (
+              scope.editor?.ImageLoader?.map_image_index?.[resourceUrl] ||
+              scope.AscCommon?.g_image_loader?.map_image_index?.[resourceUrl]
+            )?.Image
           : undefined;
         let sampledColorCount = 0;
         let nonWhitePixelCount = 0;
@@ -380,9 +382,7 @@ test('ODP regenerated from the PPTX source retains all slides and authored conte
     const visit = (shape: any) => {
       shapeCount += 1;
       const paragraphs =
-        shape?.txBody?.content?.GetAllParagraphs?.() ||
-        shape?.textBoxContent?.GetAllParagraphs?.() ||
-        [];
+        shape?.txBody?.content?.GetAllParagraphs?.() || shape?.textBoxContent?.GetAllParagraphs?.() || [];
       text += `\n${paragraphs.map((paragraph: any) => paragraph.GetText?.() || '').join('\n')}`;
       for (const child of shape?.spTree || []) visit(child);
     };
@@ -401,7 +401,12 @@ test('ODP regenerated from the PPTX source retains all slides and authored conte
 
 async function getWordEditorFrame(page: Page): Promise<Frame> {
   await expect
-    .poll(() => page.frames().find((frame) => frame.url().includes('/documenteditor/main/index.html'))?.url())
+    .poll(() =>
+      page
+        .frames()
+        .find((frame) => frame.url().includes('/documenteditor/main/index.html'))
+        ?.url(),
+    )
     .toContain('/documenteditor/main/index.html');
   const frame = page.frames().find((candidate) => candidate.url().includes('/documenteditor/main/index.html'));
   if (!frame) throw new Error('Word editor frame was not created');
@@ -410,7 +415,14 @@ async function getWordEditorFrame(page: Page): Promise<Frame> {
 
 async function getPresentationEditorFrame(page: Page): Promise<Frame> {
   const path = '/presentationeditor/main/index.html';
-  await expect.poll(() => page.frames().find((frame) => frame.url().includes(path))?.url()).toContain(path);
+  await expect
+    .poll(() =>
+      page
+        .frames()
+        .find((frame) => frame.url().includes(path))
+        ?.url(),
+    )
+    .toContain(path);
   const frame = page.frames().find((candidate) => candidate.url().includes(path));
   if (!frame) throw new Error('Presentation editor frame was not created');
   return frame;

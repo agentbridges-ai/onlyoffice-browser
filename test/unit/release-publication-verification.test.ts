@@ -12,8 +12,14 @@ import * as publicationVerifier from '../../scripts/verify-release-publication.m
 // @ts-expect-error JavaScript verification script has no declaration output.
 import { verifyReleaseHttp } from '../../scripts/verify-release-http.mjs';
 
-const { hashFile, loadReleasePublication, planIncrementalRemoteVerification, verifyLocalRelease, verifyObjects } =
-  publicationVerifier;
+const {
+  hashFile,
+  loadReleasePublication,
+  loadV5ManifestPublication,
+  planIncrementalRemoteVerification,
+  verifyLocalRelease,
+  verifyObjects,
+} = publicationVerifier;
 
 const temporaryDirectories: string[] = [];
 
@@ -51,6 +57,7 @@ function fixture() {
     root,
     output,
     packageVersion: '0.5.7',
+    sourceCommit: 'a'.repeat(40),
     x2tVersion: '9.3.0+2',
     x2tCommit: '1bb9b45a399f87ca162eea0c86abd4660f295469',
   });
@@ -77,6 +84,7 @@ describe('Release Manifest v5 publication verification', () => {
     const { output, manifest } = fixture();
     const publication = loadReleasePublication(output, {
       expectedPackageVersion: '0.5.7',
+      expectedSourceCommit: 'a'.repeat(40),
       fastCdcEvidenceMode: 'forbid',
     });
 
@@ -91,6 +99,37 @@ describe('Release Manifest v5 publication verification', () => {
     const result = await verifyLocalRelease(publication, { concurrency: 3 });
     expect(result.objects).toBe(publication.objects.length);
     expect(result.bytes).toBeGreaterThan(0);
+    expect(() =>
+      loadReleasePublication(output, {
+        expectedPackageVersion: '0.5.7',
+        expectedSourceCommit: 'b'.repeat(40),
+        fastCdcEvidenceMode: 'forbid',
+      }),
+    ).toThrow(/sourceCommit/);
+  });
+
+  it('derives a complete remote audit plan from one immutable v5 manifest', () => {
+    const { output, manifest } = fixture();
+    const manifestFile = path.join(output, 'releases', manifest.releaseId, 'manifest.json');
+    const expectedManifestSha256 = crypto.createHash('sha256').update(fs.readFileSync(manifestFile)).digest('hex');
+    const publication = loadV5ManifestPublication(manifestFile, {
+      releaseId: manifest.releaseId,
+      expectedManifestSha256,
+      expectedPackageVersion: '0.5.7',
+      fastCdcEvidenceMode: 'automatic',
+    });
+
+    expect(publication.releaseId).toBe(manifest.releaseId);
+    expect(publication.objects.map((object: { kind: string }) => object.kind)).toEqual(
+      expect.arrayContaining(['whole', 'package', 'package-segment', 'manifest-v5']),
+    );
+    expect(publication.objects.map((object: { kind: string }) => object.kind)).not.toContain('manifest-v4');
+    expect(() =>
+      loadV5ManifestPublication(manifestFile, {
+        releaseId: manifest.releaseId,
+        expectedManifestSha256: '0'.repeat(64),
+      }),
+    ).toThrow(/expected pointer digest/);
   });
 
   it('does not treat a successful transport read as verification when bytes or digest differ', async () => {
@@ -225,7 +264,7 @@ describe('Release Manifest v5 publication verification', () => {
 
 describe('release-specific production HTTP verification', () => {
   it('checks Host identity, Broker CSP, object 200/206/416 semantics, and both stable pointers', async () => {
-    const { output } = fixture();
+    const { root, output } = fixture();
     const publication = loadReleasePublication(output, {
       expectedPackageVersion: '0.5.7',
       fastCdcEvidenceMode: 'forbid',
@@ -246,10 +285,19 @@ describe('release-specific production HTTP verification', () => {
       'https://libra.getpi.work https://scorpio.getpi.work https://sagittarius.getpi.work',
       'https://capricorn.getpi.work https://aquarius.getpi.work https://pisces.getpi.work',
     ].join('; ');
+    const workerVersionId = 'dc8dcd28-271b-4367-9840-6c244f84cb40';
+    const respond = (body?: BodyInit | null, init?: ResponseInit) => {
+      const response = new Response(body, init);
+      response.headers.set('X-OnlyOffice-Worker-Version', workerVersionId);
+      return response;
+    };
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('cloudflare-workers-version-overrides')).toBe(
+        `onlyoffice-browser-runtime="${workerVersionId}"`,
+      );
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input : input.url);
       if (url.pathname.endsWith('/office-host.html')) {
-        return new Response('<html>host bootstrap</html>', {
+        return respond('<html>host bootstrap</html>', {
           status: 200,
           headers: {
             'Content-Type': 'text/html; charset=utf-8',
@@ -260,7 +308,7 @@ describe('release-specific production HTTP verification', () => {
         });
       }
       if (url.pathname.endsWith('/resource-broker.html')) {
-        return new Response('<html>broker bootstrap</html>', {
+        return respond('<html>broker bootstrap</html>', {
           status: 200,
           headers: { 'Content-Security-Policy': csp },
         });
@@ -276,18 +324,18 @@ describe('release-specific production HTTP verification', () => {
           'Cross-Origin-Resource-Policy': 'cross-origin',
         };
         if (init?.method === 'HEAD') {
-          return new Response(null, {
+          return respond(null, {
             status: 200,
             headers: { ...shared, 'Content-Length': String(object.bytes) },
           });
         }
         if (range === `bytes=${object.bytes}-`) {
-          return new Response(null, {
+          return respond(null, {
             status: 416,
             headers: { ...shared, 'Content-Range': `bytes */${object.bytes}` },
           });
         }
-        return new Response(objectBytes.subarray(0, 8), {
+        return respond(objectBytes.subarray(0, 8), {
           status: 206,
           headers: {
             ...shared,
@@ -298,12 +346,22 @@ describe('release-specific production HTTP verification', () => {
       }
       if (url.pathname.startsWith('/channels/')) {
         const pointer = url.pathname === '/channels/stable-v5.json' ? publication.stableV5 : publication.stableV4;
-        return Response.json(pointer, { headers: { 'Cache-Control': 'no-store' } });
+        return respond(JSON.stringify(pointer), {
+          headers: { 'Cache-Control': 'no-store', 'Content-Type': 'application/json' },
+        });
       }
       if (url.pathname === publication.stableV5.manifestUrl || url.pathname === publication.stableV4.manifestUrl) {
-        return new Response(fs.readFileSync(path.join(output, ...url.pathname.slice(1).split('/'))));
+        return respond(fs.readFileSync(path.join(output, ...url.pathname.slice(1).split('/'))));
       }
-      return new Response('not found', { status: 404 });
+      if (url.pathname === '/onlyoffice-runtime-assets.json') {
+        return respond(fs.readFileSync(path.join(root, 'onlyoffice-runtime-assets.json')), {
+          headers: {
+            'Cache-Control': 'public, max-age=0, must-revalidate',
+            'X-OnlyOffice-Asset-Version': publication.releaseId,
+          },
+        });
+      }
+      return respond('not found', { status: 404 });
     });
 
     await expect(
@@ -311,12 +369,15 @@ describe('release-specific production HTTP verification', () => {
         canonicalOrigin: 'https://onlyoffice.getpi.work',
         editorOrigin: 'https://office-editor-github-actions-smoke.getpi.work',
         verifyPointers: true,
+        verifyStableRoot: true,
         fetchImpl,
+        workerVersionId,
       }),
     ).resolves.toMatchObject({
       releaseId: publication.releaseId,
       object: object.key,
       pointers: true,
+      stableRoot: true,
     });
     expect(fetchImpl).toHaveBeenCalled();
   });

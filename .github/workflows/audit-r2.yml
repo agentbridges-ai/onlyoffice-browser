@@ -1,0 +1,328 @@
+name: Audit published runtime
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: onlyoffice-r2-production
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: audit
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Detect optional audit-only R2 credentials
+        id: r2-audit
+        env:
+          R2_READONLY_ACCESS_KEY_ID: ${{ secrets.R2_AUDIT_READONLY_ACCESS_KEY_ID }}
+          R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.R2_AUDIT_READONLY_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if test -n "${R2_READONLY_ACCESS_KEY_ID}" && test -n "${R2_READONLY_SECRET_ACCESS_KEY}"; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          elif test -z "${R2_READONLY_ACCESS_KEY_ID}" && test -z "${R2_READONLY_SECRET_ACCESS_KEY}"; then
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::error title=Incomplete audit credentials::Configure both audit-only R2 read-only secrets or neither."
+            exit 1
+          fi
+      - name: Audit the public HTTP publication
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import crypto from 'node:crypto';
+          import fs from 'node:fs';
+
+          const canonicalOrigin = 'https://onlyoffice.getpi.work';
+          const editorOrigin = 'https://office-editor-github-actions-smoke.getpi.work';
+          const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          const hasDirective = (value, directive) =>
+            (value || '')
+              .split(',')
+              .map((part) => part.trim().toLowerCase())
+              .includes(directive);
+          const get = async (url, init = {}) => {
+            let lastError;
+            for (let attempt = 1; attempt <= 4; attempt += 1) {
+              try {
+                const response = await fetch(url, {
+                  ...init,
+                  cache: 'no-store',
+                  redirect: 'manual',
+                  signal: AbortSignal.timeout(30_000),
+                  headers: { ...init.headers, 'cache-control': 'no-store' },
+                });
+                if (response.ok) return response;
+                lastError = new Error(`${url}: HTTP ${response.status}`);
+              } catch (error) {
+                lastError = error;
+              }
+              if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+            }
+            throw lastError;
+          };
+
+          const cacheBust = encodeURIComponent(process.env.GITHUB_RUN_ID || String(Date.now()));
+          const pointerResponse = await get(`${canonicalOrigin}/channels/stable-v5.json?audit=${cacheBust}`);
+          const pointerBytes = Buffer.from(await pointerResponse.arrayBuffer());
+          const workerVersionId = pointerResponse.headers.get('x-onlyoffice-worker-version');
+          if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(workerVersionId || '')) {
+            throw new Error('public stable-v5 pointer is missing an exact Worker version identity');
+          }
+          if (!hasDirective(pointerResponse.headers.get('cache-control'), 'no-store')) {
+            throw new Error('public stable-v5 pointer is not served with no-store');
+          }
+          const pointer = JSON.parse(pointerBytes.toString('utf8'));
+          if (
+            pointer.version !== 1 ||
+            !/^[a-zA-Z0-9._+-]{1,128}$/.test(pointer.releaseId || '') ||
+            pointer.manifestUrl !== `/releases/${pointer.releaseId}/manifest.json` ||
+            !/^[a-f0-9]{64}$/.test(pointer.manifestSha256 || '')
+          ) {
+            throw new Error('public stable-v5 pointer is invalid');
+          }
+          fs.writeFileSync('stable-v5-public.json', pointerBytes);
+
+          const manifestResponse = await get(`${canonicalOrigin}${pointer.manifestUrl}?audit=${cacheBust}`);
+          const manifestBytes = Buffer.from(await manifestResponse.arrayBuffer());
+          if (
+            sha256(manifestBytes) !== pointer.manifestSha256 ||
+            !hasDirective(manifestResponse.headers.get('cache-control'), 'immutable') ||
+            manifestResponse.headers.get('x-onlyoffice-worker-version') !== workerVersionId
+          ) {
+            throw new Error('public immutable manifest identity or cache policy is invalid');
+          }
+          const manifest = JSON.parse(manifestBytes.toString('utf8'));
+          if (manifest.version !== 5 || manifest.releaseId !== pointer.releaseId || !Array.isArray(manifest.assets)) {
+            throw new Error('public stable-v5 manifest is invalid');
+          }
+          fs.writeFileSync('manifest-public.json', manifestBytes);
+
+          const host = await get(
+            `${editorOrigin}/r/${encodeURIComponent(pointer.releaseId)}/office-host.html?audit=${cacheBust}`,
+          );
+          if (
+            !/^text\/html(?:;|$)/i.test(host.headers.get('content-type') || '') ||
+            host.headers.get('x-onlyoffice-asset-version') !== pointer.releaseId ||
+            host.headers.get('x-onlyoffice-worker-version') !== workerVersionId ||
+            host.headers.get('origin-agent-cluster') !== '?1' ||
+            !hasDirective(host.headers.get('cache-control'), 'immutable')
+          ) {
+            throw new Error('public release Host identity or headers are invalid');
+          }
+
+          const asset = manifest.assets
+            .filter(
+              (candidate) =>
+                Number.isSafeInteger(candidate.bytes) &&
+                candidate.bytes > 0 &&
+                /^[a-f0-9]{64}$/.test(candidate.sha256 || ''),
+            )
+            .sort((left, right) => left.bytes - right.bytes)[0];
+          if (!asset) throw new Error('public stable-v5 manifest has no auditable asset');
+          const object = await get(
+            `${canonicalOrigin}/objects/${encodeURIComponent(pointer.releaseId)}/sha256/${asset.sha256}?audit=${cacheBust}`,
+          );
+          const objectBytes = Buffer.from(await object.arrayBuffer());
+          if (
+            objectBytes.byteLength !== asset.bytes ||
+            sha256(objectBytes) !== asset.sha256 ||
+            object.headers.get('content-length') !== String(asset.bytes) ||
+            object.headers.get('x-content-sha256') !== asset.sha256 ||
+            object.headers.get('x-onlyoffice-asset-version') !== pointer.releaseId ||
+            object.headers.get('x-onlyoffice-worker-version') !== workerVersionId ||
+            !hasDirective(object.headers.get('cache-control'), 'immutable') ||
+            object.headers.get('access-control-allow-origin') !== '*' ||
+            object.headers.get('cross-origin-resource-policy') !== 'cross-origin'
+          ) {
+            throw new Error('public release-bound object bytes, identity or headers are invalid');
+          }
+
+          const runtimeAsset = manifest.assets.find(
+            (candidate) => candidate.path === 'onlyoffice-runtime-assets.json',
+          );
+          if (!runtimeAsset || !/^[a-f0-9]{64}$/.test(runtimeAsset.sha256 || '')) {
+            throw new Error('stable release has no bound runtime root manifest');
+          }
+          const runtimeRoot = await get(`${canonicalOrigin}/onlyoffice-runtime-assets.json?audit=${cacheBust}`);
+          const runtimeRootBytes = Buffer.from(await runtimeRoot.arrayBuffer());
+          if (
+            runtimeRootBytes.byteLength !== runtimeAsset.bytes ||
+            sha256(runtimeRootBytes) !== runtimeAsset.sha256 ||
+            runtimeRoot.headers.get('x-onlyoffice-asset-version') !== pointer.releaseId ||
+            runtimeRoot.headers.get('x-onlyoffice-worker-version') !== workerVersionId ||
+            runtimeRoot.headers.get('cache-control') !== 'public, max-age=0, must-revalidate'
+          ) {
+            throw new Error('unversioned runtime root is not bound to stable-v5 CAS and the active Worker');
+          }
+
+          fs.appendFileSync(
+            process.env.GITHUB_ENV,
+            `RELEASE_ID=${pointer.releaseId}\nMANIFEST_SHA256=${pointer.manifestSha256}\nWORKER_VERSION_ID=${workerVersionId}\n`,
+          );
+          fs.appendFileSync(
+            process.env.GITHUB_STEP_SUMMARY,
+            `### Published runtime audit\n- Public HTTP audit: passed\n- Release: \`${pointer.releaseId}\`\n- Worker version: \`${workerVersionId}\`\n- Stable root alias: bound to immutable release CAS\n`,
+          );
+          console.log(`Audited public runtime ${pointer.releaseId} and re-hashed ${asset.bytes} public object bytes`);
+          NODE
+      - name: Report degraded public-only audit
+        if: steps.r2-audit.outputs.enabled != 'true'
+        run: |
+          echo "::warning title=Degraded storage audit::Audit-only R2 read credentials are not configured; public HTTP identity passed, but the complete storage set and protected release/Worker pair authorization were not verified."
+          echo "- R2 storage audit: skipped (degraded public-only mode; configure the audit environment's read-only secrets to enable it)" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Release/Worker pair authorization: skipped (degraded public-only mode)" >> "${GITHUB_STEP_SUMMARY}"
+      - name: Install read-only audit transport
+        if: steps.r2-audit.outputs.enabled == 'true'
+        run: sudo apt-get update && sudo apt-get install --yes rclone
+      - name: Re-hash the complete R2 storage set with audit-only credentials
+        if: steps.r2-audit.outputs.enabled == 'true'
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_AUDIT_READONLY_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_AUDIT_READONLY_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: https://40a503f1c86c028edfcd6f113c562b5b.r2.cloudflarestorage.com
+          RCLONE_CONFIG_R2_ACL: private
+          RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          retry_rclone() { local attempt=1; until timeout 120 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
+          retry_rclone_capture() {
+            local destination="$1" attempt=1 temporary
+            shift
+            temporary="${destination}.attempt"
+            until timeout 120 rclone "$@" > "${temporary}"; do
+              rm -f "${temporary}"
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 3))"
+            done
+            mv "${temporary}" "${destination}"
+          }
+          retry_rclone copyto r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-r2.json
+          cmp stable-v5-public.json stable-v5-r2.json
+          retry_rclone copyto "r2:onlyoffice-getpi-work/releases/${RELEASE_ID}/manifest.json" manifest-r2.json
+          cmp manifest-public.json manifest-r2.json
+          node scripts/verify-release-publication.mjs \
+            --v5-manifest manifest-public.json \
+            --release-id "${RELEASE_ID}" \
+            --expected-manifest-sha256 "${MANIFEST_SHA256}" \
+            --fastcdc-evidence-mode automatic \
+            --remote r2:onlyoffice-getpi-work \
+            --remote-verification-mode full
+          mkdir -p promotion-receipts rollback-receipts receipt-run-attempts
+          retry_rclone_capture promotion-receipt-names.txt lsf "r2:onlyoffice-getpi-work/promotions/${RELEASE_ID}" --files-only
+          test -s promotion-receipt-names.txt
+          while IFS= read -r receipt_name; do
+            [[ "${receipt_name}" =~ ^[a-f0-9]{40}-[a-f0-9]{64}\.json$ ]] || { echo "invalid promotion receipt object name" >&2; exit 1; }
+            retry_rclone copyto \
+              "r2:onlyoffice-getpi-work/promotions/${RELEASE_ID}/${receipt_name}" \
+              "promotion-receipts/${receipt_name}"
+          done < promotion-receipt-names.txt
+          retry_rclone_capture rollback-receipt-names.txt lsf "r2:onlyoffice-getpi-work/rollbacks/${RELEASE_ID}" --files-only
+          while IFS= read -r receipt_name; do
+            test -z "${receipt_name}" && continue
+            [[ "${receipt_name}" =~ ^[a-f0-9]{40}-[a-f0-9]{64}\.json$ ]] || { echo "invalid rollback receipt object name" >&2; exit 1; }
+            retry_rclone copyto \
+              "r2:onlyoffice-getpi-work/rollbacks/${RELEASE_ID}/${receipt_name}" \
+              "rollback-receipts/${receipt_name}"
+          done < rollback-receipt-names.txt
+          node <<'NODE'
+          const crypto=require('node:crypto'),fs=require('node:fs'),path=require('node:path');
+          const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+          const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+          const positive=value=>Number.isSafeInteger(value)&&value>0;
+          const same=(left,right)=>JSON.stringify(left)===JSON.stringify(right);
+          const promotionEvidence=[];
+          for(const file of fs.readdirSync('promotion-receipts').sort()){
+            const match=/^([a-f0-9]{40})-([a-f0-9]{64})\.json$/.exec(file);
+            if(!match) throw Error('invalid local promotion receipt name');
+            const bytes=fs.readFileSync(path.join('promotion-receipts',file));
+            if(sha(bytes)!==match[2]) throw Error(`promotion receipt digest does not match its immutable object name: ${file}`);
+            const receipt=JSON.parse(bytes);
+            if(receipt.version!==1||receipt.trustRoot!=='protected-production-workflow-and-r2-cas'||receipt.channel!=='stable-v5'||receipt.candidate?.commit!==match[1]||!positive(receipt.candidate?.runId)||!positive(receipt.staging?.runId)||!/^[a-f0-9]{40}$/.test(receipt.piwork?.commit||'')||!positive(receipt.piwork?.deepVerifyRunId)||!positive(receipt.piwork?.deepVerifyRunAttempt)||receipt.runtime?.releaseId!==process.env.RELEASE_ID||receipt.runtime?.manifestUrl!==`/releases/${process.env.RELEASE_ID}/manifest.json`||receipt.runtime?.manifestSha256!==process.env.MANIFEST_SHA256||!/^[a-f0-9]{64}$/.test(receipt.runtime?.runtimeManifestSha256||'')||receipt.runtimeRoot?.mode!=='stable-v5-release-cas'||receipt.worker?.name!=='onlyoffice-browser-runtime'||!uuid.test(receipt.worker?.previousVersionId||'')||!uuid.test(receipt.worker?.candidateVersionId||'')||receipt.worker.previousVersionId===receipt.worker.candidateVersionId||!uuid.test(receipt.worker?.finalDeploymentId||'')||receipt.production?.repository!==process.env.GITHUB_REPOSITORY||!positive(receipt.production?.runId)||!positive(receipt.production?.runAttempt)) throw Error(`invalid promotion receipt identity: ${file}`);
+            promotionEvidence.push({kind:'promotion',file,key:`promotions/${process.env.RELEASE_ID}/${file}`,sha256:match[2],localPath:path.join('promotion-receipts',file),receipt});
+          }
+          if(!promotionEvidence.length) throw Error('stable release has no digest-bound promotion trust root');
+          const promotionsByPath=new Map(promotionEvidence.map(candidate=>[candidate.key,candidate]));
+          const rollbackEvidence=[];
+          for(const file of fs.readdirSync('rollback-receipts').sort()){
+            const match=/^([a-f0-9]{40})-([a-f0-9]{64})\.json$/.exec(file);
+            if(!match) throw Error('invalid local rollback receipt name');
+            const localPath=path.join('rollback-receipts',file),bytes=fs.readFileSync(localPath);
+            if(sha(bytes)!==match[2]) throw Error(`rollback receipt digest does not match its immutable object name: ${file}`);
+            const receipt=JSON.parse(bytes),authorization=receipt.authorization,root=promotionsByPath.get(authorization?.path);
+            const pointer=value=>value?.version===1&&/^[a-zA-Z0-9._+-]{1,128}$/.test(value.releaseId||'')&&value.manifestUrl===`/releases/${value.releaseId}/manifest.json`&&/^[a-f0-9]{64}$/.test(value.manifestSha256||'');
+            if(receipt.version!==1||receipt.trustRoot!=='protected-production-workflow-and-r2-cas'||receipt.channel!=='stable-v5'||!pointer(receipt.from)||!pointer(receipt.target)||receipt.target.releaseId!==process.env.RELEASE_ID||receipt.target.manifestUrl!==`/releases/${process.env.RELEASE_ID}/manifest.json`||receipt.target.manifestSha256!==process.env.MANIFEST_SHA256||authorization?.kind!=='promotion-receipt'||!root||authorization.sha256!==root.sha256||!same(authorization.candidate,root.receipt.candidate)||!same(authorization.production,root.receipt.production)||receipt.worker?.name!=='onlyoffice-browser-runtime'||!uuid.test(receipt.worker?.versionId||'')||!uuid.test(receipt.worker?.currentDeploymentId||'')||receipt.rollback?.repository!==process.env.GITHUB_REPOSITORY||receipt.rollback?.sourceCommit!==match[1]||!positive(receipt.rollback?.runId)||!positive(receipt.rollback?.runAttempt)) throw Error(`invalid rollback receipt identity or promotion chain: ${file}`);
+            rollbackEvidence.push({kind:'rollback',file,key:`rollbacks/${process.env.RELEASE_ID}/${file}`,sha256:match[2],localPath,receipt,promotionRootKey:root.key});
+          }
+          fs.writeFileSync('promotion-evidence.json',JSON.stringify(promotionEvidence,null,2)+'\n');
+          fs.writeFileSync('rollback-evidence.json',JSON.stringify(rollbackEvidence,null,2)+'\n');
+          const requests=new Map();
+          for(const candidate of promotionEvidence) requests.set(`${candidate.receipt.production.runId}-${candidate.receipt.production.runAttempt}`,{kind:'promotion',runId:candidate.receipt.production.runId,runAttempt:candidate.receipt.production.runAttempt});
+          for(const candidate of rollbackEvidence) requests.set(`${candidate.receipt.rollback.runId}-${candidate.receipt.rollback.runAttempt}`,{kind:'rollback',runId:candidate.receipt.rollback.runId,runAttempt:candidate.receipt.rollback.runAttempt});
+          fs.writeFileSync('receipt-run-requests.json',JSON.stringify([...requests.values()],null,2)+'\n');
+          NODE
+          node -e "for(const request of require('./receipt-run-requests.json')) console.log([request.runId,request.runAttempt].join('\t'))" |
+            while IFS=$'\t' read -r receipt_run_id receipt_run_attempt; do
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${receipt_run_id}/attempts/${receipt_run_attempt}" \
+                > "receipt-run-attempts/${receipt_run_id}-${receipt_run_attempt}.json"
+            done
+          node <<'NODE'
+          const fs=require('node:fs');
+          const promotions=require('./promotion-evidence.json'),rollbacks=require('./rollback-evidence.json');
+          const promotionByKey=new Map(promotions.map(candidate=>[candidate.key,candidate]));
+          const runFor=(runId,runAttempt)=>require(`./receipt-run-attempts/${runId}-${runAttempt}.json`);
+          const isExactRun=(run,runId,runAttempt,workflow,commit)=>run.id===runId&&run.run_attempt===runAttempt&&run.conclusion==='success'&&run.event==='workflow_dispatch'&&run.head_branch==='main'&&run.head_sha===commit&&run.path===workflow&&run.repository?.full_name===process.env.GITHUB_REPOSITORY;
+          const validPromotion=new Map();
+          for(const candidate of promotions){
+            const receipt=candidate.receipt,run=runFor(receipt.production.runId,receipt.production.runAttempt);
+            validPromotion.set(candidate.key,isExactRun(run,receipt.production.runId,receipt.production.runAttempt,'.github/workflows/deploy-r2.yml',receipt.candidate.commit));
+          }
+          const authorized=[];
+          for(const candidate of promotions){
+            const receipt=candidate.receipt;
+            if(receipt.worker.candidateVersionId===process.env.WORKER_VERSION_ID&&validPromotion.get(candidate.key)) authorized.push({...candidate,authorizationRunId:receipt.production.runId,authorizationRunAttempt:receipt.production.runAttempt});
+          }
+          for(const candidate of rollbacks){
+            const receipt=candidate.receipt,root=promotionByKey.get(candidate.promotionRootKey),run=runFor(receipt.rollback.runId,receipt.rollback.runAttempt);
+            if(receipt.worker.versionId===process.env.WORKER_VERSION_ID&&root&&validPromotion.get(root.key)&&isExactRun(run,receipt.rollback.runId,receipt.rollback.runAttempt,'.github/workflows/rollback-r2.yml',receipt.rollback.sourceCommit)) authorized.push({...candidate,authorizationRunId:receipt.rollback.runId,authorizationRunAttempt:receipt.rollback.runAttempt});
+          }
+          if(!authorized.length) throw Error('no immutable promotion or promotion-chained rollback receipt authorizes the active Worker and stable release pair');
+          authorized.sort((left,right)=>right.authorizationRunId-left.authorizationRunId||right.authorizationRunAttempt-left.authorizationRunAttempt||right.file.localeCompare(left.file));
+          const selected=authorized[0];
+          fs.writeFileSync('selected-release-pair-receipt.json',JSON.stringify(selected,null,2)+'\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,`- R2 storage audit: passed (complete remote re-hash with audit-only credentials)\n- Release/Worker pair authorization: passed (${selected.kind} run ${selected.authorizationRunId}, attempt ${selected.authorizationRunAttempt}, Worker ${process.env.WORKER_VERSION_ID})\n`);
+          NODE
+          node <<'NODE'
+          const crypto=require('node:crypto'),fs=require('node:fs');
+          const selected=require('./selected-release-pair-receipt.json');
+          const expected=fs.readFileSync(selected.localPath);
+          const digest=selected.sha256;
+          const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+          (async()=>{
+            const route=selected.key.split('/').map(encodeURIComponent).join('/');
+            const url=`https://onlyoffice.getpi.work/${route}?audit=${process.env.GITHUB_RUN_ID}`;
+            let response,lastError;
+            for(let attempt=1;attempt<=4;attempt++){
+              try{const candidate=await fetch(url,{cache:'no-store',redirect:'manual',headers:{'cache-control':'no-store'},signal:AbortSignal.timeout(30_000)});if(candidate.ok){response=candidate;break}lastError=Error(`${url}: HTTP ${candidate.status}`)}catch(error){lastError=error}
+              if(attempt<4) await new Promise(resolve=>setTimeout(resolve,attempt*2_000));
+            }
+            if(!response) throw lastError;
+            const bytes=Buffer.from(await response.arrayBuffer());
+            const immutable=(response.headers.get('cache-control')||'').split(',').some(value=>value.trim().toLowerCase()==='immutable');
+            if(!bytes.equals(expected)||sha(bytes)!==digest||!immutable||response.headers.get('x-onlyoffice-worker-version')!==process.env.WORKER_VERSION_ID) throw Error('public release-pair receipt bytes, digest, immutable cache policy, or active Worker identity mismatch');
+          })().catch(error=>{console.error(error);process.exit(1)});
+          NODE
