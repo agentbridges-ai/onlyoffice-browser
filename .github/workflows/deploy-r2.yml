@@ -389,7 +389,7 @@ jobs:
             ACTUAL_WORKER_VERSION="$(curl --fail --silent --show-error --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 --head \
               -H "Cloudflare-Workers-Version-Overrides: ${OVERRIDE_HEADER}" \
               -H 'Cache-Control: no-store' \
-              "https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json?override-readiness=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}" \
+              "https://onlyoffice.getpi.work/r/${ONLYOFFICE_SOURCE_RELEASE_ID}/onlyoffice-runtime-assets.json?override-readiness=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}" \
               | tr -d '\r' | awk -F ': ' 'tolower($1)=="x-onlyoffice-worker-version"{print $2}')"
             test "${ACTUAL_WORKER_VERSION}" = "${CANDIDATE_WORKER_VERSION_ID}" && break
             test "${attempt}" = 10 && { echo "candidate Worker version override did not propagate" >&2; exit 1; }
