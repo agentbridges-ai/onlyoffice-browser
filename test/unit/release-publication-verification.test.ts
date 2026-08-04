@@ -361,6 +361,24 @@ describe('release-specific production HTTP verification', () => {
           },
         });
       }
+      if (url.pathname === '/index.html') {
+        return respond(fs.readFileSync(path.join(root, 'index.html')), {
+          headers: {
+            'Cache-Control': 'public, max-age=0, must-revalidate',
+            'Content-Type': 'text/html; charset=utf-8',
+            'X-OnlyOffice-Asset-Version': publication.releaseId,
+          },
+        });
+      }
+      if (url.pathname === '/sw.js') {
+        return respond(fs.readFileSync(path.join(root, 'sw.js')), {
+          headers: {
+            'Cache-Control': 'public, max-age=0, must-revalidate',
+            'Content-Type': 'text/javascript; charset=utf-8',
+            'X-OnlyOffice-Asset-Version': publication.releaseId,
+          },
+        });
+      }
       return respond('not found', { status: 404 });
     });
 

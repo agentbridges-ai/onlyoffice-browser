@@ -145,8 +145,18 @@ async function verifyPointers(publication, origin, fetchImpl, cacheBust) {
 async function verifyStableRoot(publication, origin, fetchImpl, cacheBust) {
   const manifestObject = publication.objects.find((object) => object.kind === 'manifest-v5');
   const runtimeAsset = publication.manifest?.assets?.find((asset) => asset.path === 'onlyoffice-runtime-assets.json');
-  if (!manifestObject || !runtimeAsset || !/^[a-f0-9]{64}$/.test(runtimeAsset.sha256 || '')) {
-    fail('Release does not contain a verifiable stable root runtime manifest');
+  const indexAsset = publication.manifest?.assets?.find((asset) => asset.path === 'index.html');
+  const serviceWorkerAsset = publication.manifest?.assets?.find((asset) => asset.path === 'sw.js');
+  if (
+    !manifestObject ||
+    !runtimeAsset ||
+    !/^[a-f0-9]{64}$/.test(runtimeAsset.sha256 || '') ||
+    !indexAsset ||
+    !/^[a-f0-9]{64}$/.test(indexAsset.sha256 || '') ||
+    !serviceWorkerAsset ||
+    !/^[a-f0-9]{64}$/.test(serviceWorkerAsset.sha256 || '')
+  ) {
+    fail('Release does not contain verifiable stable root shell and service-worker assets');
   }
   const pointerResponse = await fetchImpl(`${origin}/channels/stable-v5.json?ci=${encodeURIComponent(cacheBust)}`, {
     cache: 'no-store',
@@ -178,6 +188,40 @@ async function verifyStableRoot(publication, origin, fetchImpl, cacheBust) {
   const bytes = new Uint8Array(await rootResponse.arrayBuffer());
   if (bytes.byteLength !== runtimeAsset.bytes || sha256(bytes) !== runtimeAsset.sha256) {
     fail('Stable root runtime manifest bytes do not match the selected release');
+  }
+
+  const indexResponse = await fetchImpl(`${origin}/index.html?ci=${encodeURIComponent(cacheBust)}`, {
+    cache: 'no-store',
+    redirect: 'manual',
+  });
+  if (indexResponse.status !== 200) fail(`Stable root index.html returned ${indexResponse.status}`);
+  expectHeader(indexResponse, 'content-type', /^text\/html(?:;|$)/i, 'Stable root index.html');
+  expectHeader(indexResponse, 'x-onlyoffice-asset-version', publication.releaseId, 'Stable root index.html');
+  expectHeader(indexResponse, 'cache-control', /^public, max-age=0, must-revalidate(?:,|$)/, 'Stable root index.html');
+  const indexBytes = new Uint8Array(await indexResponse.arrayBuffer());
+  if (indexBytes.byteLength !== indexAsset.bytes || sha256(indexBytes) !== indexAsset.sha256) {
+    fail('Stable root index.html bytes do not match the selected release');
+  }
+
+  const serviceWorkerResponse = await fetchImpl(`${origin}/sw.js?ci=${encodeURIComponent(cacheBust)}`, {
+    cache: 'no-store',
+    redirect: 'manual',
+  });
+  if (serviceWorkerResponse.status !== 200) fail(`Stable root sw.js returned ${serviceWorkerResponse.status}`);
+  expectHeader(serviceWorkerResponse, 'content-type', /^text\/javascript(?:;|$)/i, 'Stable root sw.js');
+  expectHeader(serviceWorkerResponse, 'x-onlyoffice-asset-version', publication.releaseId, 'Stable root sw.js');
+  expectHeader(
+    serviceWorkerResponse,
+    'cache-control',
+    /^public, max-age=0, must-revalidate(?:,|$)/,
+    'Stable root sw.js',
+  );
+  const serviceWorkerBytes = new Uint8Array(await serviceWorkerResponse.arrayBuffer());
+  if (
+    serviceWorkerBytes.byteLength !== serviceWorkerAsset.bytes ||
+    sha256(serviceWorkerBytes) !== serviceWorkerAsset.sha256
+  ) {
+    fail('Stable root sw.js bytes do not match the selected release');
   }
 }
 

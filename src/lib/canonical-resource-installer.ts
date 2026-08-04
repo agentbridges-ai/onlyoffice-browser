@@ -968,7 +968,7 @@ export class CanonicalResourceInstaller implements OfficeRuntimeResourceInstalle
     const required = this.requiredReleaseIdentity;
     const current = required
       ? await this.repository.releaseV5(required.releaseId, required.manifestSha256)
-      : await this.repository.currentV5();
+      : await this.repository.currentV5(this.currentRelease || undefined);
     if (
       required &&
       (current.manifest.releaseId !== required.releaseId ||

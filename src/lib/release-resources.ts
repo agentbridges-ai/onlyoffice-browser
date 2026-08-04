@@ -677,11 +677,21 @@ export class ReleaseRepository {
     return { channel: current.channel, manifest: current.manifest };
   }
 
-  async currentV5(): Promise<{
+  async currentV5(cached?: { manifest: ReleaseManifestV5; manifestSha256: string }): Promise<{
     channel: ReleaseChannel & { manifestSha256: string };
     manifest: ReleaseManifestV5;
     manifestSha256: string;
   }> {
+    if (cached?.manifest.version === 5 && isDigest(cached.manifestSha256) && cached.manifest.releaseId) {
+      const channel = await this.readChannel('channels/stable-v5.json', true);
+      if (channel.releaseId === cached.manifest.releaseId && channel.manifestSha256 === cached.manifestSha256) {
+        return {
+          channel: channel as ReleaseChannel & { manifestSha256: string },
+          manifest: cached.manifest,
+          manifestSha256: cached.manifestSha256,
+        };
+      }
+    }
     const current = await this.readCurrent('channels/stable-v5.json', true);
     if (current.manifest.version !== 5) throw new ResourceInstallerError('incompatible');
     return {
@@ -717,6 +727,29 @@ export class ReleaseRepository {
     channelPath: 'channels/stable.json' | 'channels/stable-v5.json',
     requireManifestSha256: boolean,
   ): Promise<{ channel: ReleaseChannel; manifest: ReleaseManifestV3; manifestSha256: string }> {
+    const channel = await this.readChannel(channelPath, requireManifestSha256);
+    const channelUrl = new URL(channelPath, this.baseUrl);
+    const manifestUrl = channel.manifestUrl
+      ? new URL(channel.manifestUrl, channelUrl)
+      : new URL(`releases/${encodeURIComponent(channel.releaseId)}/manifest.json`, this.baseUrl);
+    const response = await this.fetchImpl(manifestUrl, {
+      cache: 'no-store',
+      credentials: 'omit',
+      mode: typeof location !== 'undefined' && manifestUrl.origin === location.origin ? 'same-origin' : 'cors',
+    });
+    if (!response.ok) throw networkError(response.status);
+    const { manifest, manifestSha256 } = await readManifestResponse(response);
+    if (channel.manifestSha256 && manifestSha256 !== channel.manifestSha256) {
+      throw new ResourceInstallerError('manifest');
+    }
+    if (manifest.releaseId !== channel.releaseId) throw new ResourceInstallerError('manifest');
+    return { channel, manifest, manifestSha256 };
+  }
+
+  private async readChannel(
+    channelPath: 'channels/stable.json' | 'channels/stable-v5.json',
+    requireManifestSha256: boolean,
+  ): Promise<ReleaseChannel> {
     const channelUrl = new URL(channelPath, this.baseUrl);
     const channelResponse = await this.fetchImpl(channelUrl, {
       cache: 'no-store',
@@ -733,21 +766,7 @@ export class ReleaseRepository {
     ) {
       throw new ResourceInstallerError('manifest');
     }
-    const manifestUrl = channel.manifestUrl
-      ? new URL(channel.manifestUrl, channelUrl)
-      : new URL(`releases/${encodeURIComponent(channel.releaseId)}/manifest.json`, this.baseUrl);
-    const response = await this.fetchImpl(manifestUrl, {
-      cache: 'no-store',
-      credentials: 'omit',
-      mode: typeof location !== 'undefined' && manifestUrl.origin === location.origin ? 'same-origin' : 'cors',
-    });
-    if (!response.ok) throw networkError(response.status);
-    const { manifest, manifestSha256 } = await readManifestResponse(response);
-    if (channel.manifestSha256 && manifestSha256 !== channel.manifestSha256) {
-      throw new ResourceInstallerError('manifest');
-    }
-    if (manifest.releaseId !== channel.releaseId) throw new ResourceInstallerError('manifest');
-    return { channel: channel as ReleaseChannel, manifest, manifestSha256 };
+    return channel as ReleaseChannel;
   }
 
   assetUrl(releaseId: string, path: string): URL {
