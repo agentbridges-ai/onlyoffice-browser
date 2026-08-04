@@ -152,10 +152,8 @@ jobs:
           [[ "${PIWORK_COMMIT}" =~ ^[a-f0-9]{40}$ ]]
           [[ "${PIWORK_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]
           GITHUB_API_HEADERS=(-H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28')
-          RAW_HEADERS=()
           if test -n "${PIWORK_READ_TOKEN}"; then
             GITHUB_API_HEADERS+=(-H "Authorization: Bearer ${PIWORK_READ_TOKEN}")
-            RAW_HEADERS+=(-H "Authorization: Bearer ${PIWORK_READ_TOKEN}")
           fi
           github_api_get() {
             local url="$1" output="$2" headers="$3" status limit remaining reset
@@ -174,13 +172,20 @@ jobs:
             echo "::error title=Piwork GitHub API request failed::HTTP ${status}; x-ratelimit-limit=${limit:-unknown}, remaining=${remaining:-unknown}, reset=${reset:-unknown}. Configure the optional Piwork read GitHub App when anonymous quota is insufficient."
             return 1
           }
+          raw_get() {
+            local url="$1" output="$2"
+            local args=(--fail --silent --show-error --retry 4 --retry-all-errors --connect-timeout 10 --max-time 30)
+            if test -n "${PIWORK_READ_TOKEN}"; then
+              args+=(-H "Authorization: Bearer ${PIWORK_READ_TOKEN}")
+            fi
+            curl "${args[@]}" "${url}" --output "${output}"
+          }
           github_api_get \
             "https://api.github.com/repos/agentbridges-ai/pi-work/actions/runs/${PIWORK_RUN_ID}/attempts/${PIWORK_RUN_ATTEMPT}" \
             piwork-run.json piwork-run.headers
-          curl --fail --silent --show-error --retry 4 --retry-all-errors --connect-timeout 10 --max-time 30 \
-            "${RAW_HEADERS[@]}" \
+          raw_get \
             "https://raw.githubusercontent.com/agentbridges-ai/pi-work/${PIWORK_COMMIT}/release/onlyoffice-release-manifest.json" \
-            --output piwork-onlyoffice-release.json
+            piwork-onlyoffice-release.json
           github_api_get \
             "https://api.github.com/repos/agentbridges-ai/pi-work/actions/runs/${PIWORK_RUN_ID}/attempts/${PIWORK_RUN_ATTEMPT}/jobs?per_page=100" \
             piwork-jobs.json piwork-jobs.headers
@@ -198,8 +203,8 @@ jobs:
           if(prs.length!==1) throw Error(`Piwork integration must have exactly one open same-repository PR on main, found ${prs.length}`);
           NODE
           for protected in .github/workflows/deep-verify.yml .github/actions/setup-toolchain/action.yml scripts/verify-onlyoffice-release.mjs Makefile; do
-            curl --fail --silent --show-error --retry 4 --retry-all-errors "${RAW_HEADERS[@]}" "https://raw.githubusercontent.com/agentbridges-ai/pi-work/main/${protected}" --output "baseline-${protected//\//-}";
-            curl --fail --silent --show-error --retry 4 --retry-all-errors "${RAW_HEADERS[@]}" "https://raw.githubusercontent.com/agentbridges-ai/pi-work/${PIWORK_COMMIT}/${protected}" --output "candidate-${protected//\//-}";
+            raw_get "https://raw.githubusercontent.com/agentbridges-ai/pi-work/main/${protected}" "baseline-${protected//\//-}";
+            raw_get "https://raw.githubusercontent.com/agentbridges-ai/pi-work/${PIWORK_COMMIT}/${protected}" "candidate-${protected//\//-}";
             cmp "baseline-${protected//\//-}" "candidate-${protected//\//-}" || { echo "Piwork integration may not modify ${protected}" >&2; exit 1; }
           done
       - name: Install deployment tools only
