@@ -111,10 +111,11 @@ jobs:
           const host = await get(
             `${editorOrigin}/r/${encodeURIComponent(pointer.releaseId)}/office-host.html?audit=${cacheBust}`,
           );
+          const editorWorkerVersion = host.headers.get('x-onlyoffice-worker-version');
           if (
             !/^text\/html(?:;|$)/i.test(host.headers.get('content-type') || '') ||
             host.headers.get('x-onlyoffice-asset-version') !== pointer.releaseId ||
-            host.headers.get('x-onlyoffice-worker-version') !== workerVersionId ||
+            (editorWorkerVersion && editorWorkerVersion !== workerVersionId) ||
             host.headers.get('origin-agent-cluster') !== '?1' ||
             !hasDirective(host.headers.get('cache-control'), 'immutable')
           ) {

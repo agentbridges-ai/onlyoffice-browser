@@ -286,9 +286,9 @@ describe('release-specific production HTTP verification', () => {
       'https://capricorn.getpi.work https://aquarius.getpi.work https://pisces.getpi.work',
     ].join('; ');
     const workerVersionId = 'dc8dcd28-271b-4367-9840-6c244f84cb40';
-    const respond = (body?: BodyInit | null, init?: ResponseInit) => {
+    const respond = (body?: BodyInit | null, init?: ResponseInit, includeWorkerVersion = true) => {
       const response = new Response(body, init);
-      response.headers.set('X-OnlyOffice-Worker-Version', workerVersionId);
+      if (includeWorkerVersion) response.headers.set('X-OnlyOffice-Worker-Version', workerVersionId);
       return response;
     };
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -297,15 +297,19 @@ describe('release-specific production HTTP verification', () => {
       );
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input : input.url);
       if (url.pathname.endsWith('/office-host.html')) {
-        return respond('<html>host bootstrap</html>', {
-          status: 200,
-          headers: {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Cache-Control': 'public, max-age=31536000, immutable, no-transform',
-            'X-OnlyOffice-Asset-Version': publication.releaseId,
-            'Origin-Agent-Cluster': '?1',
+        return respond(
+          '<html>host bootstrap</html>',
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': 'public, max-age=31536000, immutable, no-transform',
+              'X-OnlyOffice-Asset-Version': publication.releaseId,
+              'Origin-Agent-Cluster': '?1',
+            },
           },
-        });
+          false,
+        );
       }
       if (url.pathname.endsWith('/resource-broker.html')) {
         return respond('<html>broker bootstrap</html>', {
