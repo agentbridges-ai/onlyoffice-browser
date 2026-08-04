@@ -76,6 +76,7 @@ type BrowserFailure = {
   url?: string;
   phase?: FailurePhase;
   requestPhase?: FailurePhase;
+  offlineStablePointerRequestStarted?: boolean;
 };
 type ContentCounter = {
   workerRequests: number;
@@ -146,6 +147,27 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
     at: number;
     status?: number;
   }> = [];
+  // A fetch made by a page can be fulfilled by the Service Worker without
+  // emitting a page request event. Keep a short-lived marker for the strict
+  // typed response emitted by the offline stable-pointer route. It is only
+  // useful together with evidence that the page fetch started while offline.
+  const synthesizedOfflineStablePointerResponses: Array<{ at: number }> = [];
+  const stablePointerFetchStarts: Array<{ at: number; phase: FailurePhase; online: boolean }> = [];
+  const isSynthesizedOfflineStablePointerResponse = (response: {
+    url(): string;
+    status(): number;
+    headers(): Record<string, string>;
+  }): boolean => {
+    if (response.status() !== 503) return false;
+    const url = new URL(response.url());
+    if (url.origin !== canonicalOrigin || url.pathname !== '/channels/stable-v5.json' || url.search) return false;
+    const headers = response.headers();
+    return (
+      headers['cache-control']?.toLowerCase() === 'no-store' &&
+      headers['content-type']?.toLowerCase() === 'application/json; charset=utf-8' &&
+      headers['retry-after'] === '1'
+    );
+  };
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (url.origin === canonicalOrigin && url.pathname === '/channels/stable-v5.json' && !url.search) {
@@ -155,6 +177,9 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
   const findStablePointerRequest = (request: Request) =>
     stablePointerRequests.findIndex((candidate) => candidate.request === request);
   page.on('response', (response) => {
+    if (isSynthesizedOfflineStablePointerResponse(response)) {
+      synthesizedOfflineStablePointerResponses.push({ at: Date.now() });
+    }
     const index = findStablePointerRequest(response.request());
     if (index < 0) return;
     stablePointerRequests[index].status = response.status();
@@ -178,11 +203,48 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
     if (index < 0) return undefined;
     return stablePointerRequests.splice(index, 1)[0]?.phase;
   };
+  const consumeOfflineStablePointerEvidence = (url: string | undefined): boolean => {
+    if (!url) return false;
+    const actual = new URL(url);
+    if (actual.origin !== canonicalOrigin || actual.pathname !== '/channels/stable-v5.json' || actual.search)
+      return false;
+    const now = Date.now();
+    for (let index = synthesizedOfflineStablePointerResponses.length - 1; index >= 0; index -= 1) {
+      if (now - synthesizedOfflineStablePointerResponses[index].at >= 10_000) {
+        synthesizedOfflineStablePointerResponses.splice(index, 1);
+      }
+    }
+    for (let index = stablePointerFetchStarts.length - 1; index >= 0; index -= 1) {
+      if (now - stablePointerFetchStarts[index].at >= 10_000) stablePointerFetchStarts.splice(index, 1);
+    }
+    const responseIndex = synthesizedOfflineStablePointerResponses.findIndex(
+      (candidate) => now - candidate.at < 10_000,
+    );
+    const fetchIndex = stablePointerFetchStarts.findIndex(
+      (candidate) =>
+        now - candidate.at < 10_000 && (candidate.phase === 'offline-recovery' || candidate.online === false),
+    );
+    if (responseIndex < 0 && fetchIndex < 0) return false;
+    if (responseIndex >= 0) synthesizedOfflineStablePointerResponses.splice(responseIndex, 1);
+    if (fetchIndex >= 0) stablePointerFetchStarts.splice(fetchIndex, 1);
+    return true;
+  };
   page.on('pageerror', (error) =>
     failures.push({ source: 'pageerror', message: error.message, ...(phase ? { phase: phase() } : {}) }),
   );
   page.on('console', (message) => {
     const text = message.text();
+    if (text.startsWith('[onlyoffice-matrix] stable-pointer-start ')) {
+      try {
+        const { online } = JSON.parse(text.slice('[onlyoffice-matrix] stable-pointer-start '.length)) as {
+          online?: boolean;
+        };
+        stablePointerFetchStarts.push({ at: Date.now(), phase: phase ? phase() : 'normal', online: online !== false });
+      } catch {
+        // Ignore malformed diagnostics; the browser failure assertion remains strict.
+      }
+      return;
+    }
     if (
       message.type() === 'error' ||
       (message.type() === 'warning' &&
@@ -193,12 +255,14 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
     ) {
       const url = message.location().url;
       const stablePointerRequestPhase = requestPhaseForFailure(url);
+      const offlineStablePointerRequestStarted = consumeOfflineStablePointerEvidence(url);
       failures.push({
         source: 'console',
         message: text,
         ...(url ? { url } : {}),
         ...(phase ? { phase: phase() } : {}),
         ...(stablePointerRequestPhase ? { requestPhase: stablePointerRequestPhase } : {}),
+        ...(offlineStablePointerRequestStarted ? { offlineStablePointerRequestStarted: true } : {}),
       });
     }
   });
@@ -206,7 +270,7 @@ function collectFailures(page: Page, failures: BrowserFailure[], phase?: () => F
 
 function isExpectedOfflineStablePointerFailure(failure: BrowserFailure): boolean {
   if (
-    failure.requestPhase !== 'offline-recovery' ||
+    (failure.requestPhase !== 'offline-recovery' && failure.offlineStablePointerRequestStarted !== true) ||
     failure.source !== 'console' ||
     !failure.url ||
     !/^Failed to load resource: the server responded with a status of 503(?: \([^)]*\))?$/.test(failure.message)
@@ -247,6 +311,22 @@ async function configureMatrixContext(context: BrowserContext, options: { forceD
         return super.postMessage(message);
       }
     };
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      try {
+        const target = new URL(input instanceof Request ? input.url : input.toString(), location.href);
+        if (
+          target.hostname === 'onlyoffice.localhost' &&
+          target.pathname === '/channels/stable-v5.json' &&
+          !target.search
+        ) {
+          console.debug(`[onlyoffice-matrix] stable-pointer-start ${JSON.stringify({ online: navigator.onLine })}`);
+        }
+      } catch {
+        // The fetch must retain its native behavior even for non-URL inputs.
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
   });
   if (forceDownloadSave) {
     await context.addInitScript(() => {
