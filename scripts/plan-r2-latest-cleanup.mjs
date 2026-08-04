@@ -86,12 +86,18 @@ function addManifestObjects(keys, manifest) {
 function inventoryEntries(inventory) {
   if (!Array.isArray(inventory)) fail('R2 inventory must be a JSON array');
   const seen = new Set();
-  return inventory.map((entry, index) => {
-    const key = requireSafeKey(entry?.Path, `inventory entry ${index}.Path`);
+  return inventory.flatMap((entry, index) => {
+    const rawKey = entry?.Path;
+    // Some S3-compatible list implementations emit a zero-byte root marker or
+    // a leading ./ for legacy objects. The marker is not a deletable object;
+    // normalize the harmless prefix while keeping traversal rejection strict.
+    if ((rawKey === '' || rawKey === '.') && entry?.Size === 0) return [];
+    const normalizedKey = typeof rawKey === 'string' ? rawKey.replace(/^\.\//, '') : rawKey;
+    const key = requireSafeKey(normalizedKey, `inventory entry ${index}.Path`);
     if (seen.has(key)) fail(`R2 inventory contains duplicate key ${key}`);
     seen.add(key);
     if (!Number.isSafeInteger(entry?.Size) || entry.Size < 0) fail(`inventory entry ${index}.Size is invalid`);
-    return { key, bytes: entry.Size };
+    return [{ key, bytes: entry.Size }];
   });
 }
 

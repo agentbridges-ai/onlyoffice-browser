@@ -96,4 +96,15 @@ describe('latest-only R2 cleanup planning', () => {
       }),
     ).toThrow('not a safe R2 key');
   });
+
+  it('ignores an S3 root marker and normalizes a harmless leading ./ prefix', () => {
+    const input = fixture();
+    const plan = buildLatestOnlyCleanupPlan({
+      ...input,
+      inventory: [{ Path: '', Size: 0 }, { Path: './channels/stable.json', Size: 100 }, ...input.inventory.slice(1)],
+    });
+
+    expect(plan.inventoryObjects).toBe(input.inventory.length);
+    expect(plan.deleteObjects).toBe(2);
+  });
 });
