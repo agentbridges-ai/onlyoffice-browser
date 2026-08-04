@@ -65,6 +65,15 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('--worker-version-id "${CANDIDATE_WORKER_VERSION_ID}"');
     expect(promotion).toContain('--expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}"');
     expect(promotion).toContain('Verify candidate Worker with release-pinned paths through a version override');
+    expect(promotion).toContain(
+      'https://onlyoffice.getpi.work/r/${ONLYOFFICE_SOURCE_RELEASE_ID}/onlyoffice-runtime-assets.json?override-readiness=',
+    );
+    expect(
+      promotion.slice(
+        promotion.indexOf('Verify candidate Worker with release-pinned paths through a version override'),
+        promotion.indexOf('Activate only the fully compatible candidate Worker'),
+      ),
+    ).not.toContain('https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json');
     expect(promotion).toContain('The unversioned root is intentionally still bound to the previous');
     const beforePointerCommit = promotion.slice(
       0,
