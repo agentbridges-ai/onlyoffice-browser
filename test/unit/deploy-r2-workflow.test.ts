@@ -100,6 +100,11 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('PIWORK_READ_TOKEN: ${{ steps.piwork-read-token.outputs.token }}');
     expect(promotion).toContain('if test -n "${PIWORK_READ_TOKEN}"');
     expect(promotion).toContain('-H "Authorization: Bearer ${PIWORK_READ_TOKEN}"');
+    expect(promotion).toContain('raw_get()');
+    expect(promotion).toContain(
+      'local args=(--fail --silent --show-error --retry 4 --retry-all-errors --connect-timeout 10 --max-time 30)',
+    );
+    expect(promotion).not.toContain('${RAW_HEADERS[@]}');
     expect(promotion).toContain("-H 'X-GitHub-Api-Version: 2022-11-28'");
     expect(promotion).toContain('x-ratelimit-limit=${limit:-unknown}');
     expect(promotion).toContain('Configure the optional Piwork read GitHub App');
