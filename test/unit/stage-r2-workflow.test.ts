@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 const stage = fs.readFileSync('.github/workflows/stage-r2.yml', 'utf8');
 
 describe('immutable candidate staging workflow', () => {
-  it('stages and fully verifies only the retained candidate CAS against the current Worker', () => {
+  it('stages and incrementally verifies only the retained candidate CAS against the current Worker', () => {
     expect(stage).toContain("inputs.confirm_stage == 'STAGE'");
     expect(stage).toContain('candidate_commit');
     expect(stage).toContain('candidate_run_id');
@@ -21,11 +21,18 @@ describe('immutable candidate staging workflow', () => {
     expect(stage).toContain('npmRegistry');
     expect(stage).toContain('candidate matrix evidence mismatch');
     expect(stage).toContain('manifest.sourceCommit!==process.env.CANDIDATE');
-    expect(stage).toContain('r2:onlyoffice-getpi-work/blobs --ignore-existing');
-    expect(stage).toContain('r2:onlyoffice-getpi-work/releases --ignore-existing');
-    expect(stage).toContain('r2:onlyoffice-getpi-work/packages --ignore-existing');
-    expect(stage).toContain('r2:onlyoffice-getpi-work/segments --ignore-existing');
-    expect(stage).toContain('--remote-verification-mode full');
+    expect(stage).toContain('retry_inventory "${before_inventory}" lsjson r2:onlyoffice-getpi-work');
+    expect(stage).toContain('--no-traverse');
+    expect(stage).toContain('--transfers 16');
+    expect(stage).toContain('--checkers 32');
+    expect(stage).toContain("--exclude 'channels/**'");
+    expect(stage).toContain('--remote-verification-mode incremental');
+    expect(stage).toContain('--remote-inventory "${before_inventory}"');
+    expect(stage).toContain('--concurrency 16');
+    expect(stage).not.toContain('r2:onlyoffice-getpi-work/blobs --ignore-existing');
+    expect(stage).not.toContain('r2:onlyoffice-getpi-work/releases --ignore-existing');
+    expect(stage).not.toContain('r2:onlyoffice-getpi-work/packages --ignore-existing');
+    expect(stage).not.toContain('r2:onlyoffice-getpi-work/segments --ignore-existing');
     expect(stage).toContain('Verify staged release against the current production Worker');
     expect(stage).toContain('scripts/verify-release-http.mjs');
     expect(stage).toContain('current-production-worker-compatibility');

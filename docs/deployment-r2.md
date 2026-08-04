@@ -189,13 +189,17 @@ manual dispatch:
 requires `STAGE`, the same candidate commit, and the successful candidate run.
 It repeats the envelope, npm registry/SLSA, source-package, and matrix checks
 without rebuilding, then uploads only `.onlyoffice-release/{blobs,releases,packages,segments}`
-with `--ignore-existing` and fully re-hashes the remote CAS. It does not write a
-channel, copy `dist` compatibility-root files, or deploy a Worker. It verifies
-the release Host, Broker, and release-bound object routes through the _current_
-production Worker and retains an evidence artifact. This proves current-Worker
-compatibility for Piwork online candidate verification; it does not validate a
-candidate Worker change, which is verified only during promotion before stable
-activation.
+with `--ignore-existing` and high-concurrency, no-traverse CAS transfer. The
+staging inventory is captured before upload; the remote verifier checks exact
+presence/size for every object and streams SHA-256 only for objects introduced
+or replaced by this candidate. This avoids re-reading the historical bucket on
+every stage while the scheduled audit and the promotion gate retain the full
+remote re-hash. It does not write a channel, copy `dist` compatibility-root
+files, or deploy a Worker. It verifies the release Host, Broker, and
+release-bound object routes through the _current_ production Worker and retains
+an evidence artifact. This proves current-Worker compatibility for Piwork
+online candidate verification; it does not validate a candidate Worker change,
+which is verified only during promotion before stable activation.
 
 `deploy-r2.yml` is a manual, production-environment approval transaction:
 
@@ -373,12 +377,12 @@ fixed public immutable font release. `stage-r2.yml` makes
 only its immutable CAS available to the current production Worker and emits
 compatibility evidence, allowing Piwork to online-verify the candidate without
 an activation. `deploy-r2.yml` requires that stage run, repeats full remote
-verification, transactionally verifies the candidate Worker at 0%, activates
-it at 100%, then moves only `stable-v5`. Runtime-root aliases follow release
-CAS instead of mutable compatibility-root objects. `rollback-r2.yml` binds the
-target to its recorded manifest digest and successful protected promotion,
-preflights the current Worker, restores only that pointer, and records a
-promotion-chained immutable rollback receipt.
+verification with bounded parallel streams, transactionally verifies the
+candidate Worker at 0%, activates it at 100%, then moves only `stable-v5`.
+Runtime-root aliases follow release CAS instead of mutable compatibility-root
+objects. `rollback-r2.yml` binds the target to its recorded manifest digest
+and successful protected promotion, preflights the current Worker, restores
+only that pointer, and records a promotion-chained immutable rollback receipt.
 
 ## Required GitHub configuration
 

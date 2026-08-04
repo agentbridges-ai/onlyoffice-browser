@@ -220,7 +220,8 @@ jobs:
             --expected-manifest-sha256 "${MANIFEST_SHA256}" \
             --fastcdc-evidence-mode automatic \
             --remote r2:onlyoffice-getpi-work \
-            --remote-verification-mode full
+            --remote-verification-mode full \
+            --concurrency 16
           mkdir -p promotion-receipts rollback-receipts receipt-run-attempts
           retry_rclone_capture promotion-receipt-names.txt lsf "r2:onlyoffice-getpi-work/promotions/${RELEASE_ID}" --files-only
           test -s promotion-receipt-names.txt
