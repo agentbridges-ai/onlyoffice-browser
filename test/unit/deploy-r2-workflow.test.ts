@@ -64,6 +64,16 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('"${CANDIDATE_WORKER_VERSION_ID}@100%"');
     expect(promotion).toContain('--worker-version-id "${CANDIDATE_WORKER_VERSION_ID}"');
     expect(promotion).toContain('--expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}"');
+    expect(promotion).toContain('Verify candidate Worker with release-pinned paths through a version override');
+    expect(promotion).toContain('The unversioned root is intentionally still bound to the previous');
+    const beforePointerCommit = promotion.slice(
+      0,
+      promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass'),
+    );
+    expect(beforePointerCommit).not.toContain('--verify-stable-root');
+    expect(promotion.slice(promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass'))).toContain(
+      '--verify-stable-root',
+    );
     expect(promotion).toContain('stable-v5-release-cas');
     expect(promotion).toContain('candidate envelope, manifest source, or source package integrity mismatch');
     expect(promotion).toContain('manifest.sourceCommit!==process.env.CANDIDATE');

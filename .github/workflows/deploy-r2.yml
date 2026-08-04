@@ -381,7 +381,7 @@ jobs:
           const recovered=traffic.size===1&&traffic.get(process.env.CANDIDATE_WORKER_VERSION_ID)===100;
           if(!split&&!recovered) throw Error('candidate Worker is neither isolated at zero percent nor already active');
           NODE
-      - name: Verify candidate Worker with both new and predecessor releases through a version override
+      - name: Verify candidate Worker with release-pinned paths through a version override
         run: |
           set -euo pipefail
           OVERRIDE_HEADER="onlyoffice-browser-runtime=\"${CANDIDATE_WORKER_VERSION_ID}\""
@@ -410,26 +410,10 @@ jobs:
             --fastcdc-evidence-mode automatic \
             --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --cache-bust "predecessor-override-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"
-          ACTIVE_RELEASE_ID="$(node -p "require('./stable-v5-before-deploy.json').releaseId")"
-          if [ "${ACTIVE_RELEASE_ID}" = "${ONLYOFFICE_SOURCE_RELEASE_ID}" ]; then
-            node scripts/verify-release-http.mjs \
-              --release-root candidate-input/.onlyoffice-release \
-              --expected-package-version "$(node -p "require('./package.json').version")" \
-              --fastcdc-evidence-mode automatic \
-              --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
-              --verify-stable-root \
-              --cache-bust "root-override-${{ github.run_id }}-${{ github.run_attempt }}"
-          else
-            test "${ACTIVE_RELEASE_ID}" = "${PREVIOUS_RELEASE_ID}"
-            node scripts/verify-release-http.mjs \
-              --v5-manifest predecessor-release/manifest.json \
-              --release-id "${PREVIOUS_RELEASE_ID}" \
-              --expected-manifest-sha256 "${PREVIOUS_MANIFEST_SHA256}" \
-              --fastcdc-evidence-mode automatic \
-              --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
-              --verify-stable-root \
-              --cache-bust "root-override-${{ github.run_id }}-${{ github.run_attempt }}"
-          fi
+          # The unversioned root is intentionally still bound to the previous
+          # stable-v5 pointer at this stage. Verify it only after the pointer
+          # compare-and-write converges, below; release-pinned paths are the
+          # safe pre-activation compatibility probe.
       - name: Activate only the fully compatible candidate Worker
         run: |
           set -euo pipefail
