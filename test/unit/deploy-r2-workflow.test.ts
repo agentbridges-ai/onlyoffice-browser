@@ -71,9 +71,9 @@ describe('R2 release train workflows', () => {
       promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass'),
     );
     expect(beforePointerCommit).not.toContain('--verify-stable-root');
-    expect(promotion.slice(promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass'))).toContain(
-      '--verify-stable-root',
-    );
+    expect(
+      promotion.slice(promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass')),
+    ).toContain('--verify-stable-root');
     expect(promotion).toContain('stable-v5-release-cas');
     expect(promotion).toContain('candidate envelope, manifest source, or source package integrity mismatch');
     expect(promotion).toContain('manifest.sourceCommit!==process.env.CANDIDATE');
