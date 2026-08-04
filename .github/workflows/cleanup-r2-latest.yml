@@ -103,7 +103,7 @@ jobs:
             local output="$1" attempt=1 temporary="${1}.tmp"
             while true; do
               rm -f "${temporary}"
-              if timeout 300 rclone lsjson r2:onlyoffice-getpi-work --recursive --files-only --fast-list --no-modtime --no-mimetype > "${temporary}"; then
+              if timeout 900 node scripts/snapshot-r2-inventory.mjs r2:onlyoffice-getpi-work "${temporary}"; then
                 mv "${temporary}" "${output}"
                 return 0
               fi
@@ -185,7 +185,7 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: |
           set -euo pipefail
-          timeout 300 rclone lsjson r2:onlyoffice-getpi-work --recursive --files-only --fast-list --no-modtime --no-mimetype > r2-inventory-after.json
+          timeout 900 node scripts/snapshot-r2-inventory.mjs r2:onlyoffice-getpi-work r2-inventory-after.json
           node scripts/plan-r2-latest-cleanup.mjs \
             --pointer stable-v5-r2.json \
             --legacy-pointer stable-v4-target.json \
