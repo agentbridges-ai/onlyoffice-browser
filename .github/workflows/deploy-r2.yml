@@ -429,12 +429,14 @@ jobs:
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             ACTUAL_WORKER_VERSION="$(curl --fail --silent --show-error --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 --head \
               -H 'Cache-Control: no-store' \
-              "https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json?worker-readiness=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}" \
+              "https://onlyoffice.getpi.work/r/${ONLYOFFICE_SOURCE_RELEASE_ID}/onlyoffice-runtime-assets.json?worker-readiness=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}" \
               | tr -d '\r' | awk -F ': ' 'tolower($1)=="x-onlyoffice-worker-version"{print $2}')"
             test "${ACTUAL_WORKER_VERSION}" = "${CANDIDATE_WORKER_VERSION_ID}" && break
             test "${attempt}" = 10 && { echo "candidate Worker did not propagate at 100 percent" >&2; exit 1; }
             sleep "$((attempt * 2))"
           done
+          # stable-v5 still points to the predecessor until the next step, so
+          # readiness must remain release-pinned until the pointer converges.
           PREVIOUS_RELEASE_ID="$(node -p "require('./promotion-intent.json').previousStable.releaseId")"
           PREVIOUS_MANIFEST_SHA256="$(node -p "require('./promotion-intent.json').previousStable.manifestSha256")"
           node scripts/verify-release-http.mjs \
