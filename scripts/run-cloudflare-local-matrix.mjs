@@ -8,7 +8,6 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 const root = process.cwd();
-const wranglerVersion = '4.114.0';
 const seederPort = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_SEED_PORT || '8790', 10);
 const workerPort = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_PORT || '8787', 10);
 const workerInternalPort = Number.parseInt(process.env.ONLYOFFICE_CF_MATRIX_INTERNAL_PORT || '8788', 10);
@@ -53,8 +52,8 @@ async function run(program, args, options = {}) {
 
 function wranglerArgs(config, port, extra = []) {
   return [
-    '--yes',
-    `wrangler@${wranglerVersion}`,
+    'exec',
+    'wrangler',
     'dev',
     '--config',
     config,
@@ -675,7 +674,7 @@ async function main() {
 
   if (files.length > 0) {
     const seeder = command(
-      'npx',
+      'pnpm',
       wranglerArgs('wrangler.local-r2-seeder.jsonc', seederPort, ['--var', `MATRIX_SEED_TOKEN:${token}`]),
     );
     await waitForServer(
@@ -698,7 +697,7 @@ async function main() {
   }
 
   const worker = command(
-    'npx',
+    'pnpm',
     wranglerArgs('wrangler.jsonc', workerInternalPort, [
       '--var',
       `ASSET_VERSION:${releasePointer.releaseId}`,
