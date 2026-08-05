@@ -79,6 +79,12 @@ describe('R2 release train workflows', () => {
       0,
       promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass'),
     );
+    expect(beforePointerCommit).toContain(
+      'https://onlyoffice.getpi.work/r/${ONLYOFFICE_SOURCE_RELEASE_ID}/onlyoffice-runtime-assets.json?worker-readiness=',
+    );
+    expect(beforePointerCommit).not.toContain(
+      'https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json?worker-readiness=',
+    );
     expect(beforePointerCommit).not.toContain('--verify-stable-root');
     expect(
       promotion.slice(promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass')),
