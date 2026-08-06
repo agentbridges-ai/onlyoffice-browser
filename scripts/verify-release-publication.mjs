@@ -652,6 +652,8 @@ const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolv
 if (isMain) {
   const remote = option('--remote');
   const concurrency = Number(option('--concurrency', '4'));
+  const remoteVerificationMode = option('--remote-verification-mode', 'full');
+  const skipLocalVerification = process.argv.includes('--skip-local-verification');
   const v5Manifest = option('--v5-manifest');
   const commonOptions = {
     expectedPackageVersion: option('--expected-package-version'),
@@ -666,7 +668,10 @@ if (isMain) {
         expectedManifestSha256: option('--expected-manifest-sha256'),
       })
     : loadReleasePublication(option('--release-root', '.onlyoffice-release'), commonOptions);
-  if (!v5Manifest) {
+  if (skipLocalVerification && (!remote || remoteVerificationMode !== 'incremental')) {
+    fail('--skip-local-verification requires incremental remote verification');
+  }
+  if (!v5Manifest && !skipLocalVerification) {
     const local = await verifyLocalRelease(publication, { concurrency });
     console.log(
       `Verified ${local.objects} local immutable objects (${local.bytes} bytes) for ${publication.releaseId}`,
@@ -678,7 +683,7 @@ if (isMain) {
     const remoteResult = await verifyRemoteRelease(publication, remote, {
       concurrency,
       rcloneBinary: option('--rclone-bin', 'rclone'),
-      remoteVerificationMode: option('--remote-verification-mode', 'full'),
+      remoteVerificationMode,
       remoteInventoryPath: option('--remote-inventory'),
     });
     const reportPath = option('--report-file');

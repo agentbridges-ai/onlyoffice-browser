@@ -164,6 +164,7 @@ jobs:
             --fastcdc-evidence-mode automatic \
             --remote r2:onlyoffice-getpi-work \
             --remote-verification-mode incremental \
+            --skip-local-verification \
             --remote-inventory "${R2_BEFORE_INVENTORY}" \
             --report-file cas-verification.json \
             --concurrency 16

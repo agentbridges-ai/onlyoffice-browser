@@ -2,35 +2,235 @@ name: Pull request checks
 
 on:
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: onlyoffice-pr-${{ github.event.pull_request.number }}
+  group: onlyoffice-pr-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  verify:
+  gate-0-scope:
+    name: Gate 0 · scope and preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
+    outputs:
+      relevant: ${{ steps.scope.outputs.relevant }}
+      release: ${{ steps.scope.outputs.release }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - id: scope
+        name: Classify changed surface
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          base_sha="${PR_BASE_SHA:-${MERGE_GROUP_BASE_SHA:-${GITHUB_BEFORE:-}}}"
+          if [ -z "$base_sha" ] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            base_sha="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+          changed="$(git diff --name-only "$base_sha" "$GITHUB_SHA")"
+          relevant=false
+          release=false
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            case "$file" in
+              *.md|docs/*|LICENSE*)
+                ;;
+              .github/workflows/*|bin/*|cloudflare/*|pages/*|scripts/*|src/*|public/*|test/*|*.config.*|package.json|pnpm-lock.yaml|vite*.ts|tsconfig*.json|wrangler*.json)
+                relevant=true
+                release=true
+                ;;
+              *)
+                relevant=true
+                ;;
+            esac
+          done <<< "$changed"
+          printf '%s\n' "Changed files:"
+          printf '%s\n' "${changed:-<none>}"
+          printf 'relevant=%s\n' "$relevant" >> "$GITHUB_OUTPUT"
+          printf 'release=%s\n' "$release" >> "$GITHUB_OUTPUT"
+      - name: Check changed files and workflow syntax
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          base_sha="${PR_BASE_SHA:-${MERGE_GROUP_BASE_SHA:-${GITHUB_BEFORE:-}}}"
+          if [ -z "$base_sha" ] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            base_sha="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+          git diff --check "$base_sha" "$GITHUB_SHA"
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.yml"].each { |file| YAML.load_file(file); puts "ok #{file}" }'
+          while IFS= read -r file; do
+            [ -f "$file" ] || continue
+            case "$file" in
+              *.mjs|*.js) node --check "$file" ;;
+            esac
+          done < <(git diff --name-only "$base_sha" "$GITHUB_SHA")
+
+  gate-1-fast:
+    name: Gate 1 · fast tests
+    if: always()
+    needs: gate-0-scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Explicit no-op
+        if: needs.gate-0-scope.result != 'success' || needs.gate-0-scope.outputs.relevant != 'true'
+        run: |
+          echo "NO-OP: Gate 0 failed or classified this change as documentation-only. The verify aggregator will remain blocked if Gate 0 failed."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: needs.gate-0-scope.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
       - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        if: needs.gate-0-scope.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
         with:
           version: 11.4.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: needs.gate-0-scope.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Verify public API, runtime and pack contents
+      - name: Install locked dependencies
+        if: needs.gate-0-scope.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Run release fast tests
+        if: needs.gate-0-scope.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true' && needs.gate-0-scope.outputs.release == 'true'
+        run: pnpm exec vitest run test/unit/release-publication-verification.test.ts test/unit/github-artifact-range.test.ts test/unit/release-state-machine.test.ts test/unit/candidate-r2-workflow.test.ts test/unit/stage-r2-workflow.test.ts test/unit/deploy-r2-workflow.test.ts
+      - name: Run fast unit tests
+        if: needs.gate-0-scope.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true' && needs.gate-0-scope.outputs.release != 'true'
+        run: pnpm exec vitest run test/unit
+
+  gate-2-quality:
+    name: Gate 2 · quality and build
+    if: always()
+    needs: [gate-0-scope, gate-1-fast]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Explicit no-op
+        if: needs.gate-0-scope.result != 'success' || needs.gate-1-fast.result != 'success' || needs.gate-0-scope.outputs.relevant != 'true'
         run: |
-          pnpm test
-          pnpm tsc --noEmit
-          pnpm lint
-          pnpm format:check
-          pnpm build:lib
-          npm pack --dry-run --ignore-scripts
-          pnpm build
-          node scripts/verify-release-publication.mjs --release-root .onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --fastcdc-evidence-mode automatic
+          echo "NO-OP: Gate 2 waits for a successful relevant Gate 1. The verify aggregator will report the upstream failure."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install locked dependencies
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Typecheck
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        run: pnpm tsc --noEmit
+      - name: Lint
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        run: pnpm lint
+      - name: Check formatting
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        run: pnpm format:check
+      - name: Build the library once
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        run: pnpm build:lib
+      - name: Check npm pack contents
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
+        run: npm pack --dry-run --ignore-scripts
+      - name: Run the full unit suite for release changes
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true' && needs.gate-0-scope.outputs.release == 'true'
+        run: pnpm exec vitest run test/unit
+
+  gate-3-integration:
+    name: Gate 3 · integration and release simulation
+    if: always()
+    needs: [gate-0-scope, gate-1-fast, gate-2-quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ONLYOFFICE_MATRIX_FONT_RELEASE_ID: v0.5.0-648c486d1c558acd
+      ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256: 09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
+    steps:
+      - name: Explicit no-op
+        if: needs.gate-0-scope.result != 'success' || needs.gate-1-fast.result != 'success' || needs.gate-2-quality.result != 'success' || needs.gate-0-scope.outputs.release != 'true'
+        run: |
+          echo "NO-OP: Gate 3 requires successful Gates 0-2 and a release-relevant change. The verify aggregator will report the upstream failure."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4.2.0
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        with:
+          version: 11.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install locked dependencies
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Restore the pinned full-font input
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        id: full-font-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/onlyoffice-font-release
+          key: onlyoffice-font-release-v0.5.0-648c486d1c558acd-09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
+      - name: Build the deployable release once
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        run: ONLYOFFICE_SKIP_RELEASE_BUILD=1 pnpm build
+      - name: Hydrate and verify the pinned font input before release staging
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        env:
+          FONT_CACHE_HIT: ${{ steps.full-font-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          test "$FONT_CACHE_HIT" = true || { echo 'Pinned font cache is unavailable; candidate workflow must publish it before Gate 3 can run.' >&2; exit 1; }
+          FONT_MANIFEST="${GITHUB_WORKSPACE}/.cache/onlyoffice-font-release/onlyoffice-browser-font-assets.json"
+          test -s "$FONT_MANIFEST"
+          test "$(shasum -a 256 "$FONT_MANIFEST" | awk '{print $1}')" = "$ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256"
+          ONLYOFFICE_MATRIX_FONT_ASSETS_DIR="${GITHUB_WORKSPACE}/.cache/onlyoffice-font-release" node scripts/hydrate-cloudflare-matrix-fonts.mjs
+          pnpm fonts:verify --input dist
+          pnpm release:build
+      - name: Verify the local immutable release
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        run: node scripts/verify-release-publication.mjs --release-root .onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --fastcdc-evidence-mode automatic
+      - name: Install Chromium for the integration matrix
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run the local Cloudflare integration matrix
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        run: |
+          ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1 ONLYOFFICE_CF_MATRIX_REUSE_STATE="${RUNNER_TEMP}/onlyoffice-cloudflare-matrix-state" ONLYOFFICE_CF_MATRIX_REFRESH_STATE=1 ONLYOFFICE_CF_MATRIX_KEEP_STATE=1 ONLYOFFICE_CF_MATRIX_FORCE_FULL=1 ONLYOFFICE_CF_MATRIX_GREP='' node scripts/run-cloudflare-local-matrix.mjs
+
+  verify:
+    name: verify
+    if: always()
+    needs: [gate-0-scope, gate-1-fast, gate-2-quality, gate-3-integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every gate to complete successfully
+        env:
+          GATE_0: ${{ needs.gate-0-scope.result }}
+          GATE_1: ${{ needs.gate-1-fast.result }}
+          GATE_2: ${{ needs.gate-2-quality.result }}
+          GATE_3: ${{ needs.gate-3-integration.result }}
+        run: |
+          set -euo pipefail
+          printf 'Gate 0=%s Gate 1=%s Gate 2=%s Gate 3=%s\n' "$GATE_0" "$GATE_1" "$GATE_2" "$GATE_3"
+          for result in "$GATE_0" "$GATE_1" "$GATE_2" "$GATE_3"; do
+            test "$result" = success || {
+              echo 'Required gate failed or was cancelled; no bypass is permitted.' >&2
+              exit 1
+            }
+          done

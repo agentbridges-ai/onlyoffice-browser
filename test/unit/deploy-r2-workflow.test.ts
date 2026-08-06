@@ -11,6 +11,14 @@ const pullRequestChecks = read('.github/workflows/ci.yml');
 const matrixRunner = read('scripts/run-cloudflare-local-matrix.mjs');
 
 describe('R2 release train workflows', () => {
+  it('classifies every deployable build input as release-relevant and keeps a full unit gate', () => {
+    expect(pullRequestChecks).toContain(
+      '.github/workflows/*|bin/*|cloudflare/*|pages/*|scripts/*|src/*|public/*|test/*|*.config.*',
+    );
+    expect(pullRequestChecks).toContain('Run the full unit suite for release changes');
+    expect(pullRequestChecks).toContain('pnpm exec vitest run test/unit');
+  });
+
   it('builds, matrices, publishes immutable CAS, smokes, then retains a candidate', () => {
     expect(candidate).toContain('SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)');
     expect(candidate).toContain("if: github.ref == 'refs/heads/main'");
@@ -49,6 +57,7 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('Materialize the small staged worker and release input');
     expect(promotion).toContain('Reuse staged CAS and verify only its current inventory');
     expect(promotion).toContain('staged-cas-readback.json');
+    expect(promotion.match(/--skip-local-verification/g)).toHaveLength(2);
     expect(promotion).toContain('Reconstruct and incrementally verify the immutable predecessor release');
     expect(promotion).not.toContain('Upload candidate CAS in production and fully verify it');
     expect(promotion).not.toContain('--remote-verification-mode full');
@@ -281,6 +290,28 @@ describe('R2 release train workflows', () => {
   it('pins every third-party action to a full commit SHA', () => {
     for (const workflow of [candidate, promotion, rollback, audit, npmPublication, pullRequestChecks])
       expect(workflow).not.toMatch(/uses:\s+[^\s]+@v\d/);
+  });
+
+  it('keeps all four CI gates and the required aggregate status observable', () => {
+    expect(pullRequestChecks).toContain('merge_group:');
+    expect(pullRequestChecks).toContain('cancel-in-progress: true');
+    expect(pullRequestChecks).toContain('name: Gate 0 · scope and preflight');
+    expect(pullRequestChecks).toContain('name: Gate 1 · fast tests');
+    expect(pullRequestChecks).toContain('name: Gate 2 · quality and build');
+    expect(pullRequestChecks).toContain('name: Gate 3 · integration and release simulation');
+    expect(pullRequestChecks).toContain('name: verify');
+    expect(pullRequestChecks).toContain('if: always()');
+    expect(pullRequestChecks).toContain('Explicit no-op');
+    expect(pullRequestChecks).toContain('Require every gate to complete successfully');
+    expect(pullRequestChecks).toContain('Required gate failed or was cancelled; no bypass is permitted.');
+    expect(pullRequestChecks).toContain('actions/cache/restore');
+    expect(pullRequestChecks).toContain('Pinned font cache is unavailable');
+    expect(pullRequestChecks).toContain('ONLYOFFICE_SKIP_RELEASE_BUILD=1 pnpm build');
+    expect(pullRequestChecks).toContain('pnpm release:build');
+    expect(pullRequestChecks).toContain('ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1');
+    expect(pullRequestChecks).toContain('pnpm exec playwright install --with-deps chromium');
+    expect(pullRequestChecks).toContain('ONLYOFFICE_CF_MATRIX_REUSE_STATE');
+    expect(pullRequestChecks).toContain('ONLYOFFICE_CF_MATRIX_GREP=');
   });
 
   it('has an explicit current-build matrix mode that cannot rebuild the candidate', () => {
