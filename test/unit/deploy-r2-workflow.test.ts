@@ -284,6 +284,20 @@ describe('R2 release train workflows', () => {
       expect(workflow).not.toMatch(/uses:\s+[^\s]+@v\d/);
   });
 
+  it('keeps all four CI gates and the required aggregate status observable', () => {
+    expect(pullRequestChecks).toContain('merge_group:');
+    expect(pullRequestChecks).toContain('cancel-in-progress: true');
+    expect(pullRequestChecks).toContain('name: Gate 0 · scope and preflight');
+    expect(pullRequestChecks).toContain('name: Gate 1 · fast tests');
+    expect(pullRequestChecks).toContain('name: Gate 2 · quality and build');
+    expect(pullRequestChecks).toContain('name: Gate 3 · integration and release simulation');
+    expect(pullRequestChecks).toContain('name: verify');
+    expect(pullRequestChecks).toContain('if: always()');
+    expect(pullRequestChecks).toContain('Explicit no-op');
+    expect(pullRequestChecks).toContain('Require every gate to complete successfully');
+    expect(pullRequestChecks).toContain('Required gate failed or was cancelled; no bypass is permitted.');
+  });
+
   it('has an explicit current-build matrix mode that cannot rebuild the candidate', () => {
     expect(matrixRunner).toContain("ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD === '1'");
     const currentBuildBranch = matrixRunner.slice(
