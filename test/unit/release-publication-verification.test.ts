@@ -179,7 +179,7 @@ describe('Release Manifest v5 publication verification', () => {
   });
 
   it('verifies a partial Range materialization without reading intentionally reused local objects', () => {
-    const { output, manifest } = fixture();
+    const { output } = fixture();
     const publication = loadReleasePublication(output, {
       expectedPackageVersion: '0.5.7',
       fastCdcEvidenceMode: 'forbid',
