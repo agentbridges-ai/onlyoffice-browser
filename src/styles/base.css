@@ -47,6 +47,17 @@
   --overlay-shadow: 0 14px 36px rgb(24 24 27 / 14%);
   --duration-feedback: 120ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Piwork preview-pane geometry shared by the standalone Office surface. */
+  --piwork-control-radius: var(--control-radius);
+  --piwork-panel-radius: var(--panel-radius);
+  --piwork-titlebar-height: 40px;
+  --piwork-titlebar-control-size: 31px;
+  --piwork-control-height-sm: 32px;
+  --piwork-duration-feedback: var(--duration-feedback);
+  --piwork-ease-out: var(--ease-out);
+  --piwork-z-popover: 30;
+  --preview-drop-indicator: var(--foreground);
 }
 
 * {
@@ -527,13 +538,50 @@ button:disabled {
   min-height: var(--control-height);
 }
 
-.document-tabs {
+.editor-workspace {
   min-height: 0;
+  flex: 1;
   display: flex;
-  overflow-x: auto;
+  background: var(--background);
+}
+
+/* Piwork's preview pane: a fixed 40px tabbar over a persistent body. */
+.preview-pane {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  color: var(--foreground);
+  background: var(--background);
+}
+
+.preview-tabbar {
+  min-height: var(--piwork-titlebar-height);
+  height: var(--piwork-titlebar-height);
+  display: flex;
+  flex-shrink: 0;
+  align-items: stretch;
   border-bottom: 1px solid var(--border);
-  background: var(--surface-tertiary);
-  scrollbar-width: thin;
+  background: var(--surface);
+}
+
+.document-tabs {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 4px;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.document-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .document-tabs:empty {
@@ -541,57 +589,180 @@ button:disabled {
 }
 
 .document-tab {
+  position: relative;
   width: 190px;
-  min-width: 130px;
-  min-height: var(--control-height);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  max-width: 190px;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-shrink: 0;
   align-items: center;
-  gap: 7px;
-  border: 0;
-  border-right: 1px solid var(--border);
-  border-radius: 0;
-  color: var(--muted);
-  background: var(--surface-tertiary);
-  font-weight: 500;
-  text-align: left;
-}
-
-.document-tab.active {
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--piwork-control-radius);
   color: var(--foreground);
-  background: var(--surface);
+  background: transparent;
+  font-size: 14px;
+  font-weight: 500;
+  transition: none;
 }
 
-.document-tab span {
+.document-tab.active,
+.document-tab:hover,
+.document-tab:focus-within {
+  background: var(--accent-soft);
+}
+
+.document-tab-select {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--piwork-control-radius);
+  background: transparent;
+  cursor: default;
+}
+
+.document-tab-select:hover,
+.document-tab-select:active {
+  background: transparent;
+  transform: none;
+}
+
+.document-tab-select:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.document-tab-icon,
+.document-tab-title,
+.document-tab-origin,
+.document-tab-dirty {
+  pointer-events: none;
+  position: relative;
+  z-index: 1;
+}
+
+.document-tab-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent-soft) 75%, var(--surface));
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.document-tab[data-document-kind='cell'] .document-tab-icon {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.document-tab[data-document-kind='slide'] .document-tab-icon {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.document-tab-title {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
+  padding: 0 4px;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.document-tab i {
-  color: var(--foreground);
-  font-size: 7px;
-  font-style: normal;
-}
-
-.document-tab b {
-  width: 20px;
-  border-radius: 5px;
+.document-tab-origin {
+  max-width: 27px;
+  overflow: hidden;
+  padding: 2px 4px;
+  border-radius: 999px;
   color: var(--muted);
-  font-size: 17px;
-  font-weight: 400;
+  background: color-mix(in oklch, var(--default) 70%, transparent);
+  font-family: 'STIXGeneral', 'STIX Two Text', 'Times New Roman', serif;
+  font-variant-emoji: text;
+  font-size: 11px;
+  line-height: 1;
   text-align: center;
 }
 
-.document-tab b:hover {
+.document-tab[data-editor-state='ready'] .document-tab-origin {
+  color: var(--success);
+}
+
+.document-tab[data-editor-state='error'] .document-tab-origin {
+  color: var(--danger);
+}
+
+.document-tab-close {
+  position: relative;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--piwork-control-radius);
+  color: var(--muted);
+  background: transparent;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1;
+  opacity: 0;
+}
+
+.document-tab:hover .document-tab-close,
+.document-tab:focus-within .document-tab-close {
+  opacity: 1;
+}
+
+.document-tab-close:hover {
   color: var(--foreground);
   background: var(--default);
 }
 
-.editor-workspace {
+.document-tab-dirty {
+  position: absolute;
+  right: 30px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  color: transparent;
+  background: var(--muted);
+  transform: translateY(-50%);
+}
+
+.document-tab-dirty[hidden] {
+  display: none;
+}
+
+.preview-body {
+  position: relative;
+  min-width: 0;
   min-height: 0;
   flex: 1;
   display: flex;
+  overflow: hidden;
+  color: color-mix(in oklch, var(--foreground) 75%, transparent);
   background: var(--background);
 }
 
@@ -655,23 +826,45 @@ button:disabled {
 }
 
 .document-bar {
-  min-height: 42px;
+  min-height: var(--piwork-titlebar-height);
+  height: var(--piwork-titlebar-height);
   justify-content: space-between;
-  gap: 12px;
-  padding: 4px 10px 4px 14px;
+  gap: 8px;
+  padding: 4px 8px 4px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 
 .document-bar > div {
   min-width: 0;
+  gap: 6px;
+}
+
+.document-heading,
+.document-actions {
+  display: flex;
+  align-items: center;
+}
+
+.document-heading {
+  min-width: 0;
+  flex: 1;
   gap: 8px;
 }
 
+.document-actions {
+  flex-shrink: 0;
+  gap: 4px;
+}
+
 .document-bar strong {
+  min-width: 0;
   max-width: min(55vw, 640px);
   overflow: hidden;
-  font-size: 13px;
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -681,8 +874,172 @@ button:disabled {
   font-size: 11px;
 }
 
-.document-bar button {
-  min-height: var(--control-height);
+.document-type-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent-soft) 75%, var(--surface));
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.document-type-icon[data-kind='cell'] {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.document-type-icon[data-kind='slide'] {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.document-origin {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(260px, 30vw);
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--default);
+  font-family: 'STIXGeneral', 'STIX Two Text', 'Times New Roman', serif;
+  font-variant-emoji: text;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-origin[data-state='ready'] {
+  color: var(--success);
+}
+
+.document-origin[data-state='error'] {
+  color: var(--danger);
+}
+
+.document-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--default);
+  font-size: 10px !important;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.document-status[data-state='ready'] {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.document-status[data-state='dirty'] {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.document-status[data-state='waiting'] {
+  color: var(--muted);
+}
+
+.document-status[data-state='error'] {
+  max-width: min(340px, 34vw);
+  overflow: hidden;
+  color: var(--danger);
+  background: var(--danger-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-toolbar-button {
+  width: var(--piwork-titlebar-control-size);
+  height: var(--piwork-titlebar-control-size);
+  min-height: var(--piwork-titlebar-control-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--piwork-control-radius);
+  color: var(--foreground);
+  background: transparent;
+  transition:
+    background var(--piwork-duration-feedback) var(--piwork-ease-out),
+    color var(--piwork-duration-feedback) var(--piwork-ease-out),
+    transform var(--piwork-duration-feedback) var(--piwork-ease-out);
+}
+
+.preview-toolbar-button:hover {
+  color: var(--foreground);
+  background: var(--accent-soft);
+}
+
+.preview-toolbar-button:active {
+  background: var(--default-active);
+}
+
+.toolbar-glyph {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.toolbar-button-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.editor-slot {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.document-editor-container {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  background: var(--surface);
+  transition: opacity var(--duration-feedback) var(--ease-out);
+}
+
+.document-editor-container[data-active='true'] {
+  z-index: 1;
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.document-editor-container .office-editor-host,
+.document-editor-container .office-editor-host-frame,
+.document-editor-container iframe[name='frameEditor'] {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
 }
 
 .app-footer {

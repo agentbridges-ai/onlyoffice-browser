@@ -1,4 +1,14 @@
-import { createOfficeEditor, type OfficeEditorInstance, type OfficeHostUrlContext } from './lib/office-editor';
+import {
+  mountOfficeEditor,
+  type OfficeEditorInstance,
+  type OfficeEditorMount,
+  type OfficeHostUrlContext,
+} from './lib/office-editor';
+import {
+  isOfficeEditorOriginSlot,
+  OFFICE_EDITOR_ORIGIN_SLOTS,
+  type OfficeEditorOriginSlot,
+} from './lib/office-origin-pool';
 import {
   createOfficeRuntimeResourceManager,
   type OfficeRuntimeResourceManager,
@@ -46,8 +56,27 @@ type DocumentTab = {
   handle?: FileSystemFileHandle;
   file?: File;
   emptyType?: 'docx' | 'xlsx' | 'pptx' | 'csv';
+  originSlot?: OfficeEditorOriginSlot;
   dirty: boolean;
   inaccessible?: boolean;
+  editor?: DocumentEditorRecord;
+};
+
+type DocumentEditorRecord = {
+  container: HTMLDivElement;
+  mount: OfficeEditorMount;
+  instance: OfficeEditorInstance | null;
+  origin: string;
+  status: 'waiting' | 'activating' | 'ready' | 'error' | 'disposed';
+  sequence: number;
+  foreground: boolean;
+  queued: boolean;
+  disposed: boolean;
+  settled: boolean;
+  ready: Promise<OfficeEditorInstance>;
+  resolveReady: (instance: OfficeEditorInstance) => void;
+  rejectReady: (error: Error) => void;
+  error?: Error;
 };
 
 type DirtyDecision = 'save' | 'discard' | 'cancel';
@@ -86,24 +115,44 @@ app.innerHTML = `
   <aside id="update-banner" class="update-banner" hidden>
     <span data-i18n="updateReady">${copy.updateReady}</span><button id="update-button" data-i18n="updateNow" type="button">${copy.updateNow}</button>
   </aside>
-  <nav id="document-tabs" class="document-tabs" aria-label="${copy.openDocuments}"></nav>
   <main class="editor-workspace">
-    <section id="empty-state" class="empty-state">
-      <img src="/onlyoffice-icon.svg" alt="" />
-      <h1 data-i18n="noDocument">${copy.noDocument}</h1>
-      <p data-i18n="noDocumentHint">${copy.noDocumentHint}</p>
-      <button id="empty-open-button" class="primary-button" data-i18n="open" type="button">${copy.open}</button>
-    </section>
-    <section id="permission-state" class="empty-state" hidden>
-      <h1 data-i18n="permission">${copy.permission}</h1>
-      <button id="authorize-button" class="primary-button" data-i18n="authorize" type="button">${copy.authorize}</button>
-    </section>
-    <section id="editor-panel" class="editor-panel" hidden>
-      <div class="document-bar">
-        <div><strong id="document-title"></strong><span id="document-status"></span></div>
-        <div><button id="save-button" data-i18n="save" type="button">${copy.save}</button><button id="close-button" data-i18n="close" type="button">${copy.close}</button></div>
+    <section class="preview-pane" data-testid="office-preview-pane">
+      <div class="preview-tabbar" data-testid="office-preview-tabbar">
+        <nav id="document-tabs" class="document-tabs piwork-scrollbar-hidden" aria-label="${copy.openDocuments}"></nav>
       </div>
-      <div id="editor-slot" class="editor-slot"></div>
+      <div class="preview-body" data-testid="office-preview-body">
+        <section id="empty-state" class="empty-state">
+          <img src="/onlyoffice-icon.svg" alt="" />
+          <h1 data-i18n="noDocument">${copy.noDocument}</h1>
+          <p data-i18n="noDocumentHint">${copy.noDocumentHint}</p>
+          <button id="empty-open-button" class="primary-button" data-i18n="open" type="button">${copy.open}</button>
+        </section>
+        <section id="permission-state" class="empty-state" hidden>
+          <h1 data-i18n="permission">${copy.permission}</h1>
+          <button id="authorize-button" class="primary-button" data-i18n="authorize" type="button">${copy.authorize}</button>
+        </section>
+        <section id="editor-panel" class="editor-panel" hidden>
+          <div class="document-bar" data-testid="office-preview-toolbar">
+            <div class="document-heading">
+              <span id="document-type-icon" class="document-type-icon" aria-hidden="true">W</span>
+              <strong id="document-title"></strong>
+              <span id="document-origin" class="document-origin"></span>
+              <span id="document-status" class="document-status"></span>
+            </div>
+            <div class="document-actions">
+              <button id="save-button" class="preview-toolbar-button" aria-label="${copy.save}" title="${copy.save}" type="button">
+                <svg class="toolbar-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5zM8 3v6h8V3M8 21v-7h8v7" /></svg>
+                <span class="toolbar-button-label" data-i18n="save">${copy.save}</span>
+              </button>
+              <button id="close-button" class="preview-toolbar-button" aria-label="${copy.close}" title="${copy.close}" type="button">
+                <svg class="toolbar-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+                <span class="toolbar-button-label" data-i18n="close">${copy.close}</span>
+              </button>
+            </div>
+          </div>
+          <div id="editor-slot" class="editor-slot" aria-live="polite"></div>
+        </section>
+      </div>
     </section>
   </main>
   <footer class="app-footer"><span data-i18n="product">${copy.product}</span><span id="version-label"><span data-i18n="version">${copy.version}</span> ${ONLYOFFICE_BROWSER_VERSION}</span></footer>
@@ -129,6 +178,8 @@ const elements = {
   editor: document.querySelector<HTMLElement>('#editor-panel')!,
   slot: document.querySelector<HTMLElement>('#editor-slot')!,
   title: document.querySelector<HTMLElement>('#document-title')!,
+  origin: document.querySelector<HTMLElement>('#document-origin')!,
+  typeIcon: document.querySelector<HTMLElement>('#document-type-icon')!,
   status: document.querySelector<HTMLElement>('#document-status')!,
   fileInput: document.querySelector<HTMLInputElement>('#file-input')!,
   resourceButton: document.querySelector<HTMLButtonElement>('#resource-button')!,
@@ -143,7 +194,6 @@ const elements = {
 const tabs: DocumentTab[] = [];
 const tabStore = new DocumentTabStore();
 let activeTab: DocumentTab | null = null;
-let editor: OfficeEditorInstance | null = null;
 let resourceManager: OfficeRuntimeResourceManager | null = null;
 let resourcePanelRoot: Root | null = null;
 let latestResourceSnapshot: OfficeRuntimeResourceSnapshot | null = null;
@@ -152,7 +202,12 @@ let stopResourceMaintenance: (() => void) | null = null;
 let pendingActivation: DocumentTab | null = null;
 let waitingWorkbox: Workbox | null = null;
 let updateActivationPending = false;
-let editorGeneration = 0;
+let tabSwitchGeneration = 0;
+let nextEditorSequence = 1;
+let activeEditorActivations = 0;
+let activationDrainScheduled = false;
+const pendingEditorActivations: DocumentEditorRecord[] = [];
+const MAX_OPEN_DOCUMENTS = OFFICE_EDITOR_ORIGIN_SLOTS.length;
 const hardResetOnLastDestroy = new URLSearchParams(location.search).get('hardResetOnLastDestroy') === 'true';
 clearLegacyDemoHostState(location, localStorage);
 const resolvedDemoHost = resolveDemoHostUrl(new URL(location.href));
@@ -180,6 +235,12 @@ function applyLocale(nextLocale: OfficeLocale): void {
   elements.languageSelect.value = locale;
   elements.languageSelect.setAttribute('aria-label', copy.language);
   elements.tabs.setAttribute('aria-label', copy.openDocuments);
+  for (const id of ['save-button', 'close-button']) {
+    const button = document.querySelector<HTMLButtonElement>(`#${id}`);
+    const key = id === 'save-button' ? copy.save : copy.close;
+    button?.setAttribute('aria-label', key);
+    button?.setAttribute('title', key);
+  }
   document
     .querySelector<HTMLButtonElement>('.settings-dialog header > button')
     ?.setAttribute('aria-label', copy.closeDialog);
@@ -193,6 +254,7 @@ function applyLocale(nextLocale: OfficeLocale): void {
     // Language switching remains live when storage is unavailable.
   }
   renderTabs();
+  if (activeTab) setActiveDocumentHeader(activeTab);
   if (latestResourceSnapshot) {
     renderResources(latestResourceSnapshot);
   } else if (elements.resourceButton.dataset.state === 'error') {
@@ -260,27 +322,110 @@ async function allTabsSafeForUpdate(): Promise<boolean> {
   return livePeers.every((tabId) => responses.get(tabId) === false);
 }
 
+const OFFICE_ORIGIN_SYMBOLS: Record<string, string> = {
+  aries: '♈︎',
+  taurus: '♉︎',
+  gemini: '♊︎',
+  cancer: '♋︎',
+  leo: '♌︎',
+  virgo: '♍︎',
+  libra: '♎︎',
+  scorpio: '♏︎',
+  sagittarius: '♐︎',
+  capricorn: '♑︎',
+  aquarius: '♒︎',
+  pisces: '♓︎',
+};
+
+function originSlot(origin: string | undefined): OfficeEditorOriginSlot | null {
+  if (!origin) return null;
+  try {
+    const hostname = new URL(origin).hostname.toLowerCase();
+    const slot = hostname.endsWith('.getpi.work')
+      ? hostname.slice(0, -'.getpi.work'.length)
+      : /^host-([^.]+)\.office\.localhost$/.exec(hostname)?.[1] || /^([^.]+)\.localhost$/.exec(hostname)?.[1];
+    return slot && isOfficeEditorOriginSlot(slot) ? slot : null;
+  } catch {
+    return null;
+  }
+}
+
+function editorOriginLabel(origin: string | undefined): string {
+  const slot = originSlot(origin);
+  if (!origin || !slot) return copy.originPending;
+  return `${OFFICE_ORIGIN_SYMBOLS[slot]} ${slot}.getpi.work`;
+}
+
+function documentTypeSymbol(name: string): 'W' | 'X' | 'P' {
+  const type = documentTypeForName(name);
+  return type === 'cell' ? 'X' : type === 'slide' ? 'P' : 'W';
+}
+
+function isEditorPoolExhausted(error: unknown): boolean {
+  return error instanceof Error && error.name === 'OfficeHostPoolExhaustedError';
+}
+
+function activeEditor(): OfficeEditorInstance | null {
+  return activeTab?.editor?.instance || null;
+}
+
+function setEditorVisibility(tab: DocumentTab): void {
+  for (const candidate of tabs) {
+    const container = candidate.editor?.container;
+    if (!container) continue;
+    const active = candidate === tab;
+    container.dataset.active = active ? 'true' : 'false';
+    container.setAttribute('aria-hidden', String(!active));
+    if (active) container.removeAttribute('inert');
+    else container.setAttribute('inert', '');
+  }
+}
+
 function renderTabs(): void {
   elements.tabs.replaceChildren(
     ...tabs.map((tab) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `document-tab${tab === activeTab ? ' active' : ''}`;
-      button.title = tab.name;
+      const surface = document.createElement('div');
+      surface.className = `document-tab${tab === activeTab ? ' active' : ''}`;
+      surface.dataset.editorOrigin = tab.editor?.origin || '';
+      surface.dataset.editorState = tab.editor?.status || (tab.inaccessible ? 'permission' : 'waiting');
+      surface.dataset.documentKind = documentTypeForName(tab.name);
+      const tabTitle = `${tab.name} · ${copy.editorOrigin}: ${editorOriginLabel(tab.editor?.origin)}`;
+      const select = document.createElement('button');
+      select.type = 'button';
+      select.className = 'document-tab-select';
+      select.title = tabTitle;
+      select.setAttribute('aria-label', tabTitle);
+      select.addEventListener('click', () => void activateTab(tab));
+      const typeIcon = document.createElement('span');
+      typeIcon.className = 'document-tab-icon';
+      typeIcon.textContent = documentTypeSymbol(tab.name);
+      typeIcon.setAttribute('aria-hidden', 'true');
       const label = document.createElement('span');
+      label.className = 'document-tab-title';
       label.textContent = tab.name;
-      const dirty = document.createElement('i');
-      dirty.textContent = tab.dirty ? '●' : '';
-      const close = document.createElement('b');
-      close.textContent = '×';
+      const origin = document.createElement('span');
+      origin.className = 'document-tab-origin';
+      origin.textContent = originSlot(tab.editor?.origin)
+        ? OFFICE_ORIGIN_SYMBOLS[originSlot(tab.editor?.origin)!]
+        : '…';
+      origin.setAttribute('aria-hidden', 'true');
+      origin.title = editorOriginLabel(tab.editor?.origin);
+      const dirty = document.createElement('span');
+      dirty.className = 'document-tab-dirty';
+      dirty.hidden = !tab.dirty;
+      dirty.setAttribute('aria-hidden', 'true');
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'document-tab-close';
+      close.setAttribute('aria-label', `${copy.close}: ${tab.name}`);
       close.title = copy.close;
+      close.innerHTML = '<span aria-hidden="true">×</span>';
       close.addEventListener('click', (event) => {
         event.stopPropagation();
         void closeTab(tab);
       });
-      button.append(label, dirty, close);
-      button.addEventListener('click', () => void activateTab(tab));
-      return button;
+      surface.append(select, typeIcon, label, origin, close, dirty);
+      return surface;
     }),
   );
 }
@@ -293,11 +438,35 @@ function setView(view: 'empty' | 'permission' | 'editor'): void {
 
 function setDocumentStatus(text: string): void {
   elements.status.textContent = text;
+  const state =
+    text === '…'
+      ? 'waiting'
+      : text === '●'
+        ? 'dirty'
+        : text === copy.openLimitReached || text.startsWith(`${copy.error}:`)
+          ? 'error'
+          : 'ready';
+  elements.status.dataset.state = state;
+}
+
+function setActiveDocumentHeader(tab: DocumentTab): void {
+  elements.typeIcon.textContent = documentTypeSymbol(tab.name);
+  elements.typeIcon.dataset.kind = documentTypeForName(tab.name);
+  elements.title.textContent = tab.name;
+  elements.origin.textContent = editorOriginLabel(tab.editor?.origin);
+  elements.origin.title = `${copy.editorOrigin}: ${editorOriginLabel(tab.editor?.origin)}`;
+  elements.origin.dataset.state = tab.editor?.status || 'waiting';
 }
 
 async function persistTab(tab: DocumentTab): Promise<void> {
   if (!tab.handle) return;
-  await tabStore.put({ id: tab.id, name: tab.name, handle: tab.handle, lastOpenedAt: Date.now() });
+  await tabStore.put({
+    id: tab.id,
+    name: tab.name,
+    handle: tab.handle,
+    lastOpenedAt: Date.now(),
+    ...(tab.originSlot ? { originSlot: tab.originSlot } : {}),
+  });
 }
 
 function downloadFallback(file: File): void {
@@ -361,6 +530,17 @@ function canMaintainResourcesInBackground(): boolean {
   return connection?.saveData !== true;
 }
 
+function warmBackgroundEditors(): void {
+  if (latestResourceSnapshot?.readiness !== 'ready' || !activeTab || !canMaintainResourcesInBackground()) return;
+  for (const tab of tabs) {
+    if (tab === activeTab || tab.inaccessible || tab.editor) continue;
+    scheduleIdle(async () => {
+      if (!tabs.includes(tab) || tab === activeTab || tab.inaccessible || tab.editor) return;
+      await ensureEditor(tab, false);
+    });
+  }
+}
+
 function startResourceMaintenance(): void {
   stopResourceMaintenance?.();
   const maintain = () => {
@@ -385,14 +565,6 @@ function startResourceMaintenance(): void {
   maintain();
 }
 
-async function destroyEditor(): Promise<void> {
-  editorGeneration += 1;
-  const current = editor;
-  editor = null;
-  if (current) await current.destroy();
-  elements.slot.replaceChildren();
-}
-
 async function ensureResourcesReady(tab?: DocumentTab): Promise<boolean> {
   await resourceInitialization?.catch(() => undefined);
   if (latestResourceSnapshot?.readiness === 'ready') return true;
@@ -401,69 +573,230 @@ async function ensureResourcesReady(tab?: DocumentTab): Promise<boolean> {
   return false;
 }
 
+function scheduleActivationDrain(): void {
+  if (activationDrainScheduled) return;
+  activationDrainScheduled = true;
+  queueMicrotask(() => {
+    activationDrainScheduled = false;
+    pendingEditorActivations.sort(
+      (left, right) => Number(right.foreground) - Number(left.foreground) || left.sequence - right.sequence,
+    );
+    while (activeEditorActivations < 1 && pendingEditorActivations.length > 0) {
+      const record = pendingEditorActivations.shift()!;
+      record.queued = false;
+      if (record.disposed) continue;
+      record.status = 'activating';
+      activeEditorActivations += 1;
+      renderTabs();
+      void activateEditorRecord(record).finally(() => {
+        activeEditorActivations -= 1;
+        scheduleActivationDrain();
+      });
+    }
+  });
+}
+
+function enqueueEditorActivation(record: DocumentEditorRecord, foreground: boolean): void {
+  record.foreground ||= foreground;
+  if (record.status !== 'waiting' || record.queued || record.disposed) return;
+  record.queued = true;
+  pendingEditorActivations.push(record);
+  scheduleActivationDrain();
+}
+
+async function activateEditorRecord(record: DocumentEditorRecord): Promise<void> {
+  try {
+    const instance = await record.mount.activate();
+    if (record.disposed) {
+      await instance.destroy().catch(() => undefined);
+      return;
+    }
+    record.instance = instance;
+    record.status = 'ready';
+    if (!record.settled) {
+      record.settled = true;
+      record.resolveReady(instance);
+    }
+    renderTabs();
+    if (activeTab?.editor === record) {
+      setActiveDocumentHeader(activeTab);
+      setDocumentStatus(instance.getState().fileType.toUpperCase());
+    }
+  } catch (error) {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    record.error = normalized;
+    record.status = 'error';
+    await record.mount.destroy().catch(() => undefined);
+    if (!record.settled) {
+      record.settled = true;
+      record.rejectReady(normalized);
+    }
+    if (activeTab?.editor === record) {
+      setActiveDocumentHeader(activeTab);
+      setDocumentStatus(
+        isEditorPoolExhausted(normalized) ? copy.openLimitReached : `${copy.error}: ${normalized.message}`,
+      );
+    }
+    renderTabs();
+  }
+}
+
+async function disposeEditorRecord(tab: DocumentTab): Promise<void> {
+  const record = tab.editor;
+  if (!record) return;
+  record.disposed = true;
+  record.status = 'disposed';
+  const queueIndex = pendingEditorActivations.indexOf(record);
+  if (queueIndex >= 0) pendingEditorActivations.splice(queueIndex, 1);
+  if (!record.settled) {
+    record.settled = true;
+    record.rejectReady(new DOMException('Office editor was closed before it became ready', 'AbortError'));
+  }
+  await record.mount.destroy().catch(() => undefined);
+  record.container.remove();
+  if (tab.editor === record) delete tab.editor;
+}
+
+async function createEditorRecord(tab: DocumentTab): Promise<DocumentEditorRecord> {
+  const file = tab.file || (tab.handle ? await tab.handle.getFile() : undefined);
+  if (!tabs.includes(tab)) throw new DOMException('Office document was closed before it could be opened', 'AbortError');
+  const container = document.createElement('div');
+  container.className = 'document-editor-container';
+  container.dataset.documentTabId = tab.id;
+  container.dataset.active = 'false';
+  container.setAttribute('aria-hidden', 'true');
+  container.setAttribute('inert', '');
+  elements.slot.append(container);
+
+  let resolveReady!: (instance: OfficeEditorInstance) => void;
+  let rejectReady!: (error: Error) => void;
+  const ready = new Promise<OfficeEditorInstance>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  void ready.catch(() => undefined);
+
+  let record!: DocumentEditorRecord;
+  const options = {
+    hostUrl: officeHostUrl,
+    file,
+    emptyType: tab.emptyType,
+    fileName: tab.name,
+    mode: 'edit' as const,
+    saveBehavior: 'callback' as const,
+    downloadedFonts: resourceManager?.getVerifiedFontPaths() || [],
+    preferredHostSlot: tab.originSlot,
+    hardResetOnLastDestroy,
+    onReady: (instance: OfficeEditorInstance) => {
+      if (tab.editor !== record || record.disposed) return;
+      if (activeTab === tab) setDocumentStatus(instance.getState().fileType.toUpperCase());
+      scheduleIdle(() => resourceManager?.prepareForDocumentType(documentTypeForName(tab.name)) || Promise.resolve());
+    },
+    onSave: (saved: File) => saveFile(tab, saved),
+    onDirtyChange: (dirty: boolean, instance: OfficeEditorInstance) => {
+      if (tab.editor !== record || record.disposed || record.instance?.id !== instance.id) return;
+      tab.dirty = dirty;
+      if (activeTab === tab) {
+        setDocumentStatus(dirty ? '●' : instance.getState().fileType.toUpperCase());
+      }
+      renderTabs();
+      if (!dirty) void tryActivateUpdate();
+    },
+    onError: (error: Error) => {
+      if (tab.editor !== record || record.disposed || activeTab !== tab) return;
+      setDocumentStatus(isEditorPoolExhausted(error) ? copy.openLimitReached : `${copy.error}: ${error.message}`);
+    },
+  };
+
+  try {
+    record = {
+      container,
+      mount: mountOfficeEditor(container, options),
+      instance: null,
+      origin: '',
+      status: 'waiting',
+      sequence: nextEditorSequence++,
+      foreground: false,
+      queued: false,
+      disposed: false,
+      settled: false,
+      ready,
+      resolveReady,
+      rejectReady,
+    };
+  } catch (error) {
+    container.remove();
+    throw error;
+  }
+  record.origin = record.mount.getState().origin;
+  tab.originSlot = originSlot(record.origin) || undefined;
+  tab.file = undefined;
+  tab.editor = record;
+  await persistTab(tab);
+  renderTabs();
+  return record;
+}
+
+async function ensureEditor(tab: DocumentTab, foreground: boolean): Promise<OfficeEditorInstance> {
+  let record = tab.editor;
+  if (record?.status === 'error' || record?.status === 'disposed') {
+    await disposeEditorRecord(tab);
+    record = undefined;
+  }
+  if (!record) record = await createEditorRecord(tab);
+  record.foreground ||= foreground;
+  if (record.status === 'waiting') enqueueEditorActivation(record, foreground);
+  if (record.instance) return record.instance;
+  return record.ready;
+}
+
 async function activateTab(tab: DocumentTab): Promise<void> {
-  if (tab === activeTab && editor) return;
+  if (!tabs.includes(tab)) return;
+  const requestGeneration = ++tabSwitchGeneration;
+  if (tab === activeTab && tab.editor?.instance) {
+    setEditorVisibility(tab);
+    setActiveDocumentHeader(tab);
+    return;
+  }
   if (!(await ensureResourcesReady(tab))) return;
+  if (requestGeneration !== tabSwitchGeneration) return;
   pendingActivation = null;
-  if (activeTab?.dirty) {
+  const previousTab = activeTab;
+  if (previousTab?.dirty && previousTab !== tab) {
     const decision = await askDirtyDecision();
     if (decision === 'cancel') return;
-    if (decision === 'save' && editor) {
-      await editor.save();
-      if (activeTab.dirty) return;
+    if (decision === 'save' && previousTab.editor?.instance) {
+      await previousTab.editor.instance.save();
+      if (previousTab.dirty) return;
     }
   }
-  await destroyEditor();
+  if (requestGeneration !== tabSwitchGeneration) return;
   activeTab = tab;
+  setEditorVisibility(tab);
   renderTabs();
-  elements.title.textContent = tab.name;
+  setActiveDocumentHeader(tab);
   if (tab.inaccessible || (tab.handle && !(await hasReadPermission(tab.handle)))) {
     tab.inaccessible = true;
+    setEditorVisibility(tab);
     setView('permission');
     return;
   }
   setView('editor');
   setDocumentStatus('…');
-  const generation = ++editorGeneration;
   try {
-    const file = tab.file || (tab.handle ? await tab.handle.getFile() : undefined);
-    tab.file = undefined;
-    const instance = await createOfficeEditor(elements.slot, {
-      hostUrl: officeHostUrl,
-      file,
-      emptyType: tab.emptyType,
-      fileName: tab.name,
-      mode: 'edit',
-      saveBehavior: 'callback',
-      downloadedFonts: resourceManager?.getVerifiedFontPaths() || [],
-      hardResetOnLastDestroy,
-      onReady: (ready) => {
-        if (generation !== editorGeneration) return;
-        setDocumentStatus(ready.getState().fileType.toUpperCase());
-        scheduleIdle(() => resourceManager?.prepareForDocumentType(documentTypeForName(tab.name)) || Promise.resolve());
-      },
-      onSave: (saved) => saveFile(tab, saved),
-      onDirtyChange: (dirty) => {
-        if (generation !== editorGeneration) return;
-        tab.dirty = dirty;
-        setDocumentStatus(dirty ? '●' : editor?.getState().fileType.toUpperCase() || '');
-        renderTabs();
-        if (!dirty) void tryActivateUpdate();
-      },
-      onError: (error) => {
-        if (generation === editorGeneration) setDocumentStatus(`${copy.error}: ${error.message}`);
-      },
-    });
-    if (generation !== editorGeneration) {
-      await instance.destroy();
-      return;
-    }
-    editor = instance;
+    const instance = await ensureEditor(tab, true);
+    if (requestGeneration !== tabSwitchGeneration || activeTab !== tab) return;
+    setEditorVisibility(tab);
+    setActiveDocumentHeader(tab);
+    setDocumentStatus(instance.getState().dirty ? '●' : instance.getState().fileType.toUpperCase());
     await persistTab(tab);
+    warmBackgroundEditors();
   } catch (error) {
-    if (generation === editorGeneration) {
-      setDocumentStatus(`${copy.error}: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    if (requestGeneration !== tabSwitchGeneration || activeTab !== tab) return;
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    setDocumentStatus(
+      isEditorPoolExhausted(normalized) ? copy.openLimitReached : `${copy.error}: ${normalized.message}`,
+    );
   }
 }
 
@@ -480,26 +813,30 @@ function askDirtyDecision(): Promise<DirtyDecision> {
 }
 
 async function closeTab(tab: DocumentTab): Promise<void> {
-  if (tab === activeTab && tab.dirty) {
+  if (tab.dirty) {
     const decision = await askDirtyDecision();
     if (decision === 'cancel') return;
-    if (decision === 'save' && editor) {
-      await editor.save();
+    if (decision === 'save' && tab.editor?.instance) {
+      await tab.editor.instance.save();
       if (tab.dirty) return;
     }
   }
   const index = tabs.indexOf(tab);
   if (index < 0) return;
-  if (tab === activeTab) {
-    await destroyEditor();
+  const wasActive = tab === activeTab;
+  if (wasActive) {
+    tabSwitchGeneration += 1;
     activeTab = null;
   }
+  await disposeEditorRecord(tab);
   tabs.splice(index, 1);
   await tabStore.remove(tab.id).catch(() => undefined);
   renderTabs();
-  const next = tabs[Math.min(index, tabs.length - 1)];
-  if (next) await activateTab(next);
-  else setView('empty');
+  if (wasActive) {
+    const next = tabs[Math.min(index, tabs.length - 1)];
+    if (next) await activateTab(next);
+    else setView('empty');
+  }
   void tryActivateUpdate();
 }
 
@@ -511,6 +848,10 @@ async function addFile(handle: FileSystemFileHandle | undefined, file: File): Pr
         return;
       }
     }
+  }
+  if (tabs.length >= MAX_OPEN_DOCUMENTS) {
+    setDocumentStatus(copy.openLimitReached);
+    return;
   }
   const tab: DocumentTab = { id: createDocumentTabId(), name: file.name, handle, file, dirty: false };
   tabs.push(tab);
@@ -556,7 +897,12 @@ async function openFiles(): Promise<void> {
   elements.fileInput.click();
 }
 
-function createEmpty(emptyType: 'docx' | 'xlsx' | 'pptx' | 'csv'): void {
+async function createEmpty(emptyType: 'docx' | 'xlsx' | 'pptx' | 'csv'): Promise<void> {
+  if (!(await ensureResourcesReady())) return;
+  if (tabs.length >= MAX_OPEN_DOCUMENTS) {
+    setDocumentStatus(copy.openLimitReached);
+    return;
+  }
   const tab: DocumentTab = {
     id: createDocumentTabId(),
     name: `${copy.newDocumentName}.${emptyType}`,
@@ -565,7 +911,7 @@ function createEmpty(emptyType: 'docx' | 'xlsx' | 'pptx' | 'csv'): void {
   };
   tabs.push(tab);
   renderTabs();
-  void activateTab(tab);
+  await activateTab(tab);
 }
 
 function renderResources(snapshot: OfficeRuntimeResourceSnapshot): void {
@@ -689,17 +1035,23 @@ async function restoreTabs(): Promise<void> {
   if (!('indexedDB' in window)) return;
   try {
     const persisted = await tabStore.list();
-    for (const record of persisted) {
+    const restored = persisted.slice(-MAX_OPEN_DOCUMENTS);
+    for (const record of restored) {
       tabs.push({
         id: record.id,
         name: record.name,
         handle: record.handle,
+        originSlot: record.originSlot && isOfficeEditorOriginSlot(record.originSlot) ? record.originSlot : undefined,
         dirty: false,
         inaccessible: !(await hasReadPermission(record.handle)),
       });
     }
     renderTabs();
-    if (tabs.length > 0) await activateTab(tabs[tabs.length - 1]);
+    if (tabs.length > 0) {
+      const last = tabs[tabs.length - 1]!;
+      await activateTab(last);
+      warmBackgroundEditors();
+    }
   } catch {
     // Private browsing and policy-restricted contexts may not offer IndexedDB.
   }
@@ -710,7 +1062,7 @@ elements.languageSelect.addEventListener('change', () => {
   applyLocale(elements.languageSelect.value as OfficeLocale);
 });
 document.querySelector('#empty-open-button')?.addEventListener('click', () => void openFiles());
-document.querySelector('#save-button')?.addEventListener('click', () => void editor?.save());
+document.querySelector('#save-button')?.addEventListener('click', () => void activeEditor()?.save());
 document.querySelector('#close-button')?.addEventListener('click', () => activeTab && void closeTab(activeTab));
 const newDocumentMenu = document.querySelector<HTMLDetailsElement>('.new-menu');
 document.querySelectorAll<HTMLElement>('[data-new]').forEach((button) => {
@@ -742,7 +1094,17 @@ window.__officeDemo = {
     return tabs;
   },
   get editor() {
-    return editor;
+    return activeEditor();
+  },
+  get editors() {
+    return tabs
+      .filter((tab) => tab.editor?.instance)
+      .map((tab) => ({
+        tabId: tab.id,
+        fileName: tab.name,
+        origin: tab.editor!.origin,
+        instance: tab.editor!.instance,
+      }));
   },
   get resourceManager() {
     return resourceManager;

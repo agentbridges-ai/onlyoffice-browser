@@ -31,6 +31,16 @@ describe('standalone PWA theme contract', () => {
     expect(css).not.toContain('min-height: 30px;');
   });
 
+  it('ports the Piwork preview-pane geometry without a second visual token set', () => {
+    expect(css).toContain('--piwork-control-radius: var(--control-radius);');
+    expect(css).toContain('--piwork-titlebar-height: 40px;');
+    expect(css).toContain('--piwork-titlebar-control-size: 31px;');
+    expect(css).toContain('.preview-tabbar');
+    expect(css).toContain('.document-tab-close');
+    expect(css).toContain('.preview-toolbar-button');
+    expect(css).toContain('background: var(--accent-soft);');
+  });
+
   it('keeps keyboard focus and disabled states visible', () => {
     expect(css).toContain('outline: 2px solid var(--focus);');
     expect(css).toContain('cursor: not-allowed;');
