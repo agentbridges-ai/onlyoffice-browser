@@ -594,10 +594,19 @@ export async function verifyRemoteRelease(publication, remote, options = {}) {
     throw new TypeError(`Unknown remote verification mode: ${mode}`);
   }
   if (mode === 'full') {
-    return verifyObjects(publication.objects, (object) => inspectRcloneObject(remote, object, options), {
+    const result = await verifyObjects(publication.objects, (object) => inspectRcloneObject(remote, object, options), {
       concurrency: options.concurrency || 4,
       label: 'Remote immutable object',
     });
+    return {
+      mode,
+      objects: result.objects,
+      bytes: result.bytes,
+      verifiedObjects: result.objects,
+      verifiedBytes: result.bytes,
+      reusedObjects: 0,
+      reusedBytes: 0,
+    };
   }
   if (typeof options.remoteInventoryPath !== 'string' || !options.remoteInventoryPath) {
     throw new TypeError('Incremental remote verification requires --remote-inventory');
@@ -624,9 +633,11 @@ export async function verifyRemoteRelease(publication, remote, options = {}) {
     label: 'Remote immutable object',
   });
   return {
+    mode,
     objects: publication.objects.length,
     bytes: result.bytes + plan.reusedBytes,
     verifiedObjects: result.objects,
+    verifiedBytes: result.bytes,
     reusedObjects: plan.reusedObjects,
     reusedBytes: plan.reusedBytes,
   };
@@ -670,6 +681,23 @@ if (isMain) {
       remoteVerificationMode: option('--remote-verification-mode', 'full'),
       remoteInventoryPath: option('--remote-inventory'),
     });
+    const reportPath = option('--report-file');
+    if (reportPath) {
+      fs.mkdirSync(path.dirname(path.resolve(reportPath)), { recursive: true });
+      fs.writeFileSync(
+        reportPath,
+        `${JSON.stringify(
+          {
+            version: 1,
+            releaseId: publication.releaseId,
+            manifestVersion: publication.manifest?.version,
+            ...remoteResult,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    }
     console.log(
       `Verified ${remoteResult.objects} remote immutable objects (${remoteResult.bytes} bytes) for ${publication.releaseId}` +
         (remoteResult.reusedObjects === undefined

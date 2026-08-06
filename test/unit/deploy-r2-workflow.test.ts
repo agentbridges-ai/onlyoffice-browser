@@ -46,17 +46,19 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('candidate_run_id');
     expect(promotion).toContain('staging_run_id');
     expect(promotion).toContain('onlyoffice-runtime-stage-${{ inputs.candidate_commit }}-${{ inputs.staging_run_id }}');
-    expect(promotion).toContain('staging evidence is not bound to this exact candidate run and runtime');
+    expect(promotion).toContain('Materialize the small staged worker and release input');
+    expect(promotion).toContain('Reuse staged CAS and verify only its current inventory');
+    expect(promotion).toContain('staged-cas-readback.json');
+    expect(promotion).toContain('Reconstruct and incrementally verify the immutable predecessor release');
+    expect(promotion).not.toContain('Upload candidate CAS in production and fully verify it');
+    expect(promotion).not.toContain('--remote-verification-mode full');
+    expect(promotion).toContain('staging evidence is not bound to this exact candidate run and incremental artifact');
     expect(promotion).toContain('piwork_integration_run_id');
     expect(promotion).toContain('piwork_integration_run_attempt');
     expect(promotion).toContain("conclusion!=='success'");
     expect(promotion).toContain("['push','workflow_dispatch'].includes(r.event)");
     expect(promotion).toContain("r.head_branch!=='main'");
-    expect(promotion).toContain('runtime-asset-version.mjs');
-    expect(promotion).toContain('--no-traverse');
-    expect(promotion).toContain('--transfers 16');
-    expect(promotion).toContain('--checkers 32');
-    expect(promotion).toContain("--exclude 'channels/**'");
+    expect(promotion).toContain('ASSET_VERSION="${RELEASE_ID}"');
     expect(promotion).toContain('--concurrency 16');
     expect(promotion).not.toMatch(/rclone copy candidate-input\/dist r2:onlyoffice-getpi-work/);
     expect(promotion).not.toContain('wrangler@4.114.0 deploy ');
@@ -65,6 +67,13 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('"${PREVIOUS_WORKER_VERSION_ID}@100%"');
     expect(promotion).toContain('"${CANDIDATE_WORKER_VERSION_ID}@0%"');
     expect(promotion).toContain('"${CANDIDATE_WORKER_VERSION_ID}@100%"');
+    expect(promotion).toContain('Progressively canary the compatible candidate Worker');
+    expect(promotion).toContain('for percentage in 1 10 50');
+    expect(promotion).toContain('worker-canary-${percentage}.json');
+    expect(promotion).toContain('Canary OnlyOffice');
+    expect(promotion).toContain('previous/canary-1');
+    expect(promotion).toContain('previous/canary-10');
+    expect(promotion).toContain('previous/canary-50');
     expect(promotion).toContain('--worker-version-id "${CANDIDATE_WORKER_VERSION_ID}"');
     expect(promotion).toContain('--expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}"');
     expect(promotion).toContain('Verify candidate Worker with release-pinned paths through a version override');
@@ -114,6 +123,8 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('descriptor.releaseManifest?.hostBuildId!==envelope.runtime.hostBuildId');
     expect(promotion).toContain('candidate matrix evidence mismatch');
     expect(promotion).toContain('Require successful production staging evidence for this candidate');
+    expect(promotion).toContain('staging-artifacts.json');
+    expect(promotion).toContain('staging-artifact.json');
     expect(promotion).toContain("r.path.endsWith('/stage-r2.yml')");
     expect(promotion).toContain("run.event!=='workflow_dispatch'");
     expect(promotion).toContain('/actions/runs/${PIWORK_RUN_ID}/attempts/${PIWORK_RUN_ATTEMPT}');
@@ -157,7 +168,9 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain("require('./promotion-intent.json').previousStable");
     expect(promotion).toContain('public promotion receipt bytes, digest, or immutable cache policy mismatch');
     expect(promotion).toContain('Compensate an incomplete pointer and Worker transaction');
-    expect(promotion).toContain("['previous/previous','previous/split','previous/candidate','candidate/candidate']");
+    expect(promotion).toContain(
+      "['previous/previous','previous/split','previous/canary-1','previous/canary-10','previous/canary-50','previous/candidate','candidate/candidate']",
+    );
     expect(promotion).toContain(
       'const matchesPrevious=same(current,intent.previousStable),matchesCandidate=same(current,intent.runtime)',
     );
@@ -175,6 +188,10 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('previousVersionId');
     expect(promotion).toContain('candidateVersionId');
     expect(promotion).toContain('finalDeploymentId');
+    expect(promotion).toContain("history:['candidate','staged','verified','canary','promoted','post-verified']");
+    expect(promotion).toContain('progressiveTraffic:[1,10,50,100]');
+    expect(promotion).toContain('stagedArtifactBytes');
+    expect(promotion).toContain('productionReusedBytes');
     expect(promotion).toContain('Retain production promotion receipt');
     expect(promotion).toContain('trustRoot');
     expect(promotion).toContain("channel:'stable-v5'");
