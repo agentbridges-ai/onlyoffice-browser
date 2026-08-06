@@ -207,5 +207,6 @@ jobs:
         with:
           name: onlyoffice-runtime-stage-${{ inputs.candidate_commit }}-${{ github.run_id }}
           path: stage-input
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
