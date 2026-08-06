@@ -47,6 +47,7 @@ describe('immutable candidate staging workflow', () => {
     expect(stage).toContain('--skip-local-verification');
     expect(stage).toContain('current-production-worker-compatibility');
     expect(stage).toContain('Retain staged compatibility evidence');
+    expect(stage).toContain('include-hidden-files: true');
     expect(stage).not.toMatch(/channels\/(?:stable|stable-v5)\.json/);
     expect(stage).not.toMatch(/rclone copy candidate-input\/dist/);
     expect(stage).not.toContain('wrangler');
