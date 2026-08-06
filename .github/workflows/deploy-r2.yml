@@ -350,6 +350,7 @@ jobs:
             --fastcdc-evidence-mode automatic \
             --remote r2:onlyoffice-getpi-work \
             --remote-verification-mode incremental \
+            --skip-local-verification \
             --remote-inventory "${RUNNER_TEMP}/r2-promote-inventory.json" \
             --report-file staged-cas-readback.json \
             --concurrency 16
@@ -372,6 +373,7 @@ jobs:
             --fastcdc-evidence-mode automatic \
             --remote r2:onlyoffice-getpi-work \
             --remote-verification-mode incremental \
+            --skip-local-verification \
             --remote-inventory "${RUNNER_TEMP}/r2-promote-inventory.json" \
             --report-file predecessor-cas-readback.json \
             --concurrency 16

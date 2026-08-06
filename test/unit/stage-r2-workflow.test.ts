@@ -31,6 +31,7 @@ describe('immutable candidate staging workflow', () => {
     expect(stage).toContain('--checkers 32');
     expect(stage).toContain("--exclude 'channels/**'");
     expect(stage).toContain('--remote-verification-mode incremental');
+    expect(stage).toContain('--skip-local-verification');
     expect(stage).toContain('--remote-inventory "${R2_BEFORE_INVENTORY}"');
     expect(stage).toContain('--report-file cas-verification.json');
     expect(stage).toContain('incremental-r2-cas-verification');
