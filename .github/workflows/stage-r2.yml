@@ -171,7 +171,7 @@ jobs:
       - name: Verify staged release against the current production Worker
         run: |
           set -euo pipefail
-          node scripts/verify-release-http.mjs --release-root candidate-input/.onlyoffice-release --expected-package-version "$(node -p "require('./candidate-package.json').version")" --fastcdc-evidence-mode automatic --cache-bust "stage-${{ inputs.candidate_commit }}-${{ github.run_id }}"
+          node scripts/verify-release-http.mjs --release-root candidate-input/.onlyoffice-release --expected-package-version "$(node -p "require('./candidate-package.json').version")" --fastcdc-evidence-mode automatic --remote-range-verification --cache-bust "stage-${{ inputs.candidate_commit }}-${{ github.run_id }}"
       - name: Record staged compatibility evidence
         run: |
           set -euo pipefail
