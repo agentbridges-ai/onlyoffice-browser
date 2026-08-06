@@ -545,7 +545,7 @@ button:disabled {
   min-width: 130px;
   min-height: var(--control-height);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 7px;
   border: 0;
@@ -566,6 +566,23 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.document-tab-origin {
+  width: 18px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  text-align: center;
+}
+
+.document-tab[data-editor-state='ready'] .document-tab-origin {
+  color: var(--success);
+}
+
+.document-tab[data-editor-state='error'] .document-tab-origin {
+  color: var(--danger);
 }
 
 .document-tab i {
@@ -668,6 +685,21 @@ button:disabled {
   gap: 8px;
 }
 
+.document-heading,
+.document-actions {
+  display: flex;
+  align-items: center;
+}
+
+.document-heading {
+  min-width: 0;
+  gap: 8px;
+}
+
+.document-actions {
+  gap: 6px;
+}
+
 .document-bar strong {
   max-width: min(55vw, 640px);
   overflow: hidden;
@@ -681,8 +713,63 @@ button:disabled {
   font-size: 11px;
 }
 
+.document-origin {
+  display: inline-flex;
+  align-items: center;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-origin[data-state='ready'] {
+  color: var(--success);
+}
+
+.document-origin[data-state='error'] {
+  color: var(--danger);
+}
+
 .document-bar button {
   min-height: var(--control-height);
+}
+
+.editor-slot {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.document-editor-container {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  background: var(--surface);
+  transition: opacity var(--duration-feedback) var(--ease-out);
+}
+
+.document-editor-container[data-active='true'] {
+  z-index: 1;
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.document-editor-container .office-editor-host,
+.document-editor-container .office-editor-host-frame,
+.document-editor-container iframe[name='frameEditor'] {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
 }
 
 .app-footer {

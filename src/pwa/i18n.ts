@@ -16,6 +16,9 @@ export type OfficeCopy = {
   close: string;
   closeDialog: string;
   openDocuments: string;
+  editorOrigin: string;
+  originPending: string;
+  openLimitReached: string;
   language: string;
   resources: string;
   resourcesReady: string;
@@ -91,6 +94,9 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     close: '关闭',
     closeDialog: '关闭对话框',
     openDocuments: '已打开的文档',
+    editorOrigin: '编辑器隔离域',
+    originPending: '正在分配隔离域',
+    openLimitReached: '已达到 12 个独立编辑器上限，请先关闭一个文档。',
     language: '语言',
     resources: 'Office 资源',
     resourcesReady: '资源已就绪',
@@ -171,6 +177,9 @@ export const officeCopy: Record<OfficeLocale, OfficeCopy> = {
     close: 'Close',
     closeDialog: 'Close dialog',
     openDocuments: 'Open documents',
+    editorOrigin: 'Editor origin',
+    originPending: 'Assigning isolated origin',
+    openLimitReached: 'All 12 isolated editor origins are in use. Close a document to continue.',
     language: 'Language',
     resources: 'Office resources',
     resourcesReady: 'Resources ready',
