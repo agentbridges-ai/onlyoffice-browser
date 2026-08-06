@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -175,6 +176,73 @@ describe('Release Manifest v5 publication verification', () => {
     expect(plan.reusedBytes).toBe(
       publication.objects.reduce((total: number, object: { bytes: number }) => total + object.bytes, 0) - changed.bytes,
     );
+  });
+
+  it('verifies a partial Range materialization without reading intentionally reused local objects', () => {
+    const { output, manifest } = fixture();
+    const publication = loadReleasePublication(output, {
+      expectedPackageVersion: '0.5.7',
+      fastCdcEvidenceMode: 'forbid',
+    });
+    const inventoryPath = path.join(temp(), 'r2-before.json');
+    const fakeRcloneInventoryPath = path.join(temp(), 'r2-lsf.txt');
+    fs.writeFileSync(
+      inventoryPath,
+      JSON.stringify(
+        publication.objects.map((object: { key: string; bytes: number }) => ({
+          Path: object.key,
+          Size: object.bytes,
+        })),
+      ),
+    );
+    fs.writeFileSync(
+      fakeRcloneInventoryPath,
+      publication.objects.map((object: { key: string; bytes: number }) => `${object.key}\t${object.bytes}`).join('\n') +
+        '\n',
+    );
+    fs.rmSync(path.join(output, 'blobs'), { recursive: true, force: true });
+    fs.rmSync(path.join(output, 'packages'), { recursive: true, force: true });
+    fs.rmSync(path.join(output, 'segments'), { recursive: true, force: true });
+    const fakeRclone = path.join(temp(), 'fake-rclone.mjs');
+    fs.writeFileSync(
+      fakeRclone,
+      '#!/usr/bin/env node\n' +
+        "import fs from 'node:fs';\n" +
+        "if (process.argv[2] !== 'lsf') process.exit(2);\n" +
+        'process.stdout.write(fs.readFileSync(process.env.FAKE_RCLONE_INVENTORY));\n',
+    );
+    fs.chmodSync(fakeRclone, 0o755);
+    const result = spawnSync(
+      process.execPath,
+      [
+        'scripts/verify-release-publication.mjs',
+        '--release-root',
+        output,
+        '--expected-package-version',
+        '0.5.7',
+        '--fastcdc-evidence-mode',
+        'forbid',
+        '--remote',
+        'r2:test',
+        '--remote-verification-mode',
+        'incremental',
+        '--skip-local-verification',
+        '--remote-inventory',
+        inventoryPath,
+        '--rclone-bin',
+        fakeRclone,
+      ],
+      {
+        cwd: path.resolve('.'),
+        env: {
+          ...process.env,
+          FAKE_RCLONE_INVENTORY: fakeRcloneInventoryPath,
+        },
+        encoding: 'utf8',
+      },
+    );
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.stdout).toContain(`Verified ${publication.objects.length} remote immutable objects`);
   });
 
   it('streams the R2 inventory instead of buffering lsjson output', async () => {
