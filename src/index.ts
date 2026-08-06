@@ -222,6 +222,7 @@ function applyLocale(nextLocale: OfficeLocale): void {
     // Language switching remains live when storage is unavailable.
   }
   renderTabs();
+  if (activeTab) setActiveDocumentHeader(activeTab);
   if (latestResourceSnapshot) {
     renderResources(latestResourceSnapshot);
   } else if (elements.resourceButton.dataset.state === 'error') {
