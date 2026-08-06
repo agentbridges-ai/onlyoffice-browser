@@ -40,6 +40,9 @@ describe('R2 release train workflows', () => {
   });
   it('promotes only a successful named candidate with no runtime rebuild', () => {
     expect(promotion).toContain('actions: read');
+    expect(promotion).toContain('fetch-depth: 0');
+    expect(promotion).toContain('git merge-base --is-ancestor "${{ inputs.candidate_commit }}" origin/main');
+    expect(promotion).not.toContain('test "${GITHUB_SHA}" = "${{ inputs.candidate_commit }}"');
     expect(promotion).toContain('candidate_run_id');
     expect(promotion).toContain('staging_run_id');
     expect(promotion).toContain('onlyoffice-runtime-stage-${{ inputs.candidate_commit }}-${{ inputs.staging_run_id }}');
@@ -184,6 +187,9 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('legacy-before.json');
     expect(promotion).toContain('Cache-Control: no-store');
     expect(promotion).toContain('stable-v5 did not converge to the exact no-store pointer');
+    expect(promotion).toContain('Worker traffic and the unversioned root can converge at different');
+    expect(promotion).toContain('promotion-worker=${CANDIDATE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}');
+    expect(promotion).toContain('test "${attempt}" = 15');
     expect(promotion).not.toContain('--verify-pointers');
     expect(promotion.indexOf('verify-release-http')).toBeLessThan(
       promotion.indexOf('Promote stable-v5 only after both Worker compatibility directions pass'),
