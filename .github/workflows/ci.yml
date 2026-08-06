@@ -42,7 +42,7 @@ jobs:
             case "$file" in
               *.md|docs/*|LICENSE*)
                 ;;
-              .github/workflows/*|bin/*|cloudflare/*|pages/*|scripts/*|src/*|public/*|test/*|package.json|pnpm-lock.yaml|vite*.ts|tsconfig*.json|wrangler*.json)
+              .github/workflows/*|bin/*|cloudflare/*|pages/*|scripts/*|src/*|public/*|test/*|*.config.*|package.json|pnpm-lock.yaml|vite*.ts|tsconfig*.json|wrangler*.json)
                 relevant=true
                 release=true
                 ;;
