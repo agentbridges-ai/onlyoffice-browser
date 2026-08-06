@@ -201,9 +201,13 @@ jobs:
       - name: Verify the local immutable release
         if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
         run: node scripts/verify-release-publication.mjs --release-root .onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --fastcdc-evidence-mode automatic
+      - name: Install Chromium for the integration matrix
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        run: pnpm exec playwright install --with-deps chromium
       - name: Run the local Cloudflare integration matrix
         if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
-        run: ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1 ONLYOFFICE_CF_MATRIX_FORCE_FULL=1 pnpm test:e2e:cloudflare
+        run: |
+          ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1 ONLYOFFICE_CF_MATRIX_REUSE_STATE="${RUNNER_TEMP}/onlyoffice-cloudflare-matrix-state" ONLYOFFICE_CF_MATRIX_REFRESH_STATE=1 ONLYOFFICE_CF_MATRIX_KEEP_STATE=1 ONLYOFFICE_CF_MATRIX_FORCE_FULL=1 ONLYOFFICE_CF_MATRIX_GREP='' node scripts/run-cloudflare-local-matrix.mjs
 
   verify:
     name: verify

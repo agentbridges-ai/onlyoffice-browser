@@ -301,6 +301,9 @@ describe('R2 release train workflows', () => {
     expect(pullRequestChecks).toContain('ONLYOFFICE_SKIP_RELEASE_BUILD=1 pnpm build');
     expect(pullRequestChecks).toContain('pnpm release:build');
     expect(pullRequestChecks).toContain('ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1');
+    expect(pullRequestChecks).toContain('pnpm exec playwright install --with-deps chromium');
+    expect(pullRequestChecks).toContain('ONLYOFFICE_CF_MATRIX_REUSE_STATE');
+    expect(pullRequestChecks).toContain('ONLYOFFICE_CF_MATRIX_GREP=');
   });
 
   it('has an explicit current-build matrix mode that cannot rebuild the candidate', () => {
