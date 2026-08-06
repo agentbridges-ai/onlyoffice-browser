@@ -32,12 +32,16 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.candidate_commit }}
-      - name: Require this production run to originate at the exact current main candidate
+          fetch-depth: 0
+      - name: Require this production run to use an exact immutable main candidate
         run: |
           set -euo pipefail
           test "${GITHUB_REF}" = refs/heads/main
-          test "${GITHUB_SHA}" = "${{ inputs.candidate_commit }}"
+          [[ "${{ inputs.candidate_commit }}" =~ ^[a-f0-9]{40}$ ]]
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "${GITHUB_SHA}"
           test "$(git rev-parse HEAD)" = "${{ inputs.candidate_commit }}"
+          git merge-base --is-ancestor "${{ inputs.candidate_commit }}" origin/main
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           name: onlyoffice-runtime-candidate-${{ inputs.candidate_commit }}
@@ -484,6 +488,19 @@ jobs:
           const get=async u=>{const response=await fetch(u,{cache:'no-store',redirect:'manual',headers:{'cache-control':'no-store'}});if(!response.ok)throw Error(`${u}: ${response.status}`);return {bytes:Buffer.from(await response.arrayBuffer()),cacheControl:response.headers.get('cache-control')}};
           (async()=>{for(let i=0;i<5;i++){const pointerResponse=await get(`https://onlyoffice.getpi.work/channels/stable-v5.json?promotion=${process.env.CANDIDATE}&attempt=${i}`); const noStore=(pointerResponse.cacheControl||'').split(',').some(value=>value.trim()==='no-store'); if(noStore&&pointerResponse.bytes.equals(expectedBytes)){const pointer=JSON.parse(pointerResponse.bytes); if(pointer.version===expected.version&&pointer.releaseId===expected.releaseId&&pointer.manifestUrl===expected.manifestUrl&&pointer.manifestSha256===expected.manifestSha256){const manifest=await get(`https://onlyoffice.getpi.work${pointer.manifestUrl}?promotion=${process.env.CANDIDATE}&attempt=${i}`);if(sha(manifest.bytes)===expected.manifestSha256)return;}} await new Promise(r=>setTimeout(r,(i+1)*3000));} throw Error('stable-v5 did not converge to the exact no-store pointer and pinned immutable manifest');})().catch(e=>{console.error(e);process.exit(1)});
           NODE
+          # Worker traffic and the unversioned root can converge at different
+          # edges immediately after activation. Probe only the routing header
+          # with a bounded retry before running the full stable-root verifier;
+          # a persistent mismatch still fails closed.
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            ACTUAL_WORKER_VERSION="$(curl --fail --silent --show-error --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 --head \
+              -H 'Cache-Control: no-store' \
+              "https://onlyoffice.getpi.work/onlyoffice-runtime-assets.json?promotion-worker=${CANDIDATE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}" \
+              | tr -d '\r' | awk -F ': ' 'tolower($1)=="x-onlyoffice-worker-version"{print $2}')"
+            test "${ACTUAL_WORKER_VERSION}" = "${CANDIDATE_WORKER_VERSION_ID}" && break
+            test "${attempt}" = 15 && { echo "stable root Worker version did not converge to ${CANDIDATE_WORKER_VERSION_ID}; got ${ACTUAL_WORKER_VERSION:-<missing>}" >&2; exit 1; }
+            sleep "$((attempt * 2))"
+          done
           node scripts/verify-release-http.mjs \
             --release-root candidate-input/.onlyoffice-release \
             --expected-package-version "$(node -p "require('./package.json').version")" \
