@@ -49,4 +49,14 @@ describe('standalone PWA editor lifecycle contract', () => {
     expect(source).toContain('await ensureEditor(tab, false);');
     expect(source).toContain('await disposeEditorRecord(tab);');
   });
+
+  it('queues a new document before the resource gate so installation resumes the requested editor', () => {
+    const start = source.indexOf('async function createEmpty(');
+    const end = source.indexOf('\n}\n\nfunction renderResources', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const createEmptySource = source.slice(start, end);
+    expect(createEmptySource).not.toContain('ensureResourcesReady()');
+    expect(createEmptySource).toContain('await activateTab(tab);');
+  });
 });
