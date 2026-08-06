@@ -148,7 +148,12 @@ jobs:
           import fs from 'node:fs';
           import path from 'node:path';
 
-          const roots = ['dist', '.onlyoffice-release', 'release-evidence'];
+          // dist is already represented by the immutable release CAS and is
+          // rebuilt only inside this candidate job. Keeping it in the
+          // promotion artifact duplicated hundreds of megabytes of the same
+          // Host/WASM/font bytes; promotion reconstructs identity from the v5
+          // manifest and never needs the build directory.
+          const roots = ['.onlyoffice-release', 'release-evidence'];
           const reportPath = path.join('release-evidence', 'candidate-artifact-inventory.json');
           const policyMaxBytes = 4 * 1024 ** 3;
           const visit = (target) => {
@@ -208,7 +213,6 @@ jobs:
         with:
           name: onlyoffice-runtime-candidate-${{ github.sha }}
           path: |
-            dist
             .onlyoffice-release
             release-evidence
           if-no-files-found: error

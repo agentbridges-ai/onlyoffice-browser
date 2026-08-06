@@ -27,27 +27,70 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.candidate_commit }}
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          name: onlyoffice-runtime-candidate-${{ inputs.candidate_commit }}
-          path: candidate-input
-          run-id: ${{ inputs.candidate_run_id }}
-          github-token: ${{ github.token }}
+          ref: main
+          fetch-depth: 0
       - name: Require a successful immutable candidate run
         run: |
           set -euo pipefail
           [[ "${{ inputs.candidate_commit }}" =~ ^[a-f0-9]{40}$ ]]
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.candidate_run_id }}" > candidate-run.json
-          node -e "const r=require('./candidate-run.json'); if(r.conclusion!=='success'||r.head_sha!==process.env.SHA||!['push','workflow_dispatch'].includes(r.event)||r.head_branch!=='main'||!r.path.endsWith('/candidate-r2.yml'))throw Error('candidate run is not a successful main-branch candidate workflow for this SHA')"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.candidate_run_id }}/artifacts?per_page=100" > candidate-artifacts.json
+          node <<'NODE'
+          const fs=require('node:fs'); const run=require('./candidate-run.json'); const artifacts=require('./candidate-artifacts.json').artifacts||[]; const expected=`onlyoffice-runtime-candidate-${process.env.SHA}`; const artifact=artifacts.find(item=>item.name===expected&&!item.expired);
+          if(run.conclusion!=='success'||run.head_sha!==process.env.SHA||!['push','workflow_dispatch'].includes(run.event)||run.head_branch!=='main'||!run.path.endsWith('/candidate-r2.yml')) throw Error('candidate run is not a successful main-branch candidate workflow for this SHA');
+          if(!artifact?.id||artifact.name!==expected||!Number.isSafeInteger(artifact.size_in_bytes)||artifact.size_in_bytes<=0||!/^sha256:[a-f0-9]{64}$/.test(artifact.digest||'')) throw Error('candidate artifact metadata is missing or invalid');
+          fs.writeFileSync('candidate-artifact.json',JSON.stringify({id:artifact.id,name:artifact.name,bytes:artifact.size_in_bytes,digest:artifact.digest},null,2)+'\n');
+          NODE
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ inputs.candidate_commit }}
+      - name: Install staging transport only
+        run: sudo apt-get update && sudo apt-get install --yes rclone
+      - name: Snapshot the persistent CAS inventory before staging
+        run: |
+          set -euo pipefail
+          retry_inventory() {
+            local output="$1"; shift
+            local temporary="${output}.tmp" attempt=1
+            while true; do
+              rm -f "${temporary}"
+              if timeout 300 rclone "$@" > "${temporary}"; then
+                mv "${temporary}" "${output}"
+                return 0
+              fi
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 3))"
+            done
+          }
+          retry_inventory "${RUNNER_TEMP}/r2-before.json" lsjson r2:onlyoffice-getpi-work \
+            --recursive --files-only --fast-list --no-modtime --no-mimetype
+          echo "R2_BEFORE_INVENTORY=${RUNNER_TEMP}/r2-before.json" >> "${GITHUB_ENV}"
+      - name: Fetch only selected candidate files through immutable artifact ranges
+        run: |
+          set -euo pipefail
+          mkdir -p candidate-input
+          node scripts/download-github-artifact-files.mjs \
+            --repository "${GITHUB_REPOSITORY}" \
+            --run-id "${{ inputs.candidate_run_id }}" \
+            --artifact-name "onlyoffice-runtime-candidate-${{ inputs.candidate_commit }}" \
+            --output candidate-input \
+            --include '.onlyoffice-release/channels/*.json' \
+            --include '.onlyoffice-release/releases/*/manifest*.json' \
+            --include 'release-evidence/*.json' \
+            --include 'release-evidence/*.tgz' \
+            --report artifact-range.json
+          test -s artifact-range.json
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Verify retained candidate identity without rebuilding runtime
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ inputs.candidate_commit }}"
-          test -d candidate-input/dist -a -d candidate-input/.onlyoffice-release -a -f candidate-input/release-evidence/office-release-envelope.json
+          test "${GITHUB_REF}" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          git merge-base --is-ancestor "${CANDIDATE}" HEAD
+          git show "${CANDIDATE}:package.json" > candidate-package.json
+          git show "${CANDIDATE}:pnpm-lock.yaml" > candidate-pnpm-lock.yaml
+          test -d candidate-input/.onlyoffice-release -a -f candidate-input/release-evidence/office-release-envelope.json
           node --input-type=module <<'NODE'
           import fs from 'node:fs'; import {validateReleaseEnvelope} from './scripts/release-envelope.mjs';
           validateReleaseEnvelope(JSON.parse(fs.readFileSync('candidate-input/release-evidence/office-release-envelope.json')));
@@ -67,38 +110,39 @@ jobs:
           const sri=x=>'sha512-'+c.createHash('sha512').update(fs.readFileSync(x)).digest('base64');
           const e=require('./candidate-input/release-evidence/office-release-envelope.json');
           const manifest=require('./candidate-input/.onlyoffice-release/releases/'+e.runtime.releaseId+'/manifest.json');
-          if(e.lifecycle!=='candidate'||e.source.gitCommit!==process.env.CANDIDATE||e.runtime.sourceCommit!==process.env.CANDIDATE||manifest.sourceCommit!==process.env.CANDIDATE||sha('candidate-input/.onlyoffice-release/releases/'+e.runtime.releaseId+'/manifest.json')!==e.runtime.manifestSha256||sha('candidate-input/dist/onlyoffice-runtime-assets.json')!==e.runtime.runtimeManifestSha256||sha('pnpm-lock.yaml')!==e.source.lockfileSha256||e.npm.packageName!=='@agentbridges-ai/onlyoffice-browser'||e.npm.version!==require('./package.json').version||!e.sourcePackage?.tarball||sri('candidate-input/release-evidence/'+e.sourcePackage.tarball)!==e.sourcePackage.integrity) throw Error('candidate envelope, manifest source, or source package integrity mismatch');
+          if(e.lifecycle!=='candidate'||e.source.gitCommit!==process.env.CANDIDATE||e.runtime.sourceCommit!==process.env.CANDIDATE||manifest.sourceCommit!==process.env.CANDIDATE||sha('candidate-input/.onlyoffice-release/releases/'+e.runtime.releaseId+'/manifest.json')!==e.runtime.manifestSha256||manifest.assets?.find(asset=>asset.path==='onlyoffice-runtime-assets.json')?.sha256!==e.runtime.runtimeManifestSha256||sha('candidate-pnpm-lock.yaml')!==e.source.lockfileSha256||e.npm.packageName!=='@agentbridges-ai/onlyoffice-browser'||e.npm.version!==JSON.parse(fs.readFileSync('candidate-package.json')).version||!e.sourcePackage?.tarball||sri('candidate-input/release-evidence/'+e.sourcePackage.tarball)!==e.sourcePackage.integrity) throw Error('candidate envelope, manifest source, or source package integrity mismatch');
           const source=require('./candidate-input/release-evidence/source-identity.json'); const {identitySha256,...identity}=source;
           if(identity.gitCommit!==e.source.gitCommit||identity.lockfileSha256!==e.source.lockfileSha256||identity.runtimeManifestSha256!==e.runtime.runtimeManifestSha256||identity.releaseId!==e.runtime.releaseId||identity.releaseManifestSha256!==e.runtime.manifestSha256) throw Error('candidate matrix identity is not bound to the envelope');
           for (const name of ['full-v5-cloudflare-broker-matrix.json','fault-injected-proxy-matrix.json']) { const matrix=require('./candidate-input/release-evidence/'+name); if(matrix.result!=='passed'||JSON.stringify(matrix.sourceIdentity)!==JSON.stringify(identity)||matrix.sourceIdentitySha256!==identitySha256) throw Error(`candidate matrix evidence mismatch: ${name}`); }
           NODE
         env:
           CANDIDATE: ${{ inputs.candidate_commit }}
-      - name: Install staging transport only
-        run: sudo apt-get update && sudo apt-get install --yes rclone
-      - name: Stage immutable CAS and fully verify remote bytes
+      - name: Stage only missing immutable CAS objects and incrementally verify remote bytes
         run: |
           set -euo pipefail
           retry_rclone() { local attempt=1; until timeout 300 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
-          retry_inventory() {
-            local output="$1"; shift
-            local temporary="${output}.tmp" attempt=1
-            while true; do
-              rm -f "${temporary}"
-              if timeout 300 rclone "$@" > "${temporary}"; then
-                mv "${temporary}" "${output}"
-                return 0
-              fi
-              test "${attempt}" -ge 4 && return 1
-              sleep "$((attempt++ * 3))"
-            done
-          }
-
-          # The release tree is immutable CAS.  Copy it in one traversal and do
-          # not enumerate the (ever-growing) destination bucket: --no-traverse
-          # turns the existence check into bounded HEAD requests for the
-          # candidate's own objects.  Higher checker/transfer parallelism keeps
-          # the large pack and the many small CAS objects flowing together.
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'; import {loadReleasePublication} from './scripts/verify-release-publication.mjs';
+          const publication=loadReleasePublication('candidate-input/.onlyoffice-release',{expectedPackageVersion:JSON.parse(fs.readFileSync('candidate-package.json','utf8')).version,expectedSourceCommit:process.env.CANDIDATE,fastCdcEvidenceMode:'automatic'});
+          const before=JSON.parse(fs.readFileSync(process.env.R2_BEFORE_INVENTORY,'utf8')); const inventory=new Map(before.filter(item=>typeof item.Path==='string'&&Number.isSafeInteger(item.Size)&&item.Size>=0).map(item=>[item.Path.replace(/^\/+/,''),item.Size]));
+          const missing=[]; for(const object of publication.objects){const size=inventory.get(object.key); if(size!==undefined&&size!==object.bytes) throw Error(`persistent CAS object has wrong size for ${object.key}`); if(size===undefined) missing.push(`.onlyoffice-release/${object.key}`);}
+          fs.writeFileSync('cas-missing-files.json',JSON.stringify(missing,null,2)+'\n');
+          fs.writeFileSync('cas-plan.json',JSON.stringify({version:1,releaseId:publication.releaseId,targetObjects:publication.objects.length,targetBytes:publication.objects.reduce((total,object)=>total+object.bytes,0),missingObjects:missing.length,reusedObjects:publication.objects.length-missing.length},null,2)+'\n');
+          NODE
+          if [ "$(node -p "require('./cas-plan.json').missingObjects")" -gt 0 ]; then
+            node scripts/download-github-artifact-files.mjs \
+              --repository "${GITHUB_REPOSITORY}" \
+              --run-id "${{ inputs.candidate_run_id }}" \
+              --artifact-name "onlyoffice-runtime-candidate-${{ inputs.candidate_commit }}" \
+              --output candidate-input \
+              --file-list cas-missing-files.json \
+              --report cas-range.json
+          else
+            printf '%s\n' '{"version":1,"source":"github-actions-artifact-range","totalArtifactBytes":0,"selectedFiles":0,"selectedUncompressedBytes":0,"rangeBytes":0,"entries":[]}' > cas-range.json
+          fi
+          # --no-traverse turns immutable existence checks into bounded HEAD
+          # requests for this candidate's own keys. The content-addressed
+          # paths make every already-present block reusable and un-overwritable.
           RCLONE_TUNING=(
             --no-traverse
             --transfers 16
@@ -108,14 +152,6 @@ jobs:
             --s3-upload-concurrency 8
             --s3-upload-cutoff 64M
           )
-          # Preserve the full SHA-256 gate for objects introduced by this
-          # release, while reusing the previous inventory for unchanged CAS
-          # objects.  This avoids re-reading the complete historical bucket on
-          # every staging run without weakening size/presence checks.
-          before_inventory="${RUNNER_TEMP}/r2-before.json"
-          retry_inventory "${before_inventory}" lsjson r2:onlyoffice-getpi-work \
-            --recursive --files-only --fast-list --no-modtime --no-mimetype
-
           retry_rclone copy candidate-input/.onlyoffice-release r2:onlyoffice-getpi-work \
             --ignore-existing \
             --exclude 'channels/**' \
@@ -123,32 +159,42 @@ jobs:
 
           node scripts/verify-release-publication.mjs \
             --release-root candidate-input/.onlyoffice-release \
-            --expected-package-version "$(node -p "require('./package.json').version")" \
+            --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
             --expected-source-commit "${{ inputs.candidate_commit }}" \
             --fastcdc-evidence-mode automatic \
             --remote r2:onlyoffice-getpi-work \
             --remote-verification-mode incremental \
-            --remote-inventory "${before_inventory}" \
+            --remote-inventory "${R2_BEFORE_INVENTORY}" \
+            --report-file cas-verification.json \
             --concurrency 16
       - name: Verify staged release against the current production Worker
         run: |
           set -euo pipefail
-          node scripts/verify-release-http.mjs --release-root candidate-input/.onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --fastcdc-evidence-mode automatic --cache-bust "stage-${{ inputs.candidate_commit }}-${{ github.run_id }}"
+          node scripts/verify-release-http.mjs --release-root candidate-input/.onlyoffice-release --expected-package-version "$(node -p "require('./candidate-package.json').version")" --fastcdc-evidence-mode automatic --cache-bust "stage-${{ inputs.candidate_commit }}-${{ github.run_id }}"
       - name: Record staged compatibility evidence
         run: |
           set -euo pipefail
-          mkdir -p stage-evidence
+          mkdir -p stage-input/release-evidence stage-input/.onlyoffice-release/channels stage-input/.onlyoffice-release/releases
+          cp -a candidate-input/release-evidence/. stage-input/release-evidence/
+          cp -a candidate-input/.onlyoffice-release/channels/. stage-input/.onlyoffice-release/channels/
+          RELEASE_ID="$(node -p "require('./candidate-input/release-evidence/office-release-envelope.json').runtime.releaseId")"
+          mkdir -p "stage-input/.onlyoffice-release/releases/${RELEASE_ID}"
+          cp -a "candidate-input/.onlyoffice-release/releases/${RELEASE_ID}/". stage-input/.onlyoffice-release/releases/${RELEASE_ID}/
+          cp cas-plan.json cas-verification.json artifact-range.json cas-range.json candidate-artifact.json stage-input/
           node <<'NODE'
-          const fs=require('node:fs'); const envelope=require('./candidate-input/release-evidence/office-release-envelope.json'); const npmRegistry=require('./verified-npm-registry.json');
+          const fs=require('node:fs'); const {assertReleaseStateHistory}=require('./scripts/release-state-machine.mjs'); const envelope=require('./candidate-input/release-evidence/office-release-envelope.json'); const npmRegistry=require('./verified-npm-registry.json'); const cas=require('./cas-verification.json'); const plan=require('./cas-plan.json'); const artifactRange=require('./artifact-range.json'); const casRange=require('./cas-range.json'); const artifact=require('./candidate-artifact.json');
           const id=name=>{const value=Number(process.env[name]);if(!Number.isSafeInteger(value)||value<1)throw Error(`${name} must be a positive safe integer`);return value};
-          const evidence={version:1,kind:'current-production-worker-compatibility',candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},npmRegistry,production:{repository:process.env.GITHUB_REPOSITORY,runId:id('GITHUB_RUN_ID'),runAttempt:id('GITHUB_RUN_ATTEMPT')},checks:['full-r2-cas-verification','current-worker-release-host','current-worker-resource-broker','current-worker-release-bound-object-range']};
-          fs.writeFileSync('stage-evidence/stage-r2.json',JSON.stringify(evidence,null,2)+'\n');
+          const releaseState={version:1,history:['candidate','staged','verified'],state:'verified'}; assertReleaseStateHistory(releaseState.history);
+          const evidence={version:2,kind:'current-production-worker-compatibility',releaseState,candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},artifact,runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},npmRegistry,cas:{mode:cas.mode, targetObjects:cas.objects,targetBytes:cas.bytes,verifiedObjects:cas.verifiedObjects,verifiedBytes:cas.verifiedBytes,reusedObjects:cas.reusedObjects,reusedBytes:cas.reusedBytes,missingObjects:plan.missingObjects,artifactBytes:artifactRange.totalArtifactBytes,rangeBytes:artifactRange.rangeBytes+casRange.rangeBytes,selectedBytes:artifactRange.selectedUncompressedBytes+casRange.selectedUncompressedBytes},production:{repository:process.env.GITHUB_REPOSITORY,runId:id('GITHUB_RUN_ID'),runAttempt:id('GITHUB_RUN_ATTEMPT')},checks:['incremental-r2-cas-verification','current-worker-release-host','current-worker-resource-broker','current-worker-release-bound-object-range']};
+          fs.writeFileSync('stage-input/stage-r2.json',JSON.stringify(evidence,null,2)+'\n');
+          fs.writeFileSync('stage-input/release-evidence/stage-cas-evidence.json',JSON.stringify({version:1,releaseId:envelope.runtime.releaseId,candidate:process.env.CANDIDATE,cas:evidence.cas},null,2)+'\n');
           NODE
           {
             echo "### Staged immutable runtime candidate"
             echo "- Candidate: \`${{ inputs.candidate_commit }}\` (candidate run \`${{ inputs.candidate_run_id }}\`)"
             echo "- Release: \`$(node -p "require('./candidate-input/release-evidence/office-release-envelope.json').runtime.releaseId")\`"
-            echo "- R2 CAS: fully re-hashed"
+            echo "- Candidate artifact: \`$(node -p "require('./candidate-artifact.json').bytes")\` bytes; range-read bytes: \`$(node -p "require('./stage-input/stage-r2.json').cas.rangeBytes")\`"
+            echo "- R2 CAS: $(node -p "const c=require('./cas-verification.json'); c.mode==='incremental' ? String(c.verifiedObjects)+' new objects hashed, '+String(c.reusedObjects)+' objects reused' : 'incremental gate missing'")"
             echo "- Current production Worker compatibility: Host, Broker, and release-bound object routes passed"
             echo "- This stage does not deploy the candidate Worker and does not activate a channel."
           } >> "${GITHUB_STEP_SUMMARY}"
@@ -159,6 +205,6 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: onlyoffice-runtime-stage-${{ inputs.candidate_commit }}-${{ github.run_id }}
-          path: stage-evidence
+          path: stage-input
           if-no-files-found: error
           retention-days: 90

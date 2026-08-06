@@ -72,7 +72,8 @@ describe('immutable candidate workflow', () => {
     expect(candidate).toContain('id: candidate-artifact');
     expect(candidate).toContain('artifact-digest');
     expect(candidate).toContain('retention-days: 30');
-    expect(candidate).toContain('dist\n            .onlyoffice-release\n            release-evidence');
+    expect(candidate).toContain('.onlyoffice-release\n            release-evidence');
+    expect(candidate).not.toContain('            dist\n');
     expect(candidate.indexOf('Run fault-injected proxy matrix')).toBeLessThan(
       candidate.indexOf('Inventory candidate artifact and enforce a conservative size ceiling'),
     );

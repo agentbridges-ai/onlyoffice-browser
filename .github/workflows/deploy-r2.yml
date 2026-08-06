@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ inputs.candidate_commit }}
+          ref: main
           fetch-depth: 0
       - name: Require this production run to use an exact immutable main candidate
         run: |
@@ -40,14 +40,8 @@ jobs:
           [[ "${{ inputs.candidate_commit }}" =~ ^[a-f0-9]{40}$ ]]
           git fetch --no-tags origin main
           test "$(git rev-parse origin/main)" = "${GITHUB_SHA}"
-          test "$(git rev-parse HEAD)" = "${{ inputs.candidate_commit }}"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
           git merge-base --is-ancestor "${{ inputs.candidate_commit }}" origin/main
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          name: onlyoffice-runtime-candidate-${{ inputs.candidate_commit }}
-          path: candidate-input
-          run-id: ${{ inputs.candidate_run_id }}
-          github-token: ${{ github.token }}
       - name: Require a successful immutable candidate run
         run: |
           set -euo pipefail
@@ -57,11 +51,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ inputs.candidate_commit }}
+      - name: Require successful production staging evidence for this candidate
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.staging_run_id }}" > staging-run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.staging_run_id }}/artifacts?per_page=100" > staging-artifacts.json
+          node -e "const r=require('./staging-run.json'); if(r.conclusion!=='success'||r.head_sha!==process.env.SHA||r.event!=='workflow_dispatch'||r.head_branch!=='main'||!r.path.endsWith('/stage-r2.yml'))throw Error('staging run is not a successful dispatched main-branch stage workflow for this candidate SHA')"
+          node <<'NODE'
+          const fs=require('node:fs'); const artifacts=require('./staging-artifacts.json').artifacts||[]; const expected=`onlyoffice-runtime-stage-${process.env.SHA}-${process.env.STAGING_RUN_ID}`; const artifact=artifacts.find(item=>item.name===expected&&!item.expired);
+          if(!artifact?.id||artifact.name!==expected||!Number.isSafeInteger(artifact.size_in_bytes)||artifact.size_in_bytes<=0||!/^sha256:[a-f0-9]{64}$/.test(artifact.digest||'')) throw Error('staged artifact metadata is missing or invalid');
+          fs.writeFileSync('staging-artifact.json',JSON.stringify({id:artifact.id,name:artifact.name,bytes:artifact.size_in_bytes,digest:artifact.digest},null,2)+'\n');
+          NODE
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.candidate_commit }}
+          STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: onlyoffice-runtime-stage-${{ inputs.candidate_commit }}-${{ inputs.staging_run_id }}
+          path: staged-evidence
+          run-id: ${{ inputs.staging_run_id }}
+          github-token: ${{ github.token }}
+      - name: Materialize the small staged worker and release input
+        env:
+          CANDIDATE: ${{ inputs.candidate_commit }}
+        run: |
+          set -euo pipefail
+          test -s staged-evidence/stage-r2.json
+          mkdir -p candidate-input
+          cp -a staged-evidence/release-evidence candidate-input/release-evidence
+          mkdir -p candidate-input/.onlyoffice-release
+          cp -a staged-evidence/.onlyoffice-release/. candidate-input/.onlyoffice-release/
+          git merge-base --is-ancestor "${CANDIDATE}" HEAD
+          git show "${CANDIDATE}:package.json" > candidate-package.json
+          git show "${CANDIDATE}:pnpm-lock.yaml" > candidate-pnpm-lock.yaml
       - name: Verify retained candidate identity without rebuilding runtime
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ inputs.candidate_commit }}"
-          test -d candidate-input/dist -a -d candidate-input/.onlyoffice-release -a -f candidate-input/release-evidence/office-release-envelope.json
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -d candidate-input/.onlyoffice-release -a -f candidate-input/release-evidence/office-release-envelope.json
           node --input-type=module <<'NODE'
           import fs from 'node:fs'; import {validateReleaseEnvelope} from './scripts/release-envelope.mjs';
           validateReleaseEnvelope(JSON.parse(fs.readFileSync('candidate-input/release-evidence/office-release-envelope.json')));
@@ -81,27 +109,13 @@ jobs:
           const sri=x=>'sha512-'+c.createHash('sha512').update(fs.readFileSync(x)).digest('base64');
           const e=require('./candidate-input/release-evidence/office-release-envelope.json');
           const manifest=require('./candidate-input/.onlyoffice-release/releases/'+e.runtime.releaseId+'/manifest.json');
-          if(e.lifecycle!=='candidate'||e.source.gitCommit!==process.env.CANDIDATE||e.runtime.sourceCommit!==process.env.CANDIDATE||manifest.sourceCommit!==process.env.CANDIDATE||sha('candidate-input/.onlyoffice-release/releases/'+e.runtime.releaseId+'/manifest.json')!==e.runtime.manifestSha256||sha('candidate-input/dist/onlyoffice-runtime-assets.json')!==e.runtime.runtimeManifestSha256||sha('pnpm-lock.yaml')!==e.source.lockfileSha256||e.npm.packageName!=='@agentbridges-ai/onlyoffice-browser'||e.npm.version!==require('./package.json').version||!e.sourcePackage?.tarball||sri('candidate-input/release-evidence/'+e.sourcePackage.tarball)!==e.sourcePackage.integrity) throw Error('candidate envelope, manifest source, or source package integrity mismatch');
+          if(e.lifecycle!=='candidate'||e.source.gitCommit!==process.env.CANDIDATE||e.runtime.sourceCommit!==process.env.CANDIDATE||manifest.sourceCommit!==process.env.CANDIDATE||sha('candidate-input/.onlyoffice-release/releases/'+e.runtime.releaseId+'/manifest.json')!==e.runtime.manifestSha256||manifest.assets?.find(asset=>asset.path==='onlyoffice-runtime-assets.json')?.sha256!==e.runtime.runtimeManifestSha256||sha('candidate-pnpm-lock.yaml')!==e.source.lockfileSha256||e.npm.packageName!=='@agentbridges-ai/onlyoffice-browser'||e.npm.version!==JSON.parse(fs.readFileSync('candidate-package.json')).version||!e.sourcePackage?.tarball||sri('candidate-input/release-evidence/'+e.sourcePackage.tarball)!==e.sourcePackage.integrity) throw Error('candidate envelope, manifest source, or source package integrity mismatch');
           const source=require('./candidate-input/release-evidence/source-identity.json'); const {identitySha256,...identity}=source;
           if(identity.gitCommit!==e.source.gitCommit||identity.lockfileSha256!==e.source.lockfileSha256||identity.runtimeManifestSha256!==e.runtime.runtimeManifestSha256||identity.releaseId!==e.runtime.releaseId||identity.releaseManifestSha256!==e.runtime.manifestSha256) throw Error('candidate matrix identity is not bound to the envelope');
           for (const name of ['full-v5-cloudflare-broker-matrix.json','fault-injected-proxy-matrix.json']) { const matrix=require('./candidate-input/release-evidence/'+name); if(matrix.result!=='passed'||JSON.stringify(matrix.sourceIdentity)!==JSON.stringify(identity)||matrix.sourceIdentitySha256!==identitySha256) throw Error(`candidate matrix evidence mismatch: ${name}`); }
           NODE
         env:
           CANDIDATE: ${{ inputs.candidate_commit }}
-      - name: Require successful production staging evidence for this candidate
-        run: |
-          set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.staging_run_id }}" > staging-run.json
-          node -e "const r=require('./staging-run.json'); if(r.conclusion!=='success'||r.head_sha!==process.env.SHA||r.event!=='workflow_dispatch'||r.head_branch!=='main'||!r.path.endsWith('/stage-r2.yml'))throw Error('staging run is not a successful dispatched main-branch stage workflow for this candidate SHA')"
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ inputs.candidate_commit }}
-      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          name: onlyoffice-runtime-stage-${{ inputs.candidate_commit }}-${{ inputs.staging_run_id }}
-          path: staged-evidence
-          run-id: ${{ inputs.staging_run_id }}
-          github-token: ${{ github.token }}
       - name: Bind staging evidence to this exact candidate artifact and runtime
         env:
           CANDIDATE: ${{ inputs.candidate_commit }}
@@ -111,9 +125,9 @@ jobs:
           set -euo pipefail
           node <<'NODE'
           const stage=require('./staged-evidence/stage-r2.json'); const envelope=require('./candidate-input/release-evidence/office-release-envelope.json'); const npmRegistry=require('./verified-npm-registry.json');
-          if(stage.version!==1||stage.kind!=='current-production-worker-compatibility'||stage.candidate?.commit!==process.env.CANDIDATE||String(stage.candidate?.runId)!==process.env.CANDIDATE_RUN_ID||String(stage.production?.runId)!==process.env.STAGING_RUN_ID||stage.production?.repository!==process.env.GITHUB_REPOSITORY||stage.runtime?.releaseId!==envelope.runtime.releaseId||stage.runtime?.manifestUrl!==envelope.runtime.manifestUrl||stage.runtime?.manifestSha256!==envelope.runtime.manifestSha256||stage.runtime?.runtimeManifestSha256!==envelope.runtime.runtimeManifestSha256) throw Error('staging evidence is not bound to this exact candidate run and runtime');
+          if(stage.version!==2||stage.kind!=='current-production-worker-compatibility'||stage.releaseState?.state!=='verified'||JSON.stringify(stage.releaseState?.history)!==JSON.stringify(['candidate','staged','verified'])||stage.candidate?.commit!==process.env.CANDIDATE||String(stage.candidate?.runId)!==process.env.CANDIDATE_RUN_ID||String(stage.production?.runId)!==process.env.STAGING_RUN_ID||stage.production?.repository!==process.env.GITHUB_REPOSITORY||stage.runtime?.releaseId!==envelope.runtime.releaseId||stage.runtime?.manifestUrl!==envelope.runtime.manifestUrl||stage.runtime?.manifestSha256!==envelope.runtime.manifestSha256||stage.runtime?.runtimeManifestSha256!==envelope.runtime.runtimeManifestSha256||stage.cas?.mode!=='incremental'||stage.artifact?.name!==`onlyoffice-runtime-candidate-${process.env.CANDIDATE}`||!Number.isSafeInteger(stage.artifact?.bytes)||!/^sha256:[a-f0-9]{64}$/.test(stage.artifact?.digest||'')) throw Error('staging evidence is not bound to this exact candidate run and incremental artifact');
           if(JSON.stringify(stage.npmRegistry)!==JSON.stringify(npmRegistry)) throw Error('staging evidence is not bound to the current immutable npm publication');
-          const expected=['full-r2-cas-verification','current-worker-release-host','current-worker-resource-broker','current-worker-release-bound-object-range'];
+          const expected=['incremental-r2-cas-verification','current-worker-release-host','current-worker-resource-broker','current-worker-release-bound-object-range'];
           if(JSON.stringify(stage.checks)!==JSON.stringify(expected)) throw Error('staging evidence does not contain the complete compatibility gate');
           NODE
       - name: Detect optional repository-scoped Piwork read credentials
@@ -227,8 +241,11 @@ jobs:
           retry_rclone copyto r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-before-deploy.json
           npx --yes wrangler@4.114.0 deployments status --json > worker-deployment-before.json
           RELEASE_ID="$(node -p "require('./candidate-input/release-evidence/office-release-envelope.json').runtime.releaseId")"
-          ASSET_VERSION="$(node scripts/runtime-asset-version.mjs --root candidate-input/dist --font-manifest candidate-input/dist/onlyoffice-browser-font-assets.json)"
-          INTENT_PATH="promotion-intents/${RELEASE_ID}/${CANDIDATE}.json"
+          ASSET_VERSION="${RELEASE_ID}"
+          # v2 keeps immutable intents from the pre-CAS transaction format out
+          # of recovery.  A retry of this workflow reuses this exact key,
+          # while an older failed transaction can never be adopted silently.
+          INTENT_PATH="promotion-intents/v2/${RELEASE_ID}/${CANDIDATE}.json"
           export INTENT_PATH
           download_intent() {
             local temporary="${RUNNER_TEMP}/promotion-intent.json"
@@ -275,7 +292,8 @@ jobs:
           const id=name=>{const value=Number(process.env[name]);if(!Number.isSafeInteger(value)||value<1)throw Error(`${name} must be a positive safe integer`);return value};
           const validPointer=value=>value?.version===1&&/^[a-zA-Z0-9._+-]{1,128}$/.test(value.releaseId||'')&&value.manifestUrl===`/releases/${value.releaseId}/manifest.json`&&/^[a-f0-9]{64}$/.test(value.manifestSha256||'');
           if(!validPointer(previousStable)) throw Error('invalid stable-v5 baseline');
-          const intent={version:1,trustRoot:'protected-production-workflow-and-r2-cas',candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},staging:{runId:id('STAGING_RUN_ID')},piwork:{commit:process.env.PIWORK_COMMIT,deepVerifyRunId:id('PIWORK_RUN_ID'),deepVerifyRunAttempt:id('PIWORK_RUN_ATTEMPT')},previousStable,worker:{name:'onlyoffice-browser-runtime',previousVersionId:process.env.PREVIOUS_WORKER_VERSION_ID,candidateVersionId:process.env.CANDIDATE_WORKER_VERSION_ID},runtimeRoot:{mode:'stable-v5-release-cas'},runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},repository:process.env.GITHUB_REPOSITORY};
+          const releaseState={version:1,history:['candidate','staged','verified'],state:'verified'};
+          const intent={version:1,trustRoot:'protected-production-workflow-and-r2-cas',releaseState,candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},staging:{runId:id('STAGING_RUN_ID')},piwork:{commit:process.env.PIWORK_COMMIT,deepVerifyRunId:id('PIWORK_RUN_ID'),deepVerifyRunAttempt:id('PIWORK_RUN_ATTEMPT')},previousStable,worker:{name:'onlyoffice-browser-runtime',previousVersionId:process.env.PREVIOUS_WORKER_VERSION_ID,candidateVersionId:process.env.CANDIDATE_WORKER_VERSION_ID},runtimeRoot:{mode:'stable-v5-release-cas'},runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},repository:process.env.GITHUB_REPOSITORY};
           fs.writeFileSync('promotion-intent-proposed.json',JSON.stringify(intent,null,2)+'\n');
           NODE
             retry_rclone copyto promotion-intent-proposed.json "r2:onlyoffice-getpi-work/${INTENT_PATH}" --ignore-existing
@@ -290,48 +308,56 @@ jobs:
           const same=(left,right)=>JSON.stringify(pointer(left))===JSON.stringify(pointer(right));
           const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
           const id=name=>{const value=Number(process.env[name]);if(!Number.isSafeInteger(value)||value<1)throw Error(`${name} must be a positive safe integer`);return value};
-          const expected={version:1,trustRoot:'protected-production-workflow-and-r2-cas',candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},staging:{runId:id('STAGING_RUN_ID')},piwork:{commit:process.env.PIWORK_COMMIT,deepVerifyRunId:id('PIWORK_RUN_ID'),deepVerifyRunAttempt:id('PIWORK_RUN_ATTEMPT')},runtimeRoot:{mode:'stable-v5-release-cas'},runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},repository:process.env.GITHUB_REPOSITORY};
-          for(const field of ['version','trustRoot','candidate','staging','piwork','runtimeRoot','runtime','repository']) if(JSON.stringify(intent[field])!==JSON.stringify(expected[field])) throw Error(`immutable promotion intent ${field} mismatch`);
+          const expected={version:1,trustRoot:'protected-production-workflow-and-r2-cas',releaseState:{version:1,history:['candidate','staged','verified'],state:'verified'},candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},staging:{runId:id('STAGING_RUN_ID')},piwork:{commit:process.env.PIWORK_COMMIT,deepVerifyRunId:id('PIWORK_RUN_ID'),deepVerifyRunAttempt:id('PIWORK_RUN_ATTEMPT')},runtimeRoot:{mode:'stable-v5-release-cas'},runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},repository:process.env.GITHUB_REPOSITORY};
+          for(const field of ['version','trustRoot','releaseState','candidate','staging','piwork','runtimeRoot','runtime','repository']) if(JSON.stringify(intent[field])!==JSON.stringify(expected[field])) throw Error(`immutable promotion intent ${field} mismatch`);
           if(!/^[a-zA-Z0-9._+-]{1,128}$/.test(intent.previousStable?.releaseId||'')||intent.previousStable?.manifestUrl!==`/releases/${intent.previousStable.releaseId}/manifest.json`||!/^[a-f0-9]{64}$/.test(intent.previousStable?.manifestSha256||'')) throw Error('immutable promotion intent has an invalid previous stable pointer');
           if(intent.worker?.name!=='onlyoffice-browser-runtime'||!uuid.test(intent.worker.previousVersionId||'')||!uuid.test(intent.worker.candidateVersionId||'')||intent.worker.previousVersionId===intent.worker.candidateVersionId) throw Error('immutable promotion intent has invalid Worker versions');
           const traffic=new Map((deployment.versions||[]).map(entry=>[entry.version_id,entry.percentage]));
-          const workerState=traffic.size===1&&traffic.get(intent.worker.previousVersionId)===100?'previous':traffic.size===1&&traffic.get(intent.worker.candidateVersionId)===100?'candidate':traffic.size===2&&traffic.get(intent.worker.previousVersionId)===100&&traffic.get(intent.worker.candidateVersionId)===0?'split':null;
+          const previousPercentage=traffic.get(intent.worker.previousVersionId),candidatePercentage=traffic.get(intent.worker.candidateVersionId);
+          const workerState=traffic.size===1&&previousPercentage===100?'previous':traffic.size===1&&candidatePercentage===100?'candidate':traffic.size===2&&previousPercentage===100&&candidatePercentage===0?'split':[1,10,50].includes(candidatePercentage)&&previousPercentage===100-candidatePercentage?`canary-${candidatePercentage}`:null;
           const matchesPrevious=same(current,intent.previousStable),matchesCandidate=same(current,intent.runtime);
           const pointerState=matchesCandidate&&workerState==='candidate'?'candidate':matchesPrevious?'previous':matchesCandidate?'candidate':null;
           if(!pointerState) throw Error('stable-v5 is neither the recorded predecessor nor this candidate; refusing recovery');
           const jointState=`${pointerState}/${workerState}`;
-          if(!['previous/previous','previous/split','previous/candidate','candidate/candidate'].includes(jointState)) throw Error(`pointer and Worker deployment are outside the recoverable promotion transaction: ${jointState}`);
+          if(!['previous/previous','previous/split','previous/canary-1','previous/canary-10','previous/canary-50','previous/candidate','candidate/candidate'].includes(jointState)) throw Error(`pointer and Worker deployment are outside the recoverable promotion transaction: ${jointState}`);
           fs.writeFileSync('.promotion-intent-adopted',`${jointState}\n`);
           if(jointState==='candidate/candidate') fs.writeFileSync('.promotion-already-converged','1\n');
           fs.appendFileSync(process.env.GITHUB_ENV,`PROMOTION_INTENT_PATH=${process.env.INTENT_PATH}\nPREVIOUS_WORKER_VERSION_ID=${intent.worker.previousVersionId}\nCANDIDATE_WORKER_VERSION_ID=${intent.worker.candidateVersionId}\nONLYOFFICE_SOURCE_RELEASE_ID=${intent.runtime.releaseId}\n`);
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,`### Immutable promotion intent\n- R2 key: \`${process.env.INTENT_PATH}\`\n- Previous stable: \`${intent.previousStable.releaseId}\`\n- Worker transaction: \`${intent.worker.previousVersionId}\` → \`${intent.worker.candidateVersionId}\`\n`);
           NODE
-      - name: Upload candidate CAS in production and fully verify it
+      - name: Reuse staged CAS and verify only its current inventory
         run: |
           set -euo pipefail
-          retry_rclone() { local attempt=1; until timeout 300 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
-          RCLONE_TUNING=(
-            --no-traverse
-            --transfers 16
-            --checkers 32
-            --buffer-size 16M
-            --s3-chunk-size 64M
-            --s3-upload-concurrency 8
-            --s3-upload-cutoff 64M
-          )
-          retry_rclone copy candidate-input/.onlyoffice-release r2:onlyoffice-getpi-work \
-            --ignore-existing \
-            --exclude 'channels/**' \
-            "${RCLONE_TUNING[@]}"
+          retry_inventory() {
+            local output="$1"; shift
+            local temporary="${output}.tmp" attempt=1
+            while true; do
+              rm -f "${temporary}"
+              if timeout 300 rclone "$@" > "${temporary}"; then
+                mv "${temporary}" "${output}"
+                return 0
+              fi
+              test "${attempt}" -ge 4 && return 1
+              sleep "$((attempt++ * 3))"
+            done
+          }
+          retry_inventory "${RUNNER_TEMP}/r2-promote-inventory.json" lsjson r2:onlyoffice-getpi-work \
+            --recursive --files-only --fast-list --no-modtime --no-mimetype
           node scripts/verify-release-publication.mjs \
             --release-root candidate-input/.onlyoffice-release \
-            --expected-package-version "$(node -p "require('./package.json').version")" \
+            --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
             --expected-source-commit "${{ inputs.candidate_commit }}" \
             --fastcdc-evidence-mode automatic \
             --remote r2:onlyoffice-getpi-work \
-            --remote-verification-mode full \
+            --remote-verification-mode incremental \
+            --remote-inventory "${RUNNER_TEMP}/r2-promote-inventory.json" \
+            --report-file staged-cas-readback.json \
             --concurrency 16
-      - name: Reconstruct and fully verify the immutable predecessor release
+          node <<'NODE'
+          const fs=require('node:fs'); const stage=require('./staged-evidence/stage-r2.json'); const readback=require('./staged-cas-readback.json');
+          if(readback.mode!=='incremental'||readback.objects!==stage.cas.targetObjects||readback.bytes!==stage.cas.targetBytes||readback.reusedObjects!==stage.cas.targetObjects||readback.reusedBytes!==stage.cas.targetBytes) throw Error('staged CAS readback is not the exact immutable inventory recorded by staging');
+          NODE
+      - name: Reconstruct and incrementally verify the immutable predecessor release
         run: |
           set -euo pipefail
           PREVIOUS_RELEASE_ID="$(node -p "require('./promotion-intent.json').previousStable.releaseId")"
@@ -345,18 +371,10 @@ jobs:
             --expected-manifest-sha256 "${PREVIOUS_MANIFEST_SHA256}" \
             --fastcdc-evidence-mode automatic \
             --remote r2:onlyoffice-getpi-work \
-            --remote-verification-mode full \
+            --remote-verification-mode incremental \
+            --remote-inventory "${RUNNER_TEMP}/r2-promote-inventory.json" \
+            --report-file predecessor-cas-readback.json \
             --concurrency 16
-          PREVIOUS_HTTP_OBJECT="$(node --input-type=module - "${PREVIOUS_RELEASE_ID}" "${PREVIOUS_MANIFEST_SHA256}" <<'NODE'
-          import {loadV5ManifestPublication} from './scripts/verify-release-publication.mjs';
-          const publication=loadV5ManifestPublication('predecessor-release/manifest.json',{releaseId:process.argv[2],expectedManifestSha256:process.argv[3],fastCdcEvidenceMode:'automatic'});
-          const object=publication.objects.find(candidate=>['whole','fastcdc','package-segment'].includes(candidate.kind)&&candidate.bytes>=8);
-          if(!object) throw Error('predecessor release has no HTTP Range verification object');
-          process.stdout.write(object.key);
-          NODE
-          )"
-          mkdir -p "predecessor-release/$(dirname "${PREVIOUS_HTTP_OBJECT}")"
-          retry_rclone copyto "r2:onlyoffice-getpi-work/${PREVIOUS_HTTP_OBJECT}" "predecessor-release/${PREVIOUS_HTTP_OBJECT}"
       - name: Isolate a new candidate Worker or recover an already active candidate
         run: |
           set -euo pipefail
@@ -403,7 +421,7 @@ jobs:
           PREVIOUS_MANIFEST_SHA256="$(node -p "require('./promotion-intent.json').previousStable.manifestSha256")"
           node scripts/verify-release-http.mjs \
             --release-root candidate-input/.onlyoffice-release \
-            --expected-package-version "$(node -p "require('./package.json').version")" \
+            --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
             --fastcdc-evidence-mode automatic \
             --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --cache-bust "candidate-override-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"
@@ -418,6 +436,46 @@ jobs:
           # stable-v5 pointer at this stage. Verify it only after the pointer
           # compare-and-write converges, below; release-pinned paths are the
           # safe pre-activation compatibility probe.
+      - name: Progressively canary the compatible candidate Worker
+        run: |
+          set -euo pipefail
+          PREVIOUS_RELEASE_ID="$(node -p "require('./promotion-intent.json').previousStable.releaseId")"
+          PREVIOUS_MANIFEST_SHA256="$(node -p "require('./promotion-intent.json').previousStable.manifestSha256")"
+          for percentage in 1 10 50; do
+            previous_percentage=$((100 - percentage))
+            npx --yes wrangler@4.114.0 versions deploy \
+              "${PREVIOUS_WORKER_VERSION_ID}@${previous_percentage}%" \
+              "${CANDIDATE_WORKER_VERSION_ID}@${percentage}%" \
+              --yes \
+              --message "Canary OnlyOffice ${ONLYOFFICE_SOURCE_RELEASE_ID} at ${percentage}%"
+            npx --yes wrangler@4.114.0 deployments status --json > "worker-canary-${percentage}.json"
+            EXPECTED_CANDIDATE_PERCENTAGE="${percentage}" node <<'NODE'
+          const deployment=require(`./worker-canary-${process.env.EXPECTED_CANDIDATE_PERCENTAGE}.json`); const traffic=new Map((deployment.versions||[]).map(entry=>[entry.version_id,entry.percentage])); const expected=Number(process.env.EXPECTED_CANDIDATE_PERCENTAGE); if(!deployment.id||traffic.size!==2||traffic.get(process.env.PREVIOUS_WORKER_VERSION_ID)!==(100-expected)||traffic.get(process.env.CANDIDATE_WORKER_VERSION_ID)!==expected) throw Error(`Worker canary did not converge to ${expected}%`);
+          NODE
+            for attempt in 1 2 3 4 5 6 7 8; do
+              ACTUAL_WORKER_VERSION="$(curl --fail --silent --show-error --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 --head \
+                -H "Cloudflare-Workers-Version-Overrides: onlyoffice-browser-runtime=\"${CANDIDATE_WORKER_VERSION_ID}\"" \
+                -H 'Cache-Control: no-store' \
+                "https://onlyoffice.getpi.work/r/${ONLYOFFICE_SOURCE_RELEASE_ID}/onlyoffice-runtime-assets.json?canary=${percentage}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${attempt}" \
+                | tr -d '\r' | awk -F ': ' 'tolower($1)=="x-onlyoffice-worker-version"{print $2}')"
+              test "${ACTUAL_WORKER_VERSION}" = "${CANDIDATE_WORKER_VERSION_ID}" && break
+              test "${attempt}" = 8 && { echo "candidate Worker canary override did not propagate at ${percentage}%" >&2; exit 1; }
+              sleep "$((attempt * 2))"
+            done
+            node scripts/verify-release-http.mjs \
+              --release-root candidate-input/.onlyoffice-release \
+              --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
+              --fastcdc-evidence-mode automatic \
+              --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
+              --cache-bust "canary-${percentage}-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"
+            node scripts/verify-release-http.mjs \
+              --v5-manifest predecessor-release/manifest.json \
+              --release-id "${PREVIOUS_RELEASE_ID}" \
+              --expected-manifest-sha256 "${PREVIOUS_MANIFEST_SHA256}" \
+              --fastcdc-evidence-mode automatic \
+              --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
+              --cache-bust "predecessor-canary-${percentage}-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"
+          done
       - name: Activate only the fully compatible candidate Worker
         run: |
           set -euo pipefail
@@ -445,7 +503,7 @@ jobs:
           PREVIOUS_MANIFEST_SHA256="$(node -p "require('./promotion-intent.json').previousStable.manifestSha256")"
           node scripts/verify-release-http.mjs \
             --release-root candidate-input/.onlyoffice-release \
-            --expected-package-version "$(node -p "require('./package.json').version")" \
+              --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
             --fastcdc-evidence-mode automatic \
             --expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --cache-bust "candidate-public-${{ github.run_id }}-${{ github.run_attempt }}"
@@ -503,7 +561,7 @@ jobs:
           done
           node scripts/verify-release-http.mjs \
             --release-root candidate-input/.onlyoffice-release \
-            --expected-package-version "$(node -p "require('./package.json').version")" \
+            --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
             --fastcdc-evidence-mode automatic \
             --expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --verify-stable-root \
@@ -536,7 +594,7 @@ jobs:
           npx --yes wrangler@4.114.0 deployments status --json > worker-before-compensation.json
           node <<'NODE'
           const intent=require('./promotion-intent.json'); const deployment=require('./worker-before-compensation.json'); const traffic=new Map((deployment.versions||[]).map(entry=>[entry.version_id,entry.percentage]));
-          const allowed=(traffic.size===1&&traffic.get(intent.worker.previousVersionId)===100)||(traffic.size===1&&traffic.get(intent.worker.candidateVersionId)===100)||(traffic.size===2&&traffic.get(intent.worker.previousVersionId)===100&&traffic.get(intent.worker.candidateVersionId)===0);
+          const previousPercentage=traffic.get(intent.worker.previousVersionId),candidatePercentage=traffic.get(intent.worker.candidateVersionId); const allowed=(traffic.size===1&&previousPercentage===100)||(traffic.size===1&&candidatePercentage===100)||(traffic.size===2&&previousPercentage===100&&candidatePercentage===0)||([1,10,50].includes(candidatePercentage)&&previousPercentage===100-candidatePercentage);
           if(!allowed) throw Error('refusing compensation because the Worker deployment left the recorded transaction');
           NODE
           retry_rclone copyto r2:onlyoffice-getpi-work/channels/stable-v5.json stable-v5-before-compensation.json
@@ -583,10 +641,13 @@ jobs:
         run: |
           set -euo pipefail
           node <<'NODE'
-          const crypto=require('node:crypto'),fs=require('node:fs'); const envelope=require('./candidate-input/release-evidence/office-release-envelope.json'); const intent=require('./promotion-intent.json'); const previousStable=intent.previousStable; const deployment=require('./candidate-worker-deployment-final.json');
+          const crypto=require('node:crypto'),fs=require('node:fs'); const envelope=require('./candidate-input/release-evidence/office-release-envelope.json'); const intent=require('./promotion-intent.json'); const previousStable=intent.previousStable; const deployment=require('./candidate-worker-deployment-final.json'); const stage=require('./staged-evidence/stage-r2.json'); const stagedReadback=require('./staged-cas-readback.json'); const predecessorReadback=require('./predecessor-cas-readback.json'); const stagingArtifact=require('./staging-artifact.json');
           const id=name=>{const value=Number(process.env[name]);if(!Number.isSafeInteger(value)||value<1)throw Error(`${name} must be a positive safe integer`);return value};
           if(!deployment.id||deployment.versions?.length!==1||deployment.versions[0]?.version_id!==intent.worker.candidateVersionId||deployment.versions[0]?.percentage!==100) throw Error('final Worker deployment is not the recorded candidate at 100 percent');
-          const receipt={version:1,trustRoot:'protected-production-workflow-and-r2-cas',channel:'stable-v5',candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},staging:{runId:id('STAGING_RUN_ID')},piwork:{commit:process.env.PIWORK_COMMIT,deepVerifyRunId:id('PIWORK_RUN_ID'),deepVerifyRunAttempt:id('PIWORK_RUN_ATTEMPT')},previousStable:{releaseId:previousStable.releaseId,manifestUrl:previousStable.manifestUrl,manifestSha256:previousStable.manifestSha256},worker:{name:intent.worker.name,previousVersionId:intent.worker.previousVersionId,candidateVersionId:intent.worker.candidateVersionId,finalDeploymentId:deployment.id},runtimeRoot:intent.runtimeRoot,runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},production:{repository:process.env.GITHUB_REPOSITORY,runId:id('GITHUB_RUN_ID'),runAttempt:id('GITHUB_RUN_ATTEMPT')}};
+          const releaseState={version:1,history:['candidate','staged','verified','canary','promoted','post-verified'],state:'post-verified'};
+          if(stage.cas?.mode!=='incremental'||stagedReadback.mode!=='incremental'||predecessorReadback.mode!=='incremental'||stagedReadback.reusedObjects!==stage.cas.targetObjects||stagedReadback.reusedBytes!==stage.cas.targetBytes) throw Error('promotion receipt cannot record an unbound incremental CAS result');
+          const transport={artifactBytes:stage.cas.artifactBytes,stagedArtifactBytes:stagingArtifact.bytes,rangeBytes:stage.cas.rangeBytes,selectedBytes:stage.cas.selectedBytes,targetObjects:stage.cas.targetObjects,targetBytes:stage.cas.targetBytes,missingObjects:stage.cas.missingObjects,reusedObjects:stage.cas.reusedObjects,reusedBytes:stage.cas.reusedBytes,productionReusedObjects:stagedReadback.reusedObjects,productionReusedBytes:stagedReadback.reusedBytes,predecessorObjects:predecessorReadback.objects,predecessorBytes:predecessorReadback.bytes,predecessorReusedObjects:predecessorReadback.reusedObjects,predecessorReusedBytes:predecessorReadback.reusedBytes};
+          const receipt={version:1,trustRoot:'protected-production-workflow-and-r2-cas',channel:'stable-v5',releaseState,progressiveTraffic:[1,10,50,100],transport,candidate:{commit:process.env.CANDIDATE,runId:id('CANDIDATE_RUN_ID')},staging:{runId:id('STAGING_RUN_ID')},piwork:{commit:process.env.PIWORK_COMMIT,deepVerifyRunId:id('PIWORK_RUN_ID'),deepVerifyRunAttempt:id('PIWORK_RUN_ATTEMPT')},previousStable:{releaseId:previousStable.releaseId,manifestUrl:previousStable.manifestUrl,manifestSha256:previousStable.manifestSha256},worker:{name:intent.worker.name,previousVersionId:intent.worker.previousVersionId,candidateVersionId:intent.worker.candidateVersionId,finalDeploymentId:deployment.id},runtimeRoot:intent.runtimeRoot,runtime:{releaseId:envelope.runtime.releaseId,manifestUrl:envelope.runtime.manifestUrl,manifestSha256:envelope.runtime.manifestSha256,runtimeManifestSha256:envelope.runtime.runtimeManifestSha256},production:{repository:process.env.GITHUB_REPOSITORY,runId:id('GITHUB_RUN_ID'),runAttempt:id('GITHUB_RUN_ATTEMPT')}};
           const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n'); const sha=crypto.createHash('sha256').update(bytes).digest('hex');
           const metadata={path:`promotions/${envelope.runtime.releaseId}/${process.env.CANDIDATE}-${sha}.json`,file:`promotion-receipt/${envelope.runtime.releaseId}-${process.env.CANDIDATE}.json`,sha256:sha}; fs.mkdirSync('promotion-receipt',{recursive:true}); fs.writeFileSync(metadata.file,bytes); fs.writeFileSync('promotion-receipt/metadata.json',JSON.stringify(metadata)); fs.appendFileSync(process.env.GITHUB_ENV,`PROMOTION_RECEIPT_PATH=${metadata.path}\nPROMOTION_RECEIPT_FILE=${metadata.file}\nPROMOTION_RECEIPT_SHA256=${metadata.sha256}\n`);
           NODE
