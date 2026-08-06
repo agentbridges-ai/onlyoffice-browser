@@ -56,15 +56,16 @@ jobs:
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.staging_run_id }}" > staging-run.json
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.staging_run_id }}/artifacts?per_page=100" > staging-artifacts.json
-          node -e "const r=require('./staging-run.json'); if(r.conclusion!=='success'||r.head_sha!==process.env.SHA||r.event!=='workflow_dispatch'||r.head_branch!=='main'||!r.path.endsWith('/stage-r2.yml'))throw Error('staging run is not a successful dispatched main-branch stage workflow for this candidate SHA')"
+          node -e "const r=require('./staging-run.json'); if(r.conclusion!=='success'||r.head_sha!==process.env.MAIN_SHA||r.event!=='workflow_dispatch'||r.head_branch!=='main'||!r.path.endsWith('/stage-r2.yml'))throw Error('staging run is not a successful dispatched stage workflow for the current main SHA')"
           node <<'NODE'
-          const fs=require('node:fs'); const artifacts=require('./staging-artifacts.json').artifacts||[]; const expected=`onlyoffice-runtime-stage-${process.env.SHA}-${process.env.STAGING_RUN_ID}`; const artifact=artifacts.find(item=>item.name===expected&&!item.expired);
+          const fs=require('node:fs'); const artifacts=require('./staging-artifacts.json').artifacts||[]; const expected=`onlyoffice-runtime-stage-${process.env.CANDIDATE}-${process.env.STAGING_RUN_ID}`; const artifact=artifacts.find(item=>item.name===expected&&!item.expired);
           if(!artifact?.id||artifact.name!==expected||!Number.isSafeInteger(artifact.size_in_bytes)||artifact.size_in_bytes<=0||!/^sha256:[a-f0-9]{64}$/.test(artifact.digest||'')) throw Error('staged artifact metadata is missing or invalid');
           fs.writeFileSync('staging-artifact.json',JSON.stringify({id:artifact.id,name:artifact.name,bytes:artifact.size_in_bytes,digest:artifact.digest},null,2)+'\n');
           NODE
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ inputs.candidate_commit }}
+          CANDIDATE: ${{ inputs.candidate_commit }}
+          MAIN_SHA: ${{ github.sha }}
           STAGING_RUN_ID: ${{ inputs.staging_run_id }}
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
