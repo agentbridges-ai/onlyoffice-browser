@@ -19,6 +19,17 @@ describe('standalone PWA editor lifecycle contract', () => {
     expect(source).not.toContain('async function destroyEditor()');
   });
 
+  it('keeps the Office surface aligned with the Piwork preview-pane structure', () => {
+    expect(source).toContain('data-testid="office-preview-pane"');
+    expect(source).toContain('data-testid="office-preview-tabbar"');
+    expect(source).toContain('class="document-tabs piwork-scrollbar-hidden"');
+    expect(source).toContain('data-testid="office-preview-toolbar"');
+    expect(source).toContain("select.className = 'document-tab-select'");
+    expect(source).toContain("className = 'document-tab-close'");
+    expect(source).toContain('documentTypeSymbol(tab.name)');
+    expect(source).toContain('document-type-icon');
+  });
+
   it('bounds open documents to the fixed constellation origin pool', () => {
     expect(OFFICE_EDITOR_ORIGIN_SLOTS).toHaveLength(12);
     expect(source).toContain('const MAX_OPEN_DOCUMENTS = OFFICE_EDITOR_ORIGIN_SLOTS.length;');

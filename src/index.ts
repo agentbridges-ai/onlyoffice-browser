@@ -115,24 +115,44 @@ app.innerHTML = `
   <aside id="update-banner" class="update-banner" hidden>
     <span data-i18n="updateReady">${copy.updateReady}</span><button id="update-button" data-i18n="updateNow" type="button">${copy.updateNow}</button>
   </aside>
-  <nav id="document-tabs" class="document-tabs" aria-label="${copy.openDocuments}"></nav>
   <main class="editor-workspace">
-    <section id="empty-state" class="empty-state">
-      <img src="/onlyoffice-icon.svg" alt="" />
-      <h1 data-i18n="noDocument">${copy.noDocument}</h1>
-      <p data-i18n="noDocumentHint">${copy.noDocumentHint}</p>
-      <button id="empty-open-button" class="primary-button" data-i18n="open" type="button">${copy.open}</button>
-    </section>
-    <section id="permission-state" class="empty-state" hidden>
-      <h1 data-i18n="permission">${copy.permission}</h1>
-      <button id="authorize-button" class="primary-button" data-i18n="authorize" type="button">${copy.authorize}</button>
-    </section>
-    <section id="editor-panel" class="editor-panel" hidden>
-      <div class="document-bar">
-        <div class="document-heading"><strong id="document-title"></strong><span id="document-origin" class="document-origin"></span><span id="document-status"></span></div>
-        <div class="document-actions"><button id="save-button" data-i18n="save" type="button">${copy.save}</button><button id="close-button" data-i18n="close" type="button">${copy.close}</button></div>
+    <section class="preview-pane" data-testid="office-preview-pane">
+      <div class="preview-tabbar" data-testid="office-preview-tabbar">
+        <nav id="document-tabs" class="document-tabs piwork-scrollbar-hidden" aria-label="${copy.openDocuments}"></nav>
       </div>
-      <div id="editor-slot" class="editor-slot" aria-live="polite"></div>
+      <div class="preview-body" data-testid="office-preview-body">
+        <section id="empty-state" class="empty-state">
+          <img src="/onlyoffice-icon.svg" alt="" />
+          <h1 data-i18n="noDocument">${copy.noDocument}</h1>
+          <p data-i18n="noDocumentHint">${copy.noDocumentHint}</p>
+          <button id="empty-open-button" class="primary-button" data-i18n="open" type="button">${copy.open}</button>
+        </section>
+        <section id="permission-state" class="empty-state" hidden>
+          <h1 data-i18n="permission">${copy.permission}</h1>
+          <button id="authorize-button" class="primary-button" data-i18n="authorize" type="button">${copy.authorize}</button>
+        </section>
+        <section id="editor-panel" class="editor-panel" hidden>
+          <div class="document-bar" data-testid="office-preview-toolbar">
+            <div class="document-heading">
+              <span id="document-type-icon" class="document-type-icon" aria-hidden="true">W</span>
+              <strong id="document-title"></strong>
+              <span id="document-origin" class="document-origin"></span>
+              <span id="document-status" class="document-status"></span>
+            </div>
+            <div class="document-actions">
+              <button id="save-button" class="preview-toolbar-button" aria-label="${copy.save}" title="${copy.save}" type="button">
+                <svg class="toolbar-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5zM8 3v6h8V3M8 21v-7h8v7" /></svg>
+                <span class="toolbar-button-label" data-i18n="save">${copy.save}</span>
+              </button>
+              <button id="close-button" class="preview-toolbar-button" aria-label="${copy.close}" title="${copy.close}" type="button">
+                <svg class="toolbar-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+                <span class="toolbar-button-label" data-i18n="close">${copy.close}</span>
+              </button>
+            </div>
+          </div>
+          <div id="editor-slot" class="editor-slot" aria-live="polite"></div>
+        </section>
+      </div>
     </section>
   </main>
   <footer class="app-footer"><span data-i18n="product">${copy.product}</span><span id="version-label"><span data-i18n="version">${copy.version}</span> ${ONLYOFFICE_BROWSER_VERSION}</span></footer>
@@ -159,6 +179,7 @@ const elements = {
   slot: document.querySelector<HTMLElement>('#editor-slot')!,
   title: document.querySelector<HTMLElement>('#document-title')!,
   origin: document.querySelector<HTMLElement>('#document-origin')!,
+  typeIcon: document.querySelector<HTMLElement>('#document-type-icon')!,
   status: document.querySelector<HTMLElement>('#document-status')!,
   fileInput: document.querySelector<HTMLInputElement>('#file-input')!,
   resourceButton: document.querySelector<HTMLButtonElement>('#resource-button')!,
@@ -214,6 +235,12 @@ function applyLocale(nextLocale: OfficeLocale): void {
   elements.languageSelect.value = locale;
   elements.languageSelect.setAttribute('aria-label', copy.language);
   elements.tabs.setAttribute('aria-label', copy.openDocuments);
+  for (const id of ['save-button', 'close-button']) {
+    const button = document.querySelector<HTMLButtonElement>(`#${id}`);
+    const key = id === 'save-button' ? copy.save : copy.close;
+    button?.setAttribute('aria-label', key);
+    button?.setAttribute('title', key);
+  }
   document
     .querySelector<HTMLButtonElement>('.settings-dialog header > button')
     ?.setAttribute('aria-label', copy.closeDialog);
@@ -296,18 +323,18 @@ async function allTabsSafeForUpdate(): Promise<boolean> {
 }
 
 const OFFICE_ORIGIN_SYMBOLS: Record<string, string> = {
-  aries: '♈',
-  taurus: '♉',
-  gemini: '♊',
-  cancer: '♋',
-  leo: '♌',
-  virgo: '♍',
-  libra: '♎',
-  scorpio: '♏',
-  sagittarius: '♐',
-  capricorn: '♑',
-  aquarius: '♒',
-  pisces: '♓',
+  aries: '♈︎',
+  taurus: '♉︎',
+  gemini: '♊︎',
+  cancer: '♋︎',
+  leo: '♌︎',
+  virgo: '♍︎',
+  libra: '♎︎',
+  scorpio: '♏︎',
+  sagittarius: '♐︎',
+  capricorn: '♑︎',
+  aquarius: '♒︎',
+  pisces: '♓︎',
 };
 
 function originSlot(origin: string | undefined): OfficeEditorOriginSlot | null {
@@ -327,6 +354,11 @@ function editorOriginLabel(origin: string | undefined): string {
   const slot = originSlot(origin);
   if (!origin || !slot) return copy.originPending;
   return `${OFFICE_ORIGIN_SYMBOLS[slot]} ${slot}.getpi.work`;
+}
+
+function documentTypeSymbol(name: string): 'W' | 'X' | 'P' {
+  const type = documentTypeForName(name);
+  return type === 'cell' ? 'X' : type === 'slide' ? 'P' : 'W';
 }
 
 function isEditorPoolExhausted(error: unknown): boolean {
@@ -352,13 +384,24 @@ function setEditorVisibility(tab: DocumentTab): void {
 function renderTabs(): void {
   elements.tabs.replaceChildren(
     ...tabs.map((tab) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `document-tab${tab === activeTab ? ' active' : ''}`;
-      button.dataset.editorOrigin = tab.editor?.origin || '';
-      button.dataset.editorState = tab.editor?.status || (tab.inaccessible ? 'permission' : 'waiting');
-      button.title = `${tab.name} · ${copy.editorOrigin}: ${editorOriginLabel(tab.editor?.origin)}`;
+      const surface = document.createElement('div');
+      surface.className = `document-tab${tab === activeTab ? ' active' : ''}`;
+      surface.dataset.editorOrigin = tab.editor?.origin || '';
+      surface.dataset.editorState = tab.editor?.status || (tab.inaccessible ? 'permission' : 'waiting');
+      surface.dataset.documentKind = documentTypeForName(tab.name);
+      const tabTitle = `${tab.name} · ${copy.editorOrigin}: ${editorOriginLabel(tab.editor?.origin)}`;
+      const select = document.createElement('button');
+      select.type = 'button';
+      select.className = 'document-tab-select';
+      select.title = tabTitle;
+      select.setAttribute('aria-label', tabTitle);
+      select.addEventListener('click', () => void activateTab(tab));
+      const typeIcon = document.createElement('span');
+      typeIcon.className = 'document-tab-icon';
+      typeIcon.textContent = documentTypeSymbol(tab.name);
+      typeIcon.setAttribute('aria-hidden', 'true');
       const label = document.createElement('span');
+      label.className = 'document-tab-title';
       label.textContent = tab.name;
       const origin = document.createElement('span');
       origin.className = 'document-tab-origin';
@@ -367,18 +410,22 @@ function renderTabs(): void {
         : '…';
       origin.setAttribute('aria-hidden', 'true');
       origin.title = editorOriginLabel(tab.editor?.origin);
-      const dirty = document.createElement('i');
-      dirty.textContent = tab.dirty ? '●' : '';
-      const close = document.createElement('b');
-      close.textContent = '×';
+      const dirty = document.createElement('span');
+      dirty.className = 'document-tab-dirty';
+      dirty.hidden = !tab.dirty;
+      dirty.setAttribute('aria-hidden', 'true');
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'document-tab-close';
+      close.setAttribute('aria-label', `${copy.close}: ${tab.name}`);
       close.title = copy.close;
+      close.innerHTML = '<span aria-hidden="true">×</span>';
       close.addEventListener('click', (event) => {
         event.stopPropagation();
         void closeTab(tab);
       });
-      button.append(label, origin, dirty, close);
-      button.addEventListener('click', () => void activateTab(tab));
-      return button;
+      surface.append(select, typeIcon, label, origin, close, dirty);
+      return surface;
     }),
   );
 }
@@ -391,9 +438,20 @@ function setView(view: 'empty' | 'permission' | 'editor'): void {
 
 function setDocumentStatus(text: string): void {
   elements.status.textContent = text;
+  const state =
+    text === '…'
+      ? 'waiting'
+      : text === '●'
+        ? 'dirty'
+        : text === copy.openLimitReached || text.startsWith(`${copy.error}:`)
+          ? 'error'
+          : 'ready';
+  elements.status.dataset.state = state;
 }
 
 function setActiveDocumentHeader(tab: DocumentTab): void {
+  elements.typeIcon.textContent = documentTypeSymbol(tab.name);
+  elements.typeIcon.dataset.kind = documentTypeForName(tab.name);
   elements.title.textContent = tab.name;
   elements.origin.textContent = editorOriginLabel(tab.editor?.origin);
   elements.origin.title = `${copy.editorOrigin}: ${editorOriginLabel(tab.editor?.origin)}`;
