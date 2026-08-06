@@ -296,6 +296,11 @@ describe('R2 release train workflows', () => {
     expect(pullRequestChecks).toContain('Explicit no-op');
     expect(pullRequestChecks).toContain('Require every gate to complete successfully');
     expect(pullRequestChecks).toContain('Required gate failed or was cancelled; no bypass is permitted.');
+    expect(pullRequestChecks).toContain('actions/cache/restore');
+    expect(pullRequestChecks).toContain('Pinned font cache is unavailable');
+    expect(pullRequestChecks).toContain('ONLYOFFICE_SKIP_RELEASE_BUILD=1 pnpm build');
+    expect(pullRequestChecks).toContain('pnpm release:build');
+    expect(pullRequestChecks).toContain('ONLYOFFICE_CF_MATRIX_USE_CURRENT_BUILD=1');
   });
 
   it('has an explicit current-build matrix mode that cannot rebuild the candidate', () => {

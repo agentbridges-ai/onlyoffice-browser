@@ -153,6 +153,9 @@ jobs:
     needs: [gate-0-scope, gate-1-fast, gate-2-quality]
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      ONLYOFFICE_MATRIX_FONT_RELEASE_ID: v0.5.0-648c486d1c558acd
+      ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256: 09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
     steps:
       - name: Explicit no-op
         if: needs.gate-0-scope.result != 'success' || needs.gate-1-fast.result != 'success' || needs.gate-2-quality.result != 'success' || needs.gate-0-scope.outputs.release != 'true'
@@ -172,9 +175,29 @@ jobs:
       - name: Install locked dependencies
         if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
         run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Restore the pinned full-font input
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        id: full-font-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/onlyoffice-font-release
+          key: onlyoffice-font-release-v0.5.0-648c486d1c558acd-09f0df58c08043aac5b576411b51bfe97584ea5b18e3eac5241b9d448631ba45
       - name: Build the deployable release once
         if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
-        run: pnpm build
+        run: ONLYOFFICE_SKIP_RELEASE_BUILD=1 pnpm build
+      - name: Hydrate and verify the pinned font input before release staging
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
+        env:
+          FONT_CACHE_HIT: ${{ steps.full-font-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          test "$FONT_CACHE_HIT" = true || { echo 'Pinned font cache is unavailable; candidate workflow must publish it before Gate 3 can run.' >&2; exit 1; }
+          FONT_MANIFEST="${GITHUB_WORKSPACE}/.cache/onlyoffice-font-release/onlyoffice-browser-font-assets.json"
+          test -s "$FONT_MANIFEST"
+          test "$(shasum -a 256 "$FONT_MANIFEST" | awk '{print $1}')" = "$ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256"
+          ONLYOFFICE_MATRIX_FONT_ASSETS_DIR="${GITHUB_WORKSPACE}/.cache/onlyoffice-font-release" node scripts/hydrate-cloudflare-matrix-fonts.mjs
+          pnpm fonts:verify --input dist
+          pnpm release:build
       - name: Verify the local immutable release
         if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-2-quality.result == 'success' && needs.gate-0-scope.outputs.release == 'true'
         run: node scripts/verify-release-publication.mjs --release-root .onlyoffice-release --expected-package-version "$(node -p "require('./package.json').version")" --fastcdc-evidence-mode automatic
