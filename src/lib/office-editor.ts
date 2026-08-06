@@ -18,6 +18,7 @@ import { officeHostIdentitiesEqual } from './office-host-identity';
 import { readOfficeHostBootstrap, writeOfficeHostBootstrap } from './office-host-url';
 import {
   OFFICE_EDITOR_ORIGIN_SLOTS,
+  isOfficeEditorOriginSlot,
   isReusableOfficeEditorHostname,
   type OfficeEditorOriginSlot,
 } from './office-origin-pool';
@@ -90,6 +91,8 @@ export interface CreateOfficeEditorOptions {
   plugins?: OfficePluginOptions;
   /** Font asset paths explicitly downloaded by the embedding application. */
   downloadedFonts?: string[];
+  /** Prefer the document's previously assigned constellation slot when it is available. */
+  preferredHostSlot?: OfficeEditorOriginSlot;
   fetchOptions?: RequestInit;
   hardResetOnLastDestroy?: boolean;
   destroyTimeoutMs?: number;
@@ -679,7 +682,14 @@ class BrowserOfficeEditorProxy implements OfficeEditorInstance {
     let descriptor: InitialHostDescriptor | null = null;
     let firstConflict: { origin: string; sessionId: string } | null = null;
     const resolvedOrigins = new Set<string>();
-    for (const hostSlot of OFFICE_EDITOR_ORIGIN_SLOTS) {
+    const preferredHostSlot =
+      typeof options.preferredHostSlot === 'string' && isOfficeEditorOriginSlot(options.preferredHostSlot)
+        ? options.preferredHostSlot
+        : undefined;
+    const hostSlots = preferredHostSlot
+      ? [preferredHostSlot, ...OFFICE_EDITOR_ORIGIN_SLOTS.filter((slot) => slot !== preferredHostSlot)]
+      : OFFICE_EDITOR_ORIGIN_SLOTS;
+    for (const hostSlot of hostSlots) {
       const candidate = describeHostInit(options, sessionId, hostSlot);
       if (resolvedOrigins.has(candidate.hostUrl.origin)) continue;
       resolvedOrigins.add(candidate.hostUrl.origin);

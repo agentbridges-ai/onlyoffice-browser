@@ -4,7 +4,11 @@ import {
   type OfficeEditorMount,
   type OfficeHostUrlContext,
 } from './lib/office-editor';
-import { OFFICE_EDITOR_ORIGIN_SLOTS } from './lib/office-origin-pool';
+import {
+  isOfficeEditorOriginSlot,
+  OFFICE_EDITOR_ORIGIN_SLOTS,
+  type OfficeEditorOriginSlot,
+} from './lib/office-origin-pool';
 import {
   createOfficeRuntimeResourceManager,
   type OfficeRuntimeResourceManager,
@@ -52,6 +56,7 @@ type DocumentTab = {
   handle?: FileSystemFileHandle;
   file?: File;
   emptyType?: 'docx' | 'xlsx' | 'pptx' | 'csv';
+  originSlot?: OfficeEditorOriginSlot;
   dirty: boolean;
   inaccessible?: boolean;
   editor?: DocumentEditorRecord;
@@ -305,14 +310,14 @@ const OFFICE_ORIGIN_SYMBOLS: Record<string, string> = {
   pisces: '♓',
 };
 
-function originSlot(origin: string | undefined): string | null {
+function originSlot(origin: string | undefined): OfficeEditorOriginSlot | null {
   if (!origin) return null;
   try {
     const hostname = new URL(origin).hostname.toLowerCase();
     const slot = hostname.endsWith('.getpi.work')
       ? hostname.slice(0, -'.getpi.work'.length)
       : /^host-([^.]+)\.office\.localhost$/.exec(hostname)?.[1] || /^([^.]+)\.localhost$/.exec(hostname)?.[1];
-    return slot && Object.hasOwn(OFFICE_ORIGIN_SYMBOLS, slot) ? slot : null;
+    return slot && isOfficeEditorOriginSlot(slot) ? slot : null;
   } catch {
     return null;
   }
@@ -397,7 +402,13 @@ function setActiveDocumentHeader(tab: DocumentTab): void {
 
 async function persistTab(tab: DocumentTab): Promise<void> {
   if (!tab.handle) return;
-  await tabStore.put({ id: tab.id, name: tab.name, handle: tab.handle, lastOpenedAt: Date.now() });
+  await tabStore.put({
+    id: tab.id,
+    name: tab.name,
+    handle: tab.handle,
+    lastOpenedAt: Date.now(),
+    ...(tab.originSlot ? { originSlot: tab.originSlot } : {}),
+  });
 }
 
 function downloadFallback(file: File): void {
@@ -616,6 +627,7 @@ async function createEditorRecord(tab: DocumentTab): Promise<DocumentEditorRecor
     mode: 'edit' as const,
     saveBehavior: 'callback' as const,
     downloadedFonts: resourceManager?.getVerifiedFontPaths() || [],
+    preferredHostSlot: tab.originSlot,
     hardResetOnLastDestroy,
     onReady: (instance: OfficeEditorInstance) => {
       if (tab.editor !== record || record.disposed) return;
@@ -659,8 +671,10 @@ async function createEditorRecord(tab: DocumentTab): Promise<DocumentEditorRecor
     throw error;
   }
   record.origin = record.mount.getState().origin;
+  tab.originSlot = originSlot(record.origin) || undefined;
   tab.file = undefined;
   tab.editor = record;
+  await persistTab(tab);
   renderTabs();
   return record;
 }
@@ -969,6 +983,7 @@ async function restoreTabs(): Promise<void> {
         id: record.id,
         name: record.name,
         handle: record.handle,
+        originSlot: record.originSlot && isOfficeEditorOriginSlot(record.originSlot) ? record.originSlot : undefined,
         dirty: false,
         inaccessible: !(await hasReadPermission(record.handle)),
       });

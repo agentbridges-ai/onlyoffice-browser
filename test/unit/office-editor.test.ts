@@ -265,6 +265,31 @@ describe('office-editor parent proxy', () => {
     await Promise.all([...mounts.slice(1).map((mount) => mount.destroy()), reused.destroy()]);
   });
 
+  it('prefers a persisted constellation slot and falls back when another document owns it', async () => {
+    const firstContainer = document.createElement('div');
+    const secondContainer = document.createElement('div');
+    const thirdContainer = document.createElement('div');
+    document.body.append(firstContainer, secondContainer, thirdContainer);
+    const options = (fileName: string, preferredHostSlot?: (typeof OFFICE_EDITOR_ORIGIN_SLOTS)[number]) => ({
+      hostUrl: ({ hostSlot }: { hostSlot: string }) => `https://${hostSlot}.getpi.work/office-host.html`,
+      file: new File([fileName], fileName),
+      fileName,
+      preferredHostSlot,
+      destroyTimeoutMs: 1,
+    });
+
+    const first = mountOfficeEditor(firstContainer, options('first.docx', 'aries'));
+    const second = mountOfficeEditor(secondContainer, options('second.docx', 'aries'));
+    expect(new URL(firstContainer.querySelector<HTMLIFrameElement>('iframe')!.src).hostname).toBe('aries.getpi.work');
+    expect(new URL(secondContainer.querySelector<HTMLIFrameElement>('iframe')!.src).hostname).toBe('taurus.getpi.work');
+
+    await first.destroy();
+    const third = mountOfficeEditor(thirdContainer, options('third.docx', 'aries'));
+    expect(new URL(thirdContainer.querySelector<HTMLIFrameElement>('iframe')!.src).hostname).toBe('aries.getpi.work');
+
+    await Promise.all([second.destroy(), third.destroy()]);
+  });
+
   it('keeps a closing origin retired until host teardown completes, then reuses it safely', async () => {
     const firstContainer = document.createElement('div');
     const secondContainer = document.createElement('div');

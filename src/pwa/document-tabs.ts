@@ -1,8 +1,11 @@
+import type { OfficeEditorOriginSlot } from '../lib/office-origin-pool';
+
 export type PersistedDocumentTab = {
   id: string;
   name: string;
   handle: FileSystemFileHandle;
   lastOpenedAt: number;
+  originSlot?: OfficeEditorOriginSlot;
 };
 
 const DATABASE_NAME = 'onlyoffice-browser-pwa';

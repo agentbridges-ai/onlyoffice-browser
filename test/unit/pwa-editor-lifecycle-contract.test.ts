@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { OFFICE_EDITOR_ORIGIN_SLOTS } from '../../src/lib/office-origin-pool';
 
 const source = readFileSync(resolve(process.cwd(), 'src/index.ts'), 'utf8');
+const tabStoreSource = readFileSync(resolve(process.cwd(), 'src/pwa/document-tabs.ts'), 'utf8');
 
 describe('standalone PWA editor lifecycle contract', () => {
   it('keeps a mounted editor record for every open document', () => {
@@ -24,6 +25,9 @@ describe('standalone PWA editor lifecycle contract', () => {
     expect(source).toContain('if (tabs.length >= MAX_OPEN_DOCUMENTS)');
     expect(source).toContain('copy.openLimitReached');
     expect(source).toContain('originSlot(tab.editor?.origin)');
+    expect(source).toContain('preferredHostSlot: tab.originSlot');
+    expect(source).toContain('tab.originSlot = originSlot(record.origin) || undefined;');
+    expect(tabStoreSource).toContain('originSlot?: OfficeEditorOriginSlot;');
   });
 
   it('serializes activation while retaining background documents for instant switching', () => {
