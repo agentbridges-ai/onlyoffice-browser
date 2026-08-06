@@ -11,6 +11,14 @@ const pullRequestChecks = read('.github/workflows/ci.yml');
 const matrixRunner = read('scripts/run-cloudflare-local-matrix.mjs');
 
 describe('R2 release train workflows', () => {
+  it('classifies every deployable build input as release-relevant and keeps a full unit gate', () => {
+    expect(pullRequestChecks).toContain(
+      '.github/workflows/*|bin/*|cloudflare/*|pages/*|scripts/*|src/*|public/*|test/*',
+    );
+    expect(pullRequestChecks).toContain('Run the full unit suite for release changes');
+    expect(pullRequestChecks).toContain('pnpm exec vitest run test/unit');
+  });
+
   it('builds, matrices, publishes immutable CAS, smokes, then retains a candidate', () => {
     expect(candidate).toContain('SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)');
     expect(candidate).toContain("if: github.ref == 'refs/heads/main'");

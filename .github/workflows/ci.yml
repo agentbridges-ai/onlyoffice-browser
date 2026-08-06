@@ -42,7 +42,7 @@ jobs:
             case "$file" in
               *.md|docs/*|LICENSE*)
                 ;;
-              .github/workflows/*|scripts/*|src/*|public/*|test/*|package.json|pnpm-lock.yaml|vite*.ts|tsconfig*.json|wrangler*.json)
+              .github/workflows/*|bin/*|cloudflare/*|pages/*|scripts/*|src/*|public/*|test/*|package.json|pnpm-lock.yaml|vite*.ts|tsconfig*.json|wrangler*.json)
                 relevant=true
                 release=true
                 ;;
@@ -146,6 +146,9 @@ jobs:
       - name: Check npm pack contents
         if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true'
         run: npm pack --dry-run --ignore-scripts
+      - name: Run the full unit suite for release changes
+        if: needs.gate-0-scope.result == 'success' && needs.gate-1-fast.result == 'success' && needs.gate-0-scope.outputs.relevant == 'true' && needs.gate-0-scope.outputs.release == 'true'
+        run: pnpm exec vitest run test/unit
 
   gate-3-integration:
     name: Gate 3 · integration and release simulation
