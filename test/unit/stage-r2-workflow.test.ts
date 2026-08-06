@@ -31,7 +31,7 @@ describe('immutable candidate staging workflow', () => {
     expect(stage).toContain('--checkers 32');
     expect(stage).toContain("--exclude 'channels/**'");
     expect(stage).toContain('--remote-verification-mode incremental');
-    expect(stage).toContain('--skip-local-verification');
+    expect(stage).toContain('--remote-range-verification');
     expect(stage).toContain('--remote-inventory "${R2_BEFORE_INVENTORY}"');
     expect(stage).toContain('--report-file cas-verification.json');
     expect(stage).toContain('incremental-r2-cas-verification');
@@ -43,6 +43,8 @@ describe('immutable candidate staging workflow', () => {
     expect(stage).not.toContain('r2:onlyoffice-getpi-work/segments --ignore-existing');
     expect(stage).toContain('Verify staged release against the current production Worker');
     expect(stage).toContain('scripts/verify-release-http.mjs');
+    expect(stage).toContain('scripts/verify-release-http.mjs --release-root candidate-input/.onlyoffice-release');
+    expect(stage).toContain('--skip-local-verification');
     expect(stage).toContain('current-production-worker-compatibility');
     expect(stage).toContain('Retain staged compatibility evidence');
     expect(stage).not.toMatch(/channels\/(?:stable|stable-v5)\.json/);

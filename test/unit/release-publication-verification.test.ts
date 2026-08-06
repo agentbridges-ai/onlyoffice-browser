@@ -504,6 +504,22 @@ describe('release-specific production HTTP verification', () => {
     });
     expect(fetchImpl).toHaveBeenCalled();
 
+    const savedObject = fs.readFileSync(objectFile);
+    fs.rmSync(objectFile);
+    try {
+      await expect(
+        verifyReleaseHttp(publication, {
+          canonicalOrigin: 'https://onlyoffice.getpi.work',
+          editorOrigin: 'https://office-editor-github-actions-smoke.getpi.work',
+          fetchImpl,
+          workerVersionId,
+          remoteRangeVerification: true,
+        }),
+      ).resolves.toMatchObject({ releaseId: publication.releaseId, object: object.key });
+    } finally {
+      fs.writeFileSync(objectFile, savedObject);
+    }
+
     includeRuntimeWorkerVersion = false;
     await expect(
       verifyReleaseHttp(publication, {

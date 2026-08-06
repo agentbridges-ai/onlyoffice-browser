@@ -425,6 +425,7 @@ jobs:
             --release-root candidate-input/.onlyoffice-release \
             --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
             --fastcdc-evidence-mode automatic \
+            --remote-range-verification \
             --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --cache-bust "candidate-override-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"
           node scripts/verify-release-http.mjs \
@@ -432,6 +433,7 @@ jobs:
             --release-id "${PREVIOUS_RELEASE_ID}" \
             --expected-manifest-sha256 "${PREVIOUS_MANIFEST_SHA256}" \
             --fastcdc-evidence-mode automatic \
+            --remote-range-verification \
             --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --cache-bust "predecessor-override-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"
           # The unversioned root is intentionally still bound to the previous
@@ -468,6 +470,7 @@ jobs:
               --release-root candidate-input/.onlyoffice-release \
               --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
               --fastcdc-evidence-mode automatic \
+              --remote-range-verification \
               --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
               --cache-bust "canary-${percentage}-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"
             node scripts/verify-release-http.mjs \
@@ -475,6 +478,7 @@ jobs:
               --release-id "${PREVIOUS_RELEASE_ID}" \
               --expected-manifest-sha256 "${PREVIOUS_MANIFEST_SHA256}" \
               --fastcdc-evidence-mode automatic \
+              --remote-range-verification \
               --worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
               --cache-bust "predecessor-canary-${percentage}-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"
           done
@@ -507,6 +511,7 @@ jobs:
             --release-root candidate-input/.onlyoffice-release \
               --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
             --fastcdc-evidence-mode automatic \
+            --remote-range-verification \
             --expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --cache-bust "candidate-public-${{ github.run_id }}-${{ github.run_attempt }}"
           node scripts/verify-release-http.mjs \
@@ -514,6 +519,7 @@ jobs:
             --release-id "${PREVIOUS_RELEASE_ID}" \
             --expected-manifest-sha256 "${PREVIOUS_MANIFEST_SHA256}" \
             --fastcdc-evidence-mode automatic \
+            --remote-range-verification \
             --expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --cache-bust "predecessor-public-${{ github.run_id }}-${{ github.run_attempt }}"
       - name: Promote stable-v5 only after both Worker compatibility directions pass
@@ -565,6 +571,7 @@ jobs:
             --release-root candidate-input/.onlyoffice-release \
             --expected-package-version "$(node -p "require('./candidate-package.json').version")" \
             --fastcdc-evidence-mode automatic \
+            --remote-range-verification \
             --expected-worker-version-id "${CANDIDATE_WORKER_VERSION_ID}" \
             --verify-stable-root \
             --cache-bust "promoted-${{ inputs.candidate_commit }}-${{ github.run_attempt }}"

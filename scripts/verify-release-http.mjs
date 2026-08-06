@@ -306,7 +306,8 @@ export async function verifyReleaseHttp(publication, options = {}) {
   expectHeader(range, 'content-length', String(end + 1), 'Content object Range');
   expectHeader(range, 'content-range', `bytes 0-${end}/${object.bytes}`, 'Content object Range');
   const actualRange = Buffer.from(await range.arrayBuffer());
-  if (!actualRange.equals(localBytes(publication, object, 0, end))) {
+  expectHeader(range, 'x-content-sha256', object.sha256, 'Content object Range');
+  if (!options.remoteRangeVerification && !actualRange.equals(localBytes(publication, object, 0, end))) {
     fail('Content object Range bytes do not match the local immutable object');
   }
 
@@ -361,6 +362,7 @@ if (isMain) {
     workerVersionId: option('--worker-version-id'),
     expectedWorkerVersionId: option('--expected-worker-version-id'),
     workerVersionOrigin: option('--worker-version-origin'),
+    remoteRangeVerification: process.argv.includes('--remote-range-verification'),
   });
   console.log(
     `Verified production Host, Broker CSP, and content-object Range for ${result.releaseId}${

@@ -58,6 +58,7 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('Reuse staged CAS and verify only its current inventory');
     expect(promotion).toContain('staged-cas-readback.json');
     expect(promotion.match(/--skip-local-verification/g)).toHaveLength(2);
+    expect(promotion.match(/--remote-range-verification/g)).toHaveLength(7);
     expect(promotion).toContain('Reconstruct and incrementally verify the immutable predecessor release');
     expect(promotion).not.toContain('Upload candidate CAS in production and fully verify it');
     expect(promotion).not.toContain('--remote-verification-mode full');
