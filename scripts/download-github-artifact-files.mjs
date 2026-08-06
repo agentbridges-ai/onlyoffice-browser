@@ -25,7 +25,6 @@ const ZIP64_LOCATOR_HEADER = 0x07064b50;
 const ZIP64_EXTRA_FIELD = 0x0001;
 const RANGE_CHUNK_BYTES = 32 * 1024 * 1024;
 const MAX_END_SCAN_BYTES = 128 * 1024;
-const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 function fail(message) {
   throw new Error(message);
