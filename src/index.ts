@@ -898,7 +898,6 @@ async function openFiles(): Promise<void> {
 }
 
 async function createEmpty(emptyType: 'docx' | 'xlsx' | 'pptx' | 'csv'): Promise<void> {
-  if (!(await ensureResourcesReady())) return;
   if (tabs.length >= MAX_OPEN_DOCUMENTS) {
     setDocumentStatus(copy.openLimitReached);
     return;
