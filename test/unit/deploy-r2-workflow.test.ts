@@ -135,6 +135,9 @@ describe('R2 release train workflows', () => {
     expect(promotion).toContain('Require successful production staging evidence for this candidate');
     expect(promotion).toContain('staging-artifacts.json');
     expect(promotion).toContain('staging-artifact.json');
+    expect(promotion).toContain('r.head_sha!==process.env.MAIN_SHA');
+    expect(promotion).toContain('MAIN_SHA: ${{ github.sha }}');
+    expect(promotion).toContain('onlyoffice-runtime-stage-${process.env.CANDIDATE}-${process.env.STAGING_RUN_ID}');
     expect(promotion).toContain("r.path.endsWith('/stage-r2.yml')");
     expect(promotion).toContain("run.event!=='workflow_dispatch'");
     expect(promotion).toContain('/actions/runs/${PIWORK_RUN_ID}/attempts/${PIWORK_RUN_ATTEMPT}');
