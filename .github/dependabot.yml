@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: pnpm
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      patch-minor:
+        update-types:
+          - patch
+          - minor
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
