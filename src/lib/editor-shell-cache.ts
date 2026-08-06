@@ -625,7 +625,16 @@ export async function primeEditorShell(options: {
       cachedBytes,
       assets: descriptors,
     };
-    await verifyGeneration(options.cacheStorage, options.origin, pointer);
+    try {
+      await verifyGeneration(options.cacheStorage, options.origin, pointer);
+    } catch (error) {
+      // Cache Storage can become unavailable after the staging cache has been
+      // opened (for example when a third-party origin loses its partition).
+      // Keep the immutable network representation usable in that case, just
+      // as we do for open/put failures above.
+      if (isEditorShellStorageAvailabilityError(error)) return networkFallback();
+      throw error;
+    }
 
     let previous: EditorShellPointer | null = null;
     try {

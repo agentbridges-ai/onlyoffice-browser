@@ -325,6 +325,38 @@ describe('editor shell cache', () => {
     expect(storage.generationNames(`release-put-${name.toLowerCase()}`)).toEqual([]);
   });
 
+  it.each(['UnknownError', 'InvalidStateError'])(
+    'falls back when staged shell verification loses Cache Storage with %s',
+    async (name) => {
+      const storage = new MemoryCacheStorage();
+      const fixture = releaseFixture(`release-verify-${name.toLowerCase()}`);
+      const originalOpen = storage.open.bind(storage);
+      let shouldFailGenerationRead = true;
+      storage.open = async (cacheName) => {
+        const cache = await originalOpen(cacheName);
+        if (cacheName.startsWith(`${EDITOR_SHELL_CACHE_NAME}:generation:`) && shouldFailGenerationRead) {
+          shouldFailGenerationRead = false;
+          cache.match = async () => {
+            throw new DOMException('simulated browser storage read failure', name);
+          };
+        }
+        return cache;
+      };
+
+      await expect(
+        primeEditorShell({
+          releaseId: `release-verify-${name.toLowerCase()}`,
+          origin: 'https://aries.getpi.work',
+          manifestOrigin: 'https://onlyoffice.getpi.work',
+          cacheStorage: storage as unknown as CacheStorage,
+          fetch: fixture.fetch as typeof fetch,
+          createGenerationId: () => '0'.repeat(32),
+        }),
+      ).resolves.toMatchObject({ storageMode: 'network' });
+      expect(storage.generationNames(`release-verify-${name.toLowerCase()}`)).toEqual([]);
+    },
+  );
+
   it('rematerializes a persisted shell response with actual decoded length', async () => {
     const storage = new MemoryCacheStorage();
     const fixture = releaseFixture('release-a');
