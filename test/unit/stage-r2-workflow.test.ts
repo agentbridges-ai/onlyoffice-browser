@@ -12,6 +12,9 @@ describe('immutable candidate staging workflow', () => {
     expect(stage).toContain('timeout-minutes: 180');
     expect(stage).toContain('onlyoffice-runtime-candidate-${{ inputs.candidate_commit }}');
     expect(stage).toContain('download-github-artifact-files.mjs');
+    expect(stage).toContain(
+      'name: Stage only missing immutable CAS objects and incrementally verify remote bytes\n        env:\n          # The second artifact-range pass downloads only missing CAS keys;\n          # it must retain the same Actions read token as the metadata pass.\n          GH_TOKEN: ${{ github.token }}',
+    );
     expect(stage).not.toContain("--include 'dist/**'");
     expect(stage).toContain('cas-missing-files.json');
     expect(stage).toContain('R2_BEFORE_INVENTORY');
