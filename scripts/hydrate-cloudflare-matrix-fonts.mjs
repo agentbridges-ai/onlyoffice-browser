@@ -55,21 +55,53 @@ function fontDownloadConcurrency() {
   return Math.min(parsed, 6);
 }
 
-async function readRelease() {
+function isNotFoundError(error) {
+  return error instanceof Error && /HTTP 404\b/.test(error.message);
+}
+
+function manifestPathForChannel(channel, releaseId) {
+  const manifestPath = channel?.manifestUrl;
+  if (
+    manifestPath !== undefined &&
+    (typeof manifestPath !== 'string' ||
+      !manifestPath.startsWith('/releases/') ||
+      manifestPath.includes('..') ||
+      !manifestPath.endsWith('.json'))
+  ) {
+    throw new Error('Cloudflare matrix font source returned an invalid release manifest URL');
+  }
+  return manifestPath || `/releases/${encodeURIComponent(releaseId)}/manifest.json`;
+}
+
+async function readChannel(channelPath) {
+  // A missing v5 channel is a compatibility signal, not a transient asset
+  // failure. Keep the pointer probe bounded so old mirrors can fall back to
+  // stable.json without waiting through the long object retry schedule.
+  return fetchWithRetry(`${sourceOrigin}${channelPath}`, (response) => response.json(), [1_000]);
+}
+
+export async function readRelease() {
   let releaseId = pinnedReleaseId;
+  let channel = null;
   if (!releaseId) {
-    const channel = await fetchWithRetry(`${sourceOrigin}/channels/stable.json`, (response) => response.json());
+    try {
+      // v5 is the authoritative production channel. The legacy channel is
+      // retained only for older pinned deployments and local mirrors that do
+      // not expose stable-v5 yet.
+      channel = await readChannel('/channels/stable-v5.json');
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+      channel = await readChannel('/channels/stable.json');
+    }
     if (channel.version !== 1 || typeof channel.releaseId !== 'string') {
-      throw new Error('Cloudflare matrix font source returned an invalid stable channel');
+      throw new Error('Cloudflare matrix font source returned an invalid stable release channel');
     }
     releaseId = channel.releaseId;
   }
-  const manifest = await fetchWithRetry(
-    `${sourceOrigin}/releases/${encodeURIComponent(releaseId)}/manifest.json`,
-    (response) => response.json(),
-  );
+  const manifestPath = manifestPathForChannel(channel, releaseId);
+  const manifest = await fetchWithRetry(`${sourceOrigin}${manifestPath}`, (response) => response.json());
   if (
-    (manifest.version !== 3 && manifest.version !== 4) ||
+    (manifest.version !== 3 && manifest.version !== 4 && manifest.version !== 5) ||
     manifest.releaseId !== releaseId ||
     !Array.isArray(manifest.assets)
   ) {
