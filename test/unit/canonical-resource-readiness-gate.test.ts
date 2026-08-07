@@ -195,6 +195,61 @@ describe('CanonicalResourceReadinessGate', () => {
     });
   });
 
+  it('exposes an exact pending release when a stale predecessor shell cannot be probed', async () => {
+    const installer = new FakeInstaller();
+    installer.snapshot = {
+      ...readySnapshot('release-a'),
+      targetRelease: 'release-b',
+      availableRelease: 'release-b',
+      availablePackageVersion: '0.5.8',
+    };
+    const probe: CanonicalReleaseReadinessProbe = vi.fn(async () => {
+      throw new ResourceInstallerError('storage', 'editor-origins/https://aries.getpi.work');
+    });
+    const gate = new CanonicalResourceReadinessGate({ installer, probeRelease: probe });
+
+    await expect(gate.initialize()).resolves.toBeUndefined();
+    expect(probe).not.toHaveBeenCalled();
+    expect(gate.getInstallerSnapshot()).toMatchObject({
+      installedRelease: 'release-a',
+      availableRelease: 'release-b',
+      readiness: 'update-available',
+      errorCode: null,
+      failedResources: [],
+      canRetry: false,
+    });
+  });
+
+  it('discovers a pending release before probing a stale predecessor', async () => {
+    const installer = new FakeInstaller();
+    installer.snapshot = {
+      ...readySnapshot('release-a'),
+      availableRelease: null,
+      availablePackageVersion: null,
+    };
+    installer.checkForUpdates.mockImplementationOnce(async () => {
+      installer.publish({
+        ...readySnapshot('release-a'),
+        targetRelease: 'release-b',
+        availableRelease: 'release-b',
+        availablePackageVersion: '0.5.8',
+      });
+    });
+    const probe: CanonicalReleaseReadinessProbe = vi.fn(async () => {
+      throw new ResourceInstallerError('storage', 'editor-origins/https://aries.getpi.work');
+    });
+    const gate = new CanonicalResourceReadinessGate({ installer, probeRelease: probe });
+
+    await expect(gate.initialize()).resolves.toBeUndefined();
+    expect(installer.checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(probe).not.toHaveBeenCalled();
+    expect(gate.getInstallerSnapshot()).toMatchObject({
+      installedRelease: 'release-a',
+      availableRelease: 'release-b',
+      readiness: 'update-available',
+    });
+  });
+
   it('rejects 12 successful-looking results unless they are the fixed constellation origins', async () => {
     const installer = new FakeInstaller();
     const gate = new CanonicalResourceReadinessGate({

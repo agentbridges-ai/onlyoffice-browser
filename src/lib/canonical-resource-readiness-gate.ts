@@ -210,6 +210,25 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
   async initialize(): Promise<void> {
     await this.#installer.initialize?.();
     this.#rawSnapshot = cloneSnapshot(this.#installer.getInstallerSnapshot());
+    // An existing installation can have a stale editor-origin shell even
+    // though the immutable CAS inventory is usable. Discover the current v5
+    // pointer before proving that old shell; otherwise a failed legacy probe
+    // prevents the manager from ever exposing the upgrade path. The pending
+    // release still has to pass the full object, Broker, and 12-origin gate
+    // during activation below.
+    if (this.#rawSnapshot.installedRelease && !this.#rawSnapshot.availableRelease) {
+      try {
+        await this.#installer.checkForUpdates();
+      } catch {
+        // Keep the strict legacy verification path when the mutable channel
+        // cannot be read. No upgrade is exposed without an exact pointer.
+      }
+      this.#rawSnapshot = cloneSnapshot(this.#installer.getInstallerSnapshot());
+    }
+    if (this.#hasPendingReleaseUpdate()) {
+      this.#publishPendingReleaseUpdate();
+      return;
+    }
     await this.#ensureReady('verify');
   }
 
@@ -238,6 +257,10 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
     await this.#installer.checkForUpdates();
     this.#rawSnapshot = cloneSnapshot(this.#installer.getInstallerSnapshot());
     this.#invalidateReadinessProof();
+    if (this.#hasPendingReleaseUpdate()) {
+      this.#publishPendingReleaseUpdate();
+      return;
+    }
     await this.#ensureReady('verify');
   }
 
@@ -376,6 +399,31 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
     this.#publish();
   }
 
+  #hasPendingReleaseUpdate(): boolean {
+    const { installedRelease, availableRelease } = this.#rawSnapshot;
+    return Boolean(installedRelease && availableRelease && installedRelease !== availableRelease);
+  }
+
+  #publishPendingReleaseUpdate(): void {
+    if (!this.#hasPendingReleaseUpdate()) return;
+    this.#gateFailure = null;
+    // A broken predecessor must not strand the user on a repair-only screen.
+    // Marking it update-available does not trust the predecessor: activation
+    // still downloads/verifies the selected release and runs the complete
+    // readiness gate before changing the active pointer.
+    this.#rawSnapshot = {
+      ...this.#rawSnapshot,
+      readiness: 'update-available',
+      phase: 'idle',
+      errorCode: null,
+      failedResources: [],
+      canPause: false,
+      canResume: false,
+      canRetry: false,
+    };
+    this.#publish();
+  }
+
   #publicSnapshot(): ResourceInstallerSnapshot {
     const snapshot = cloneSnapshot(this.#rawSnapshot);
     const releaseId = snapshot.installedRelease;
@@ -419,7 +467,7 @@ export class CanonicalResourceReadinessGate implements OfficeRuntimeResourceInst
         canRetry: true,
       };
     }
-    if (!releaseId || this.#validatedRelease === releaseId) return snapshot;
+    if (!releaseId || this.#validatedRelease === releaseId || this.#hasPendingReleaseUpdate()) return snapshot;
     if (snapshot.readiness === 'ready' || snapshot.readiness === 'update-available') {
       return {
         ...snapshot,
