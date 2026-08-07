@@ -23,6 +23,16 @@ describe('Office Host canonical Resource Broker wiring', () => {
     expect(postReady).toBeGreaterThan(loadIdentity);
   });
 
+  it('refreshes a reused production-origin worker before the first Broker request', () => {
+    expect(source).toContain(
+      "import { ensureControlledEditorServiceWorker } from './lib/editor-service-worker-control';",
+    );
+    expect(source).toContain(
+      'await ensureControlledEditorServiceWorker(navigator.serviceWorker, OFFICE_SERVICE_WORKER_PATH, {',
+    );
+    expect(source).toContain('timeoutMs: OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS');
+  });
+
   it('transfers exactly the canonical broker and reply ports using the strict pinned protocol', () => {
     expect(source).toContain('type: EDITOR_RESOURCE_BROKER_BIND_TYPE');
     expect(source).toContain('[connection.port, reply.port2]');

@@ -29,6 +29,7 @@ import {
   EDITOR_RESOURCE_BROKER_BOUND_TYPE,
   EDITOR_RESOURCE_BROKER_UNBIND_TYPE,
 } from './lib/editor-resource-broker';
+import { ensureControlledEditorServiceWorker } from './lib/editor-service-worker-control';
 import {
   RESOURCE_BROKER_CANONICAL_ORIGIN,
   RESOURCE_BROKER_FRAME_CONNECT_TIMEOUT_MS,
@@ -438,6 +439,16 @@ async function ensureOfficeServiceWorkerControl(): Promise<void> {
     if (requiresCanonicalResourceBroker()) {
       throw new Error('Service workers are required for a versioned Office editor host');
     }
+    return;
+  }
+  if (requiresCanonicalResourceBroker()) {
+    // A reused origin can still be controlled by the previous release's
+    // worker. Force the update check and activate the waiting worker before
+    // binding the Broker; otherwise the first manifest request is routed by
+    // stale identity code and fails with a misleading 503.
+    await ensureControlledEditorServiceWorker(navigator.serviceWorker, OFFICE_SERVICE_WORKER_PATH, {
+      timeoutMs: OFFICE_SERVICE_WORKER_READY_TIMEOUT_MS,
+    });
     return;
   }
   await navigator.serviceWorker.register(OFFICE_SERVICE_WORKER_PATH, { scope: '/' });
