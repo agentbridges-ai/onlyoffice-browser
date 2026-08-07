@@ -118,6 +118,10 @@ jobs:
         env:
           CANDIDATE: ${{ inputs.candidate_commit }}
       - name: Stage only missing immutable CAS objects and incrementally verify remote bytes
+        env:
+          # The second artifact-range pass downloads only missing CAS keys;
+          # it must retain the same Actions read token as the metadata pass.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           retry_rclone() { local attempt=1; until timeout 300 rclone "$@"; do test "$attempt" -ge 4 && return 1; sleep "$((attempt++ * 3))"; done; }
