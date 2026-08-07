@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Executable deployment helper; intentionally shipped as ESM rather than compiled TypeScript.
 // @ts-expect-error JavaScript build script has no declaration output.
-import { downloadRangedAsset, fetchWithRetry, readRelease } from '../../scripts/hydrate-cloudflare-matrix-fonts.mjs';
+import { downloadRangedAsset, fetchWithRetry } from '../../scripts/hydrate-cloudflare-matrix-fonts.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,10 +10,19 @@ import crypto from 'node:crypto';
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe('Cloudflare font release hydration', () => {
   it('prefers the v5 channel and follows its release manifest URL', async () => {
+    // The candidate workflow pins the production font release through env so
+    // the matrix is reproducible. This contract test exercises channel
+    // discovery instead, so keep it isolated from that workflow-level pin.
+    vi.stubEnv('ONLYOFFICE_MATRIX_FONT_RELEASE_ID', '');
+    vi.stubEnv('ONLYOFFICE_MATRIX_FONT_MANIFEST_SHA256', '');
+    vi.resetModules();
+    // @ts-expect-error JavaScript build script has no declaration output.
+    const { readRelease } = await import('../../scripts/hydrate-cloudflare-matrix-fonts.mjs');
     const releaseId = 'v0.5.15-test';
     const fontManifest = {
       path: 'onlyoffice-browser-font-assets.json',
